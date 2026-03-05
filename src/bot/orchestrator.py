@@ -1071,6 +1071,9 @@ class MessageOrchestrator:
         chat = update.message.chat
         await chat.send_action("typing")
 
+        # Check for YouTube URLs and extract transcript
+        message_text = await self._enrich_with_video_transcript(message_text)
+
         verbose_level = self._get_verbose_level(context)
         progress_msg = await update.message.reply_text("⌛", disable_notification=True)
 
@@ -1511,15 +1514,13 @@ class MessageOrchestrator:
 
         chat = update.message.chat
         await chat.send_action("typing")
-        progress_msg = await update.message.reply_text("Transcribing...")
+        progress_msg = await update.message.reply_text("⌛")
 
         try:
             voice = update.message.voice
             processed_voice = await voice_handler.process_voice_message(
                 voice, update.message.caption
             )
-
-            await progress_msg.edit_text("Working...")
             await self._handle_agentic_media_message(
                 update=update,
                 context=context,
@@ -1805,3 +1806,34 @@ class MessageOrchestrator:
                 args=[project_name],
                 success=True,
             )
+
+    async def _enrich_with_video_transcript(self, message_text: str) -> str:
+        """If message contains a YouTube URL, extract transcript and append it."""
+        from .features.video_handler import extract_youtube_id, get_youtube_transcript
+
+        video_id = extract_youtube_id(message_text)
+        if not video_id:
+            return message_text
+
+        try:
+            transcript = await get_youtube_transcript(video_id)
+            logger.info(
+                "YouTube transcript extracted",
+                video_id=video_id,
+                language=transcript.language,
+                duration=transcript.duration_text,
+                transcript_length=len(transcript.transcript),
+            )
+            return (
+                f"{message_text}\n\n"
+                f"--- YouTube Video Transcript ({transcript.duration_text}, "
+                f"{transcript.language}) ---\n"
+                f"{transcript.transcript}"
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to extract YouTube transcript",
+                video_id=video_id,
+                error=str(e),
+            )
+            return message_text

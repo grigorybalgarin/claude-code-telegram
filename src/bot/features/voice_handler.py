@@ -22,12 +22,13 @@ class ProcessedVoice:
 
 
 class VoiceHandler:
-    """Transcribe Telegram voice messages using Mistral or OpenAI."""
+    """Transcribe Telegram voice messages using Mistral, OpenAI, or Groq."""
 
     def __init__(self, config: Settings):
         self.config = config
         self._mistral_client: Optional[Any] = None
         self._openai_client: Optional[Any] = None
+        self._groq_client: Optional[Any] = None
 
     def _ensure_allowed_file_size(self, file_size: Optional[int]) -> None:
         """Reject files that exceed the configured max size."""
@@ -81,6 +82,8 @@ class VoiceHandler:
 
         if self.config.voice_provider == "openai":
             transcription = await self._transcribe_openai(voice_bytes)
+        elif self.config.voice_provider == "groq":
+            transcription = await self._transcribe_groq(voice_bytes)
         else:
             transcription = await self._transcribe_mistral(voice_bytes)
 
@@ -166,6 +169,50 @@ class VoiceHandler:
         if not text:
             raise ValueError("OpenAI transcription returned an empty response.")
         return text
+
+    async def _transcribe_groq(self, voice_bytes: bytes) -> str:
+        """Transcribe audio using the Groq API (OpenAI-compatible)."""
+        client = self._get_groq_client()
+        try:
+            response = await client.audio.transcriptions.create(
+                model=self.config.resolved_voice_model,
+                file=("voice.ogg", voice_bytes),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Groq transcription request failed",
+                error_type=type(exc).__name__,
+            )
+            raise RuntimeError("Groq transcription request failed.") from exc
+
+        text = (getattr(response, "text", "") or "").strip()
+        if not text:
+            raise ValueError("Groq transcription returned an empty response.")
+        return text
+
+    def _get_groq_client(self) -> Any:
+        """Create and cache a Groq client (uses OpenAI SDK with custom base URL)."""
+        if self._groq_client is not None:
+            return self._groq_client
+
+        try:
+            from openai import AsyncOpenAI
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Optional dependency 'openai' is missing for Groq voice transcription. "
+                "Install voice extras: "
+                'pip install "claude-code-telegram[voice]"'
+            ) from exc
+
+        api_key = self.config.groq_api_key_str
+        if not api_key:
+            raise RuntimeError("Groq API key is not configured.")
+
+        self._groq_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+        )
+        return self._groq_client
 
     def _get_openai_client(self) -> Any:
         """Create and cache an OpenAI client on first use."""

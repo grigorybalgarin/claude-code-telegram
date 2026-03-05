@@ -169,15 +169,18 @@ class Settings(BaseSettings):
     enable_voice_messages: bool = Field(
         True, description="Enable voice message transcription"
     )
-    voice_provider: Literal["mistral", "openai"] = Field(
+    voice_provider: Literal["mistral", "openai", "groq"] = Field(
         "mistral",
-        description="Voice transcription provider: 'mistral' or 'openai'",
+        description="Voice transcription provider: 'mistral', 'openai', or 'groq'",
     )
     mistral_api_key: Optional[SecretStr] = Field(
         None, description="Mistral API key for voice transcription"
     )
     openai_api_key: Optional[SecretStr] = Field(
         None, description="OpenAI API key for Whisper voice transcription"
+    )
+    groq_api_key: Optional[SecretStr] = Field(
+        None, description="Groq API key for Whisper voice transcription"
     )
     voice_transcription_model: Optional[str] = Field(
         None,
@@ -395,8 +398,8 @@ class Settings(BaseSettings):
         if v is None:
             return "mistral"
         provider = str(v).strip().lower()
-        if provider not in {"mistral", "openai"}:
-            raise ValueError("voice_provider must be one of ['mistral', 'openai']")
+        if provider not in {"mistral", "openai", "groq"}:
+            raise ValueError("voice_provider must be one of ['mistral', 'openai', 'groq']")
         return provider
 
     @field_validator("project_threads_chat_id", mode="before")
@@ -497,12 +500,19 @@ class Settings(BaseSettings):
         return self.openai_api_key.get_secret_value() if self.openai_api_key else None
 
     @property
+    def groq_api_key_str(self) -> Optional[str]:
+        """Get Groq API key as string."""
+        return self.groq_api_key.get_secret_value() if self.groq_api_key else None
+
+    @property
     def resolved_voice_model(self) -> str:
         """Get the voice transcription model, with provider-specific defaults."""
         if self.voice_transcription_model:
             return self.voice_transcription_model
         if self.voice_provider == "openai":
             return "whisper-1"
+        if self.voice_provider == "groq":
+            return "whisper-large-v3-turbo"
         return "voxtral-mini-latest"
 
     @property
@@ -515,6 +525,8 @@ class Settings(BaseSettings):
         """API key environment variable required for the configured voice provider."""
         if self.voice_provider == "openai":
             return "OPENAI_API_KEY"
+        if self.voice_provider == "groq":
+            return "GROQ_API_KEY"
         return "MISTRAL_API_KEY"
 
     @property
@@ -522,4 +534,6 @@ class Settings(BaseSettings):
         """Human-friendly label for the configured voice provider."""
         if self.voice_provider == "openai":
             return "OpenAI Whisper"
+        if self.voice_provider == "groq":
+            return "Groq Whisper"
         return "Mistral Voxtral"
