@@ -198,7 +198,7 @@ class ClaudeSDKManager:
             options = ClaudeAgentOptions(
                 max_turns=self.config.claude_max_turns,
                 model=self.config.claude_model or None,
-                max_budget_usd=self.config.claude_max_cost_per_request,
+                max_budget_usd=self.config.claude_max_cost_per_request or None,
                 cwd=str(working_directory),
                 allowed_tools=sdk_allowed_tools,
                 disallowed_tools=sdk_disallowed_tools,
@@ -249,6 +249,8 @@ class ClaudeSDKManager:
                 client = ClaudeSDKClient(options)
                 try:
                     await client.connect()
+                    if self.config.claude_model:
+                        await client.set_model(self.config.claude_model)
                     await client.query(prompt)
 
                     # Iterate over raw messages and parse them ourselves

@@ -59,6 +59,7 @@ class ClaudeCodeBot:
         builder.read_timeout(30)
         builder.write_timeout(30)
         builder.pool_timeout(30)
+        builder.concurrent_updates(True)
 
         self.app = builder.build()
 
