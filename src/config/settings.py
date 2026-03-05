@@ -166,6 +166,12 @@ class Settings(BaseSettings):
     )
     enable_git_integration: bool = Field(True, description="Enable git commands")
     enable_file_uploads: bool = Field(True, description="Enable file upload handling")
+    max_upload_file_size_mb: int = Field(
+        10,
+        description="Maximum file upload size in MB",
+        ge=1,
+        le=100,
+    )
     enable_voice_messages: bool = Field(
         True, description="Enable voice message transcription"
     )

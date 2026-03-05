@@ -129,6 +129,10 @@ def _make_can_use_tool_callback(
 class ClaudeSDKManager:
     """Manage Claude Code SDK integration."""
 
+    # Class-level caches: path -> (mtime, content)
+    _claude_md_cache: Dict[str, tuple] = {}
+    _mcp_config_cache: Dict[str, tuple] = {}
+
     def __init__(
         self,
         config: Settings,
@@ -167,7 +171,9 @@ class ClaudeSDKManager:
 
         try:
             # Capture stderr from Claude CLI for better error diagnostics
-            stderr_lines: List[str] = []
+            from collections import deque
+
+            stderr_lines: deque = deque(maxlen=30)
 
             def _stderr_callback(line: str) -> None:
                 stderr_lines.append(line)
@@ -180,11 +186,26 @@ class ClaudeSDKManager:
             )
             claude_md_path = Path(working_directory) / "CLAUDE.md"
             if claude_md_path.exists():
-                base_prompt += "\n\n" + claude_md_path.read_text(encoding="utf-8")
-                logger.info(
-                    "Loaded CLAUDE.md into system prompt",
-                    path=str(claude_md_path),
-                )
+                cache_key = str(claude_md_path)
+                current_mtime = claude_md_path.stat().st_mtime
+                cached = ClaudeSDKManager._claude_md_cache.get(cache_key)
+                if cached and cached[0] == current_mtime:
+                    base_prompt += "\n\n" + cached[1]
+                    logger.debug(
+                        "Using cached CLAUDE.md content",
+                        path=cache_key,
+                    )
+                else:
+                    content = claude_md_path.read_text(encoding="utf-8")
+                    ClaudeSDKManager._claude_md_cache[cache_key] = (
+                        current_mtime,
+                        content,
+                    )
+                    base_prompt += "\n\n" + content
+                    logger.info(
+                        "Loaded CLAUDE.md into system prompt",
+                        path=cache_key,
+                    )
 
             # When DISABLE_TOOL_VALIDATION=true, pass None for allowed/disallowed
             # tools so the SDK does not restrict tool usage (e.g. MCP tools).
@@ -545,13 +566,26 @@ class ClaudeSDKManager:
         """Load MCP server configuration from a JSON file.
 
         The new claude-agent-sdk expects mcp_servers as a dict, not a file path.
+        Uses mtime-based caching to avoid re-reading/parsing on every call.
         """
         import json
 
         try:
+            cache_key = str(config_path)
+            current_mtime = Path(config_path).stat().st_mtime
+            cached = ClaudeSDKManager._mcp_config_cache.get(cache_key)
+            if cached and cached[0] == current_mtime:
+                logger.debug(
+                    "Using cached MCP config",
+                    path=cache_key,
+                )
+                return cached[1]
+
             with open(config_path) as f:
                 config_data = json.load(f)
-            return config_data.get("mcpServers", {})
+            result = config_data.get("mcpServers", {})
+            ClaudeSDKManager._mcp_config_cache[cache_key] = (current_mtime, result)
+            return result
         except (json.JSONDecodeError, OSError) as e:
             logger.error(
                 "Failed to load MCP config", path=str(config_path), error=str(e)

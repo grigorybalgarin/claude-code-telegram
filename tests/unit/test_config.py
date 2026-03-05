@@ -585,14 +585,19 @@ def test_environment_loading():
         os.environ["TELEGRAM_BOT_TOKEN"] = "test_token"
         os.environ["TELEGRAM_BOT_USERNAME"] = "test_bot"
         os.environ["APPROVED_DIRECTORY"] = tmp_dir
+        # Prevent .env from polluting with invalid values
+        os.environ.pop("CLAUDE_MAX_COST_PER_USER", None)
+        os.environ.pop("CLAUDE_MAX_COST_PER_REQUEST", None)
+        os.environ.pop("CLAUDE_MODEL", None)
 
         try:
-            config = load_config(env="development")
+            missing_env = Path(tmp_dir) / "missing.env"
+            config = load_config(env="development", config_file=missing_env)
             assert config.debug is True
             assert config.development_mode is True
             assert config.log_level == "DEBUG"
 
-            config = load_config(env="production")
+            config = load_config(env="production", config_file=missing_env)
             assert config.debug is False
             assert config.development_mode is False
             assert config.log_level == "INFO"
@@ -618,6 +623,10 @@ def test_load_config_does_not_log_api_keys(tmp_path):
     os.environ["TELEGRAM_BOT_TOKEN"] = "test_token"
     os.environ["TELEGRAM_BOT_USERNAME"] = "test_bot"
     os.environ["APPROVED_DIRECTORY"] = str(tmp_path)
+    # Prevent .env from polluting with invalid values
+    os.environ.pop("CLAUDE_MAX_COST_PER_USER", None)
+    os.environ.pop("CLAUDE_MAX_COST_PER_REQUEST", None)
+    os.environ.pop("CLAUDE_MODEL", None)
     for key, value in secrets.items():
         os.environ[key] = value
 

@@ -54,7 +54,12 @@ def load_config(
 
         # Load base settings from environment variables
         # pydantic-settings will automatically read from environment variables
-        settings = Settings()  # type: ignore[call-arg]
+        # If a custom config_file was provided, override the default .env path
+        # so Settings doesn't double-load the project .env
+        if config_file is not None:
+            settings = Settings(_env_file=str(config_file))  # type: ignore[call-arg]
+        else:
+            settings = Settings()  # type: ignore[call-arg]
 
         # Apply environment-specific overrides
         settings = _apply_environment_overrides(settings, env)

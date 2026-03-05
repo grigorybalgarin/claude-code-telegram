@@ -698,7 +698,11 @@ class AnalyticsRepository:
                 (user_id,),
             )
 
-            summary = dict(await cursor.fetchone())
+            row = await cursor.fetchone()
+            summary = dict(row) if row else {
+                "total_messages": 0, "total_sessions": 0,
+                "total_cost": 0.0, "avg_duration": 0,
+            }
 
             # Daily usage (last 30 days)
             cursor = await conn.execute(
@@ -758,7 +762,11 @@ class AnalyticsRepository:
             """
             )
 
-            overall = dict(await cursor.fetchone())
+            row = await cursor.fetchone()
+            overall = dict(row) if row else {
+                "total_users": 0, "total_sessions": 0,
+                "total_messages": 0, "total_cost": 0.0, "avg_duration": 0,
+            }
 
             # Active users (last 7 days)
             cursor = await conn.execute(
@@ -769,7 +777,8 @@ class AnalyticsRepository:
             """
             )
 
-            active_users = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            active_users = row[0] if row else 0
             overall["active_users_7d"] = active_users
 
             # Top users by cost

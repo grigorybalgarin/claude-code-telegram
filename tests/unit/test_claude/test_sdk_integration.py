@@ -364,7 +364,9 @@ class TestClaudeSDKManager:
             )
 
         assert len(captured_options) == 1
-        assert captured_options[0].max_budget_usd == config.claude_max_cost_per_request
+        # When claude_max_cost_per_request is 0.0 (falsy), it becomes None
+        expected = config.claude_max_cost_per_request or None
+        assert captured_options[0].max_budget_usd == expected
 
     async def test_execute_command_no_resume_for_new_session(self, sdk_manager):
         """Test that resume is not set for new sessions."""
@@ -671,6 +673,7 @@ class TestClaudeSandboxSettings:
     async def test_claude_model_none_when_unset(self, tmp_path):
         """Test that model is None when claude_model is not configured."""
         config = Settings(
+            _env_file=None,
             telegram_bot_token="test:token",
             telegram_bot_username="testbot",
             approved_directory=tmp_path,

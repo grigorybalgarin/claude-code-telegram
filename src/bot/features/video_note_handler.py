@@ -127,7 +127,12 @@ async def _extract_frames(video_bytes: bytes, duration: int) -> List[str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise ValueError("Video frame extraction timed out (30s limit).")
 
         if proc.returncode != 0:
             logger.warning(

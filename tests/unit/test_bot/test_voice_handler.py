@@ -352,3 +352,175 @@ async def test_transcribe_openai_reuses_cached_client(openai_voice_handler):
 
     openai_ctor.assert_called_once_with(api_key="test-openai-key")
     assert mock_transcriptions.create.await_count == 2
+
+
+# --- Groq provider tests ---
+
+
+@pytest.fixture
+def groq_config():
+    """Create a mock config with Groq settings."""
+    cfg = MagicMock()
+    cfg.voice_provider = "groq"
+    cfg.groq_api_key_str = "test-groq-key"
+    cfg.resolved_voice_model = "whisper-large-v3-turbo"
+    cfg.voice_max_file_size_mb = 20
+    cfg.voice_max_file_size_bytes = 20 * 1024 * 1024
+    return cfg
+
+
+@pytest.fixture
+def groq_voice_handler(groq_config):
+    """Create a VoiceHandler instance with Groq config."""
+    return VoiceHandler(config=groq_config)
+
+
+async def test_transcribe_groq_success(groq_voice_handler):
+    """Groq transcription uses AsyncOpenAI with correct base_url and api_key."""
+    mock_response = MagicMock()
+    mock_response.text = "  Hello from Groq.  "
+
+    mock_transcriptions = MagicMock()
+    mock_transcriptions.create = AsyncMock(return_value=mock_response)
+
+    mock_audio = MagicMock()
+    mock_audio.transcriptions = mock_transcriptions
+
+    mock_client = MagicMock()
+    mock_client.audio = mock_audio
+    openai_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=openai_ctor))
+        result = await groq_voice_handler._transcribe_groq(b"fake-ogg")
+
+    assert result == "Hello from Groq."
+    openai_ctor.assert_called_once_with(
+        api_key="test-groq-key",
+        base_url="https://api.groq.com/openai/v1",
+    )
+    mock_transcriptions.create.assert_called_once()
+    call_kwargs = mock_transcriptions.create.call_args
+    assert call_kwargs.kwargs["model"] == "whisper-large-v3-turbo"
+    assert call_kwargs.kwargs["file"] == ("voice.ogg", b"fake-ogg")
+
+
+async def test_transcribe_groq_empty_response(groq_voice_handler):
+    """Groq empty transcriptions are rejected."""
+    mock_response = MagicMock()
+    mock_response.text = "   "
+
+    mock_transcriptions = MagicMock()
+    mock_transcriptions.create = AsyncMock(return_value=mock_response)
+
+    mock_audio = MagicMock()
+    mock_audio.transcriptions = mock_transcriptions
+
+    mock_client = MagicMock()
+    mock_client.audio = mock_audio
+    openai_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=openai_ctor))
+        with pytest.raises(ValueError, match="empty response"):
+            await groq_voice_handler._transcribe_groq(b"fake-ogg")
+
+
+async def test_transcribe_groq_api_error(groq_voice_handler):
+    """Network/API errors from Groq are wrapped with provider context."""
+    mock_transcriptions = MagicMock()
+    mock_transcriptions.create = AsyncMock(side_effect=Exception("network down"))
+
+    mock_audio = MagicMock()
+    mock_audio.transcriptions = mock_transcriptions
+
+    mock_client = MagicMock()
+    mock_client.audio = mock_audio
+    openai_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=openai_ctor))
+        with pytest.raises(RuntimeError, match="Groq transcription request failed"):
+            await groq_voice_handler._transcribe_groq(b"fake-ogg")
+
+
+async def test_get_groq_client_caching(groq_voice_handler):
+    """Groq client is created once and reused across calls."""
+    mock_response = MagicMock()
+    mock_response.text = "ok"
+    mock_transcriptions = MagicMock()
+    mock_transcriptions.create = AsyncMock(return_value=mock_response)
+    mock_audio = MagicMock()
+    mock_audio.transcriptions = mock_transcriptions
+    mock_client = MagicMock()
+    mock_client.audio = mock_audio
+    openai_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=openai_ctor))
+        await groq_voice_handler._transcribe_groq(b"a")
+        await groq_voice_handler._transcribe_groq(b"b")
+
+    openai_ctor.assert_called_once_with(
+        api_key="test-groq-key",
+        base_url="https://api.groq.com/openai/v1",
+    )
+    assert mock_transcriptions.create.await_count == 2
+
+
+async def test_get_groq_client_missing_dependency(groq_voice_handler):
+    """Missing openai package for Groq returns a clear install hint."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", None)
+        with pytest.raises(RuntimeError, match="Optional dependency 'openai'"):
+            await groq_voice_handler._transcribe_groq(b"fake-ogg")
+
+
+async def test_get_groq_client_missing_api_key(groq_config):
+    """Missing Groq API key raises a clear error."""
+    groq_config.groq_api_key_str = None
+    handler = VoiceHandler(config=groq_config)
+
+    mock_openai_module = SimpleNamespace(AsyncOpenAI=MagicMock())
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", mock_openai_module)
+        with pytest.raises(RuntimeError, match="Groq API key is not configured"):
+            await handler._transcribe_groq(b"fake-ogg")
+
+
+async def test_process_voice_message_groq_provider(groq_voice_handler):
+    """Full flow: process_voice_message transcribes via Groq provider."""
+    voice = _mock_voice(duration=12)
+
+    mock_response = MagicMock()
+    mock_response.text = "  Groq transcription result.  "
+
+    mock_transcriptions = MagicMock()
+    mock_transcriptions.create = AsyncMock(return_value=mock_response)
+
+    mock_audio = MagicMock()
+    mock_audio.transcriptions = mock_transcriptions
+
+    mock_client = MagicMock()
+    mock_client.audio = mock_audio
+    openai_ctor = MagicMock(return_value=mock_client)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=openai_ctor))
+        result = await groq_voice_handler.process_voice_message(voice, caption=None)
+
+    assert isinstance(result, ProcessedVoice)
+    assert result.transcription == "Groq transcription result."
+    assert result.duration == 12
+    assert "Voice message transcription:" in result.prompt
+    assert "Groq transcription result." in result.prompt
+
+    openai_ctor.assert_called_once_with(
+        api_key="test-groq-key",
+        base_url="https://api.groq.com/openai/v1",
+    )
+    mock_transcriptions.create.assert_called_once()
+    call_kwargs = mock_transcriptions.create.call_args
+    assert call_kwargs.kwargs["model"] == "whisper-large-v3-turbo"
+    assert call_kwargs.kwargs["file"] == ("voice.ogg", b"fake-ogg")

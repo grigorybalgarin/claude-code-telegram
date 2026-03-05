@@ -52,10 +52,14 @@ async def security_middleware(
             message.text, security_validator, user_id, audit_logger
         )
         if not is_safe:
+            logger.warning(
+                "Message blocked by security middleware",
+                user_id=user_id,
+                violation_type=violation_type,
+            )
             await message.reply_text(
-                f"🛡️ <b>Security Alert</b>\n\n"
-                f"Your message contains potentially dangerous content and has been blocked.\n"
-                f"Violation: {escape_html(violation_type)}\n\n"
+                "🛡️ <b>Security Alert</b>\n\n"
+                "Message blocked for security reasons.\n\n"
                 "If you believe this is an error, please contact the administrator.",
                 parse_mode="HTML",
             )
@@ -64,7 +68,7 @@ async def security_middleware(
     # Validate file uploads if present
     if message and message.document:
         is_safe, error_message = await validate_file_upload(
-            message.document, security_validator, user_id, audit_logger
+            message.document, security_validator, user_id, audit_logger, settings
         )
         if not is_safe:
             await message.reply_text(
@@ -209,7 +213,11 @@ async def validate_message_content(
 
 
 async def validate_file_upload(
-    document: Any, security_validator: Any, user_id: int, audit_logger: Any
+    document: Any,
+    security_validator: Any,
+    user_id: int,
+    audit_logger: Any,
+    settings: Any = None,
 ) -> tuple[bool, str]:
     """Validate file uploads for security."""
 
@@ -238,7 +246,8 @@ async def validate_file_upload(
         return False, error_message
 
     # Check file size limits
-    max_file_size = 10 * 1024 * 1024  # 10MB
+    max_file_size_mb = getattr(settings, "max_upload_file_size_mb", 10) if settings else 10
+    max_file_size = max_file_size_mb * 1024 * 1024
     if file_size > max_file_size:
         if audit_logger:
             await audit_logger.log_security_violation(

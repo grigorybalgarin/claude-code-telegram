@@ -357,7 +357,15 @@ class MessageOrchestrator:
             group=10,
         )
 
-        # Only cd: callbacks (for project selection), scoped by pattern
+        # Quick action buttons
+        app.add_handler(
+            CallbackQueryHandler(
+                self._inject_deps(self._agentic_quick_action),
+                pattern=r"^act:",
+            )
+        )
+
+        # Project selection callbacks
         app.add_handler(
             CallbackQueryHandler(
                 self._inject_deps(self._agentic_callback),
@@ -505,13 +513,25 @@ class MessageOrchestrator:
         dir_display = f"<code>{current_dir}/</code>"
 
         safe_name = escape_html(user.first_name)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 New Session", callback_data="act:new"),
+                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
+            ],
+            [
+                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
+                InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
+                InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
+            ],
+        ])
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
-            f"Working in: {dir_display}\n"
-            f"Commands: /new (reset) · /status"
+            f"Working in: {dir_display}"
             f"{sync_line}",
             parse_mode="HTML",
+            reply_markup=keyboard,
         )
 
     async def agentic_new(
@@ -1826,6 +1846,71 @@ class MessageOrchestrator:
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
+
+    async def _agentic_quick_action(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle quick action button presses."""
+        query = update.callback_query
+        await query.answer()
+        action = query.data.removeprefix("act:")
+
+        if action == "new":
+            context.user_data["claude_session_id"] = None
+            context.user_data["session_started"] = True
+            context.user_data["force_new_session"] = True
+            await query.edit_message_text("Session reset. What's next?")
+
+        elif action == "status":
+            current_dir = context.user_data.get(
+                "current_directory", self.settings.approved_directory
+            )
+            session_id = context.user_data.get("claude_session_id")
+            session_status = "active" if session_id else "none"
+            cost_str = ""
+            rate_limiter = context.bot_data.get("rate_limiter")
+            if rate_limiter:
+                try:
+                    user_status = rate_limiter.get_user_status(query.from_user.id)
+                    cost_usage = user_status.get("cost_usage", {})
+                    current_cost = cost_usage.get("current", 0.0)
+                    cost_str = f" · Cost: ${current_cost:.2f}"
+                except Exception:
+                    pass
+            await query.edit_message_text(
+                f"📂 {current_dir} · Session: {session_status}{cost_str}"
+            )
+
+        elif action == "stats":
+            storage = context.bot_data.get("storage")
+            if not storage:
+                await query.edit_message_text("Storage not available.")
+                return
+            try:
+                stats = await storage.analytics.get_user_stats(query.from_user.id)
+                summary = stats.get("summary", {})
+                total_cost = summary.get("total_cost") or 0.0
+                total_msgs = summary.get("total_messages") or 0
+                total_sessions = summary.get("total_sessions") or 0
+                avg_duration = summary.get("avg_duration") or 0
+                avg_s = avg_duration / 1000 if avg_duration else 0
+                await query.edit_message_text(
+                    f"<b>Stats:</b> ${total_cost:.4f} | "
+                    f"{total_msgs} msgs | {total_sessions} sessions | "
+                    f"avg {avg_s:.1f}s",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                await query.edit_message_text("Failed to load stats.")
+
+        elif action.startswith("v"):
+            level = int(action[1])
+            context.user_data["verbose_level"] = level
+            labels = {0: "quiet", 1: "normal", 2: "detailed"}
+            await query.edit_message_text(
+                f"Verbosity: <b>{level}</b> ({labels[level]})",
+                parse_mode="HTML",
+            )
 
     async def _agentic_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

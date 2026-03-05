@@ -206,6 +206,13 @@ class FileHandler:
                     if total_size > 100 * 1024 * 1024:  # 100MB limit
                         raise ValueError("Archive too large")
 
+                    # Check compression ratio to detect zip bombs
+                    compressed_size = sum(f.compress_size for f in zf.filelist)
+                    if compressed_size > 0 and total_size / compressed_size > 100:
+                        raise ValueError(
+                            "Suspicious compression ratio detected (potential zip bomb)"
+                        )
+
                     # Extract with security checks
                     for file_info in zf.filelist:
                         # Prevent path traversal
@@ -234,6 +241,10 @@ class FileHandler:
                     for member in tf.getmembers():
                         # Prevent path traversal
                         if member.name.startswith("/") or ".." in member.name:
+                            continue
+
+                        # Skip symlinks and hardlinks to prevent symlink attacks
+                        if member.issym() or member.islnk():
                             continue
 
                         tf.extract(member, extract_dir)

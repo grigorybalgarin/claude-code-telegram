@@ -100,13 +100,14 @@ def test_agentic_registers_6_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 6
+    assert len(cmd_handlers) == 9
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
     assert frozenset({"verbose"}) in commands
     assert frozenset({"repo"}) in commands
     assert frozenset({"restart"}) in commands
+    assert frozenset({"stats"}) in commands
 
 
 def test_classic_registers_14_commands(classic_settings, deps):
@@ -149,10 +150,10 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
         if isinstance(call[0][0], CallbackQueryHandler)
     ]
 
-    # 4 message handlers (text, document, photo, voice)
-    assert len(msg_handlers) == 4
-    # 1 callback handler (for cd: only)
-    assert len(cb_handlers) == 1
+    # 5 message handlers (text, document, photo, voice, video_note)
+    assert len(msg_handlers) == 5
+    # 2 callback handlers (act: quick actions + cd: project selection)
+    assert len(cb_handlers) == 2
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
@@ -160,9 +161,13 @@ async def test_agentic_bot_commands(agentic_settings, deps):
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 6
+    assert len(commands) == 9
     cmd_names = [c.command for c in commands]
-    assert cmd_names == ["start", "new", "status", "verbose", "repo", "restart"]
+    assert "start" in cmd_names
+    assert "new" in cmd_names
+    assert "status" in cmd_names
+    assert "verbose" in cmd_names
+    assert "stats" in cmd_names
 
 
 async def test_classic_bot_commands(classic_settings, deps):
@@ -222,11 +227,10 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
 
     update.message.reply_text.assert_called_once()
     call_kwargs = update.message.reply_text.call_args
-    # No reply_markup argument (no keyboard)
-    assert (
-        "reply_markup" not in call_kwargs.kwargs
-        or call_kwargs.kwargs.get("reply_markup") is None
-    )
+    # Has inline keyboard with quick action buttons
+    assert "reply_markup" in call_kwargs.kwargs
+    markup = call_kwargs.kwargs["reply_markup"]
+    assert markup is not None
     # Contains user name
     assert "Alice" in call_kwargs.args[0]
 
@@ -338,10 +342,11 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
         if isinstance(call[0][0], CallbackQueryHandler)
     ]
 
-    assert len(cb_handlers) == 1
-    # The pattern attribute should match cd: prefixed data
-    assert cb_handlers[0].pattern is not None
-    assert cb_handlers[0].pattern.match("cd:my_project")
+    assert len(cb_handlers) == 2
+    # Should have act: and cd: callback handlers
+    patterns = [h.pattern for h in cb_handlers if h.pattern]
+    assert any(p.match("cd:my_project") for p in patterns)
+    assert any(p.match("act:new") for p in patterns)
 
 
 async def test_agentic_document_rejects_large_files(agentic_settings, deps):

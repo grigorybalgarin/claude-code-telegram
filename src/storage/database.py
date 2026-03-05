@@ -131,6 +131,9 @@ CREATE INDEX idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX idx_audit_log_user_id ON audit_log(user_id);
 CREATE INDEX idx_audit_log_timestamp ON audit_log(timestamp);
 CREATE INDEX idx_cost_tracking_user_date ON cost_tracking(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_session_id ON tool_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_user_timestamp ON messages(user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 """
 
 
