@@ -310,6 +310,47 @@ class DatabaseManager:
                     ON project_threads(project_slug);
                 """,
             ),
+            (
+                5,
+                """
+                -- User templates for quick prompts
+                CREATE TABLE IF NOT EXISTS user_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, name),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+
+                -- Session memory / summaries for context continuity
+                CREATE TABLE IF NOT EXISTS session_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    project_path TEXT,
+                    summary TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+
+                -- User custom instructions
+                CREATE TABLE IF NOT EXISTS user_instructions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    instruction TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_templates_user
+                    ON user_templates(user_id);
+                CREATE INDEX IF NOT EXISTS idx_session_memory_user
+                    ON session_memory(user_id, project_path);
+                CREATE INDEX IF NOT EXISTS idx_user_instructions_user
+                    ON user_instructions(user_id);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

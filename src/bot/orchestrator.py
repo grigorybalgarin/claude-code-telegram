@@ -6,6 +6,7 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
+import json
 import re
 import time
 from pathlib import Path
@@ -306,6 +307,9 @@ class MessageOrchestrator:
             ("new", self.agentic_new),
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
+            ("stats", self.agentic_stats),
+            ("template", self.agentic_template),
+            ("context", self.agentic_context),
             ("repo", self.agentic_repo),
             ("restart", command.restart_command),
         ]
@@ -415,6 +419,9 @@ class MessageOrchestrator:
                 BotCommand("new", "Start a fresh session"),
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
+                BotCommand("stats", "Usage analytics & costs"),
+                BotCommand("template", "Manage prompt templates"),
+                BotCommand("context", "Persistent session instructions"),
                 BotCommand("repo", "List repos / switch workspace"),
                 BotCommand("restart", "Restart the bot"),
             ]
@@ -577,6 +584,186 @@ class MessageOrchestrator:
             f"Verbosity set to <b>{level}</b> ({labels[level]})",
             parse_mode="HTML",
         )
+
+    async def agentic_stats(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Show usage analytics: costs, sessions, top tools."""
+        user_id = update.effective_user.id
+        storage = context.bot_data.get("storage")
+        if not storage:
+            await update.message.reply_text("Storage not available.")
+            return
+
+        try:
+            stats = await storage.analytics.get_user_stats(user_id)
+            summary = stats.get("summary", {})
+            daily = stats.get("daily_usage", [])
+            top_tools = stats.get("top_tools", [])
+
+            total_cost = summary.get("total_cost") or 0.0
+            total_msgs = summary.get("total_messages") or 0
+            total_sessions = summary.get("total_sessions") or 0
+            avg_duration = summary.get("avg_duration") or 0
+            avg_duration_s = avg_duration / 1000 if avg_duration else 0
+
+            # Cost by recent days
+            cost_lines = []
+            for day in daily[:7]:
+                d = day.get("date", "?")
+                c = day.get("cost") or 0.0
+                m = day.get("messages") or 0
+                bar = "#" * min(int(c * 20), 30) if c else ""
+                cost_lines.append(f"  {d}  ${c:.3f}  ({m} msg) {bar}")
+
+            cost_chart = "\n".join(cost_lines) if cost_lines else "  No data yet"
+
+            # Top tools
+            tool_lines = []
+            for t in top_tools[:8]:
+                icon = _tool_icon(t["tool_name"])
+                tool_lines.append(f"  {icon} {t['tool_name']}: {t['usage_count']}x")
+            tools_text = "\n".join(tool_lines) if tool_lines else "  No tools tracked"
+
+            text = (
+                f"<b>Your Stats</b>\n\n"
+                f"<b>Total:</b> ${total_cost:.4f} | "
+                f"{total_msgs} messages | {total_sessions} sessions\n"
+                f"<b>Avg response:</b> {avg_duration_s:.1f}s\n\n"
+                f"<b>Last 7 days:</b>\n<pre>{cost_chart}</pre>\n\n"
+                f"<b>Top tools:</b>\n{tools_text}"
+            )
+            await update.message.reply_text(text, parse_mode="HTML")
+        except Exception as e:
+            logger.error("Stats command failed", error=str(e))
+            await update.message.reply_text(f"Error loading stats: {e}")
+
+    async def agentic_template(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Manage prompt templates: /template [list|add|del|run] ..."""
+        args = update.message.text.split(maxsplit=2)[1:] if update.message.text else []
+        templates = context.user_data.setdefault("templates", {})
+
+        if not args or args[0] == "list":
+            if not templates:
+                await update.message.reply_text(
+                    "<b>No templates saved.</b>\n\n"
+                    "Usage:\n"
+                    "<code>/template add name Your prompt here</code>\n"
+                    "<code>/template run name</code>\n"
+                    "<code>/template del name</code>",
+                    parse_mode="HTML",
+                )
+                return
+            lines = []
+            for name, prompt in templates.items():
+                short = prompt[:60] + "..." if len(prompt) > 60 else prompt
+                lines.append(f"  <b>{name}</b> - {escape_html(short)}")
+            await update.message.reply_text(
+                "<b>Your templates:</b>\n" + "\n".join(lines) + "\n\n"
+                "Use: <code>/template run name</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        action = args[0].lower()
+        rest = args[1] if len(args) > 1 else ""
+
+        if action == "add":
+            parts = rest.split(maxsplit=1)
+            if len(parts) < 2:
+                await update.message.reply_text(
+                    "Usage: <code>/template add name Your prompt</code>",
+                    parse_mode="HTML",
+                )
+                return
+            name, prompt = parts[0], parts[1]
+            templates[name] = prompt
+            await update.message.reply_text(
+                f"Template <b>{escape_html(name)}</b> saved.",
+                parse_mode="HTML",
+            )
+
+        elif action == "del":
+            name = rest.strip()
+            if name in templates:
+                del templates[name]
+                await update.message.reply_text(f"Template '{name}' deleted.")
+            else:
+                await update.message.reply_text(f"Template '{name}' not found.")
+
+        elif action == "run":
+            name = rest.strip()
+            prompt = templates.get(name)
+            if not prompt:
+                await update.message.reply_text(f"Template '{name}' not found.")
+                return
+            # Simulate text message with the template prompt
+            update.message.text = prompt
+            await self.agentic_text(update, context)
+
+        else:
+            await update.message.reply_text(
+                "Unknown action. Use: list, add, del, run"
+            )
+
+    async def agentic_context(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Manage persistent session instructions: /context [add|list|clear] ..."""
+        args = update.message.text.split(maxsplit=1)[1:] if update.message.text else []
+        instructions = context.user_data.setdefault("custom_instructions", [])
+
+        if not args or args[0].strip().lower() == "list":
+            if not instructions:
+                await update.message.reply_text(
+                    "<b>No custom instructions set.</b>\n\n"
+                    "Usage:\n"
+                    "<code>/context add Always reply in Russian</code>\n"
+                    "<code>/context clear</code>",
+                    parse_mode="HTML",
+                )
+                return
+            lines = [f"  {i+1}. {escape_html(inst)}" for i, inst in enumerate(instructions)]
+            await update.message.reply_text(
+                "<b>Active instructions:</b>\n" + "\n".join(lines),
+                parse_mode="HTML",
+            )
+            return
+
+        text = args[0]
+        if text.lower().startswith("add "):
+            instruction = text[4:].strip()
+            if instruction:
+                instructions.append(instruction)
+                await update.message.reply_text(
+                    f"Instruction added ({len(instructions)} total)."
+                )
+            else:
+                await update.message.reply_text("Provide an instruction after 'add'.")
+
+        elif text.lower().startswith("clear"):
+            instructions.clear()
+            await update.message.reply_text("All custom instructions cleared.")
+
+        elif text.lower().startswith("del "):
+            try:
+                idx = int(text[4:].strip()) - 1
+                if 0 <= idx < len(instructions):
+                    removed = instructions.pop(idx)
+                    await update.message.reply_text(f"Removed: {removed[:50]}")
+                else:
+                    await update.message.reply_text("Invalid index.")
+            except ValueError:
+                await update.message.reply_text("Usage: /context del <number>")
+
+        else:
+            # Shortcut: /context <text> = add
+            instructions.append(text.strip())
+            await update.message.reply_text(
+                f"Instruction added ({len(instructions)} total)."
+            )
 
     def _format_verbose_progress(
         self,
@@ -885,7 +1072,7 @@ class MessageOrchestrator:
         await chat.send_action("typing")
 
         verbose_level = self._get_verbose_level(context)
-        progress_msg = await update.message.reply_text("Working...")
+        progress_msg = await update.message.reply_text("⌛", disable_notification=True)
 
         claude_integration = context.bot_data.get("claude_integration")
         if not claude_integration:
@@ -932,10 +1119,21 @@ class MessageOrchestrator:
         # Independent typing heartbeat — stays alive even with no stream events
         heartbeat = self._start_typing_heartbeat(chat)
 
+        # Prepend custom instructions to prompt if set
+        custom_instructions = context.user_data.get("custom_instructions", [])
+        final_prompt = message_text
+        if custom_instructions:
+            instructions_block = "\n".join(
+                f"- {inst}" for inst in custom_instructions
+            )
+            final_prompt = (
+                f"[User instructions: {instructions_block}]\n\n{message_text}"
+            )
+
         success = True
         try:
             claude_response = await claude_integration.run_command(
-                prompt=message_text,
+                prompt=final_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
                 session_id=session_id,
@@ -1111,7 +1309,7 @@ class MessageOrchestrator:
 
         chat = update.message.chat
         await chat.send_action("typing")
-        progress_msg = await update.message.reply_text("Working...")
+        progress_msg = await update.message.reply_text("⌛", disable_notification=True)
 
         # Try enhanced file handler, fall back to basic
         features = context.bot_data.get("features")
@@ -1274,7 +1472,7 @@ class MessageOrchestrator:
 
         chat = update.message.chat
         await chat.send_action("typing")
-        progress_msg = await update.message.reply_text("Working...")
+        progress_msg = await update.message.reply_text("⌛", disable_notification=True)
 
         try:
             photo = update.message.photo[-1]
