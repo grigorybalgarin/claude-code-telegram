@@ -153,6 +153,7 @@ class ClaudeSDKManager:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable[[StreamUpdate], None]] = None,
+        images: Optional[List[dict]] = None,
     ) -> ClaudeResponse:
         """Execute Claude Code command via SDK."""
         start_time = asyncio.get_event_loop().time()
@@ -251,7 +252,26 @@ class ClaudeSDKManager:
                     await client.connect()
                     if self.config.claude_model:
                         await client.set_model(self.config.claude_model)
-                    await client.query(prompt)
+                    # Build multimodal content if images are provided
+                    if images:
+                        content: list = []
+                        for img in images:
+                            content.append(img)
+                        content.append({"type": "text", "text": prompt})
+
+                        async def _multimodal_iter():  # type: ignore[override]
+                            yield {
+                                "type": "user",
+                                "message": {
+                                    "role": "user",
+                                    "content": content,
+                                },
+                                "parent_tool_use_id": None,
+                            }
+
+                        await client.query(_multimodal_iter())
+                    else:
+                        await client.query(prompt)
 
                     # Iterate over raw messages and parse them ourselves
                     # so that MessageParseError (e.g. from rate_limit_event)

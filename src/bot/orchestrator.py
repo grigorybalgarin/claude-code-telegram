@@ -348,6 +348,15 @@ class MessageOrchestrator:
             group=10,
         )
 
+        # Video notes (circles) and videos -> extract frames -> Claude
+        app.add_handler(
+            MessageHandler(
+                filters.VIDEO_NOTE | filters.VIDEO,
+                self._inject_deps(self.agentic_video_note),
+            ),
+            group=10,
+        )
+
         # Only cd: callbacks (for project selection), scoped by pattern
         app.add_handler(
             CallbackQueryHandler(
@@ -1538,6 +1547,68 @@ class MessageOrchestrator:
                 "Claude voice processing failed", error=str(e), user_id=user_id
             )
 
+    async def agentic_video_note(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Process video note (circle) or video -> extract frames -> Claude."""
+        from .features.video_note_handler import extract_frames_from_video
+
+        user_id = update.effective_user.id
+        chat = update.message.chat
+        await chat.send_action("typing")
+        progress_msg = await update.message.reply_text("⌛", disable_notification=True)
+
+        try:
+            video = update.message.video_note or update.message.video
+            if not video:
+                await progress_msg.edit_text("No video found in message.")
+                return
+
+            extracted = await extract_frames_from_video(
+                video, update.message.caption
+            )
+
+            # Build image content blocks for Claude multimodal
+            image_blocks = []
+            for frame_b64 in extracted.frames_base64:
+                image_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": frame_b64,
+                    },
+                })
+
+            prompt = (
+                extracted.prompt
+                + "\n\nДетально проанализируй все кадры из видео. "
+                "Определи и назови точные бренды и модели всей техники "
+                "(ноутбуки, телефоны, наушники, зарядки, павербанки — "
+                "по форме корпуса, портам, логотипам, цвету, размеру). "
+                "Определи названия книг, приложений на экранах, надписи на предметах. "
+                "Опиши людей, обстановку, действия. "
+                "Объедини наблюдения в единое связное описание."
+            )
+
+            await self._handle_agentic_media_message(
+                update=update,
+                context=context,
+                prompt=prompt,
+                progress_msg=progress_msg,
+                user_id=user_id,
+                chat=chat,
+                images=image_blocks,
+            )
+
+        except Exception as e:
+            from .handlers.message import _format_error_message
+
+            await progress_msg.edit_text(_format_error_message(e), parse_mode="HTML")
+            logger.error(
+                "Video note processing failed", error=str(e), user_id=user_id
+            )
+
     async def _handle_agentic_media_message(
         self,
         *,
@@ -1547,6 +1618,7 @@ class MessageOrchestrator:
         progress_msg: Any,
         user_id: int,
         chat: Any,
+        images: Optional[List[dict]] = None,
     ) -> None:
         """Run a media-derived prompt through Claude and send responses."""
         claude_integration = context.bot_data.get("claude_integration")
@@ -1583,6 +1655,7 @@ class MessageOrchestrator:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
+                images=images,
             )
         finally:
             heartbeat.cancel()
