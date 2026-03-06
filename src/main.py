@@ -220,6 +220,35 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     }
 
 
+def _kill_orphaned_claude_processes() -> None:
+    """Kill any orphaned claude CLI processes from previous bot runs."""
+    import os
+    import signal as sig
+
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["pgrep", "-f", "^claude"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            my_pid = os.getpid()
+            for line in result.stdout.strip().split("\n"):
+                pid = int(line.strip())
+                if pid != my_pid:
+                    try:
+                        os.kill(pid, sig.SIGTERM)
+                        structlog.get_logger().info(
+                            "Killed orphaned claude process", pid=pid
+                        )
+                    except ProcessLookupError:
+                        pass
+    except Exception:
+        pass  # Best-effort cleanup
+
+
 async def run_application(app: Dict[str, Any]) -> None:
     """Run the application with graceful shutdown handling."""
     logger = structlog.get_logger()
@@ -247,6 +276,9 @@ async def run_application(app: Dict[str, Any]) -> None:
 
     try:
         logger.info("Starting Claude Code Telegram Bot")
+
+        # Kill any orphaned claude CLI processes from previous runs
+        _kill_orphaned_claude_processes()
 
         # Initialize the bot first (creates the Telegram Application)
         await bot.initialize()
