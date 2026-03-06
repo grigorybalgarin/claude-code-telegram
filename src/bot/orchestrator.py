@@ -1511,6 +1511,26 @@ class MessageOrchestrator:
             processed_image = await image_handler.process_image(
                 photo, update.message.caption
             )
+
+            # Build image content block for Claude multimodal
+            media_type = {
+                "png": "image/png",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "webp": "image/webp",
+            }.get(processed_image.metadata.get("format", ""), "image/jpeg")
+
+            image_blocks = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": processed_image.base64_data,
+                    },
+                }
+            ]
+
             await self._handle_agentic_media_message(
                 update=update,
                 context=context,
@@ -1518,6 +1538,7 @@ class MessageOrchestrator:
                 progress_msg=progress_msg,
                 user_id=user_id,
                 chat=chat,
+                images=image_blocks,
             )
 
         except Exception as e:
