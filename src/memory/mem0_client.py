@@ -101,7 +101,7 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]], min_score: float 
     if not relevant:
         return ""
 
-    lines = ["[Relevant context from memory]:"]
+    lines = ["[Relevant context from your persistent memory (Mem0 + Qdrant, already integrated and active)]:"]
     for m in relevant:
         text = m.get("text", "")
         if text:
