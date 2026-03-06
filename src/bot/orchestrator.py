@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -110,12 +111,32 @@ def _tool_icon(name: str) -> str:
     return _TOOL_ICONS.get(name, "\U0001f527")
 
 
+@dataclass
+class _ActiveTask:
+    """Tracks a running Claude task for a user."""
+
+    task: asyncio.Task  # type: ignore[type-arg]
+    original_prompt: str
+    started_at: float
+    cancel_requested: bool = False
+    redirect_prompt: Optional[str] = None
+
+
+# Patterns that indicate user wants to stop/cancel
+_STOP_PATTERNS = re.compile(
+    r"^(стоп|stop|cancel|отмена|хватит|стой|enough)$",
+    re.IGNORECASE,
+)
+
+
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
+        # Track active Claude tasks per user for interrupt/redirect
+        self._active_tasks: Dict[int, _ActiveTask] = {}
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -1089,6 +1110,42 @@ class MessageOrchestrator:
             message_length=len(message_text),
         )
 
+        # --- Interrupt/redirect handling ---
+        active = self._active_tasks.get(user_id)
+        if active and not active.task.done():
+            if _STOP_PATTERNS.match(message_text.strip()):
+                # User wants to cancel
+                active.cancel_requested = True
+                active.task.cancel()
+                self._active_tasks.pop(user_id, None)
+                await update.message.reply_text(
+                    "Остановлено. Можешь дать новое задание."
+                )
+                logger.info("User cancelled active task", user_id=user_id)
+                return
+            else:
+                # User sent a correction/redirect while Claude is working
+                active.cancel_requested = True
+                active.redirect_prompt = message_text
+                active.task.cancel()
+                # Wait for the old task to finish cancellation
+                try:
+                    await active.task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._active_tasks.pop(user_id, None)
+
+                elapsed = int(time.time() - active.started_at)
+                await update.message.reply_text(
+                    f"Переключаюсь на новое задание (предыдущее работало {elapsed}с)..."
+                )
+                logger.info(
+                    "User redirected active task",
+                    user_id=user_id,
+                    elapsed_seconds=elapsed,
+                )
+                # Fall through to execute the new message as a fresh task
+
         # Rate limit check
         rate_limiter = context.bot_data.get("rate_limiter")
         if rate_limiter:
@@ -1165,6 +1222,15 @@ class MessageOrchestrator:
         # Enrich prompt with mem0 semantic memory
         final_prompt = await self._enrich_with_memory(final_prompt, context)
 
+        # Register this task for interrupt/redirect support
+        current_task = asyncio.current_task()
+        if current_task:
+            self._active_tasks[user_id] = _ActiveTask(
+                task=current_task,
+                original_prompt=message_text,
+                started_at=start_time,
+            )
+
         success = True
         try:
             claude_response = await claude_integration.run_command(
@@ -1211,6 +1277,18 @@ class MessageOrchestrator:
                 claude_response.content
             )
 
+        except asyncio.CancelledError:
+            # Task was cancelled by user interrupt/redirect
+            success = False
+            logger.info("Claude task cancelled by user", user_id=user_id)
+            heartbeat.cancel()
+            self._active_tasks.pop(user_id, None)
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+            return  # Don't send any response — user already got feedback
+
         except Exception as e:
             success = False
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
@@ -1221,6 +1299,7 @@ class MessageOrchestrator:
                 FormattedMessage(_format_error_message(e), parse_mode="HTML")
             ]
         finally:
+            self._active_tasks.pop(user_id, None)
             heartbeat.cancel()
             if draft_streamer:
                 try:
