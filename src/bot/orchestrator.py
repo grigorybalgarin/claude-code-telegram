@@ -1162,6 +1162,9 @@ class MessageOrchestrator:
                 f"[User instructions: {instructions_block}]\n\n{message_text}"
             )
 
+        # Enrich prompt with mem0 semantic memory
+        final_prompt = await self._enrich_with_memory(final_prompt, context)
+
         success = True
         try:
             claude_response = await claude_integration.run_command(
@@ -1985,6 +1988,28 @@ class MessageOrchestrator:
                 args=[project_name],
                 success=True,
             )
+
+    async def _enrich_with_memory(
+        self,
+        prompt: str,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> str:
+        """Search mem0 for relevant memories and prepend them to prompt."""
+        mem0_client = context.bot_data.get("mem0_client")
+        if not mem0_client:
+            return prompt
+
+        try:
+            from ..memory.mem0_client import format_memories_for_prompt
+
+            results = await mem0_client.search(prompt, limit=5)
+            memory_block = format_memories_for_prompt(results, min_score=0.3)
+            if memory_block:
+                return f"{memory_block}\n\n{prompt}"
+        except Exception as e:
+            logger.warning("mem0 enrichment failed", error=str(e))
+
+        return prompt
 
     async def _enrich_with_video_transcript(self, message_text: str) -> str:
         """If message contains a YouTube URL, extract transcript and append it."""

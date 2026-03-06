@@ -170,6 +170,21 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     )
     agent_handler.register()
 
+    # Create mem0 client if enabled
+    mem0_client = None
+    if config.enable_mem0:
+        from .memory.mem0_client import Mem0Client
+
+        mem0_client = Mem0Client(
+            base_url=config.mem0_api_url,
+            default_user_id=config.mem0_user_id,
+        )
+        healthy = await mem0_client.health()
+        if healthy:
+            logger.info("mem0 connected", url=config.mem0_api_url)
+        else:
+            logger.warning("mem0 not reachable", url=config.mem0_api_url)
+
     # Create bot with all dependencies
     dependencies = {
         "auth_manager": auth_manager,
@@ -179,6 +194,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         "claude_integration": claude_integration,
         "storage": storage,
         "event_bus": event_bus,
+        "mem0_client": mem0_client,
         "project_registry": None,
         "project_threads_manager": None,
     }
@@ -214,6 +230,7 @@ async def run_application(app: Dict[str, Any]) -> None:
     features: FeatureFlags = app["features"]
     event_bus: EventBus = app["event_bus"]
 
+    mem0_client = bot.deps.get("mem0_client")
     notification_service: Optional[NotificationService] = None
     scheduler: Optional[JobScheduler] = None
     project_threads_manager: Optional[ProjectThreadManager] = None
@@ -359,6 +376,8 @@ async def run_application(app: Dict[str, Any]) -> None:
             await event_bus.stop()
             await bot.stop()
             await claude_integration.shutdown()
+            if mem0_client:
+                await mem0_client.close()
             await storage.close()
         except Exception as e:
             logger.error("Error during shutdown", error=str(e))

@@ -243,6 +243,17 @@ class Settings(BaseSettings):
         le=5.0,
     )
 
+    # Memory (mem0)
+    enable_mem0: bool = Field(False, description="Enable mem0 semantic memory")
+    mem0_api_url: str = Field(
+        "http://127.0.0.1:8081",
+        description="mem0 API base URL",
+    )
+    mem0_user_id: str = Field(
+        "grigorybalgarin",
+        description="Default mem0 user ID",
+    )
+
     # Monitoring
     log_level: str = Field("INFO", description="Logging level")
     enable_telemetry: bool = Field(False, description="Enable anonymous telemetry")
