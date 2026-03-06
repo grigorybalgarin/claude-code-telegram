@@ -94,14 +94,14 @@ class Settings(BaseSettings):
         True, description="Enable extended thinking for better reasoning"
     )
     claude_max_thinking_tokens: int = Field(
-        16000, description="Max tokens for extended thinking (0 = SDK default)"
+        0, description="Max tokens for extended thinking (0 = unlimited)"
     )
     claude_auto_continue: bool = Field(
         True,
         description="Auto-continue when Claude hits max_turns limit",
     )
     claude_auto_continue_max: int = Field(
-        3, description="Max auto-continue attempts"
+        5, description="Max auto-continue attempts"
     )
     # NOTE: When changing this list, also update docs/tools.md,
     # docs/configuration.md, .env.example,
