@@ -181,8 +181,16 @@ class ClaudeSDKManager:
 
             # Build system prompt, loading CLAUDE.md from working directory if present
             base_prompt = (
-                f"All file operations must stay within {working_directory}. "
-                "Use relative paths."
+                f"Primary working directory: {working_directory}\n"
+                "You are an expert software engineer. Follow these principles:\n"
+                "- Read files before editing. Understand existing code first.\n"
+                "- Use the right tool: Read for files, Grep for search, "
+                "Bash for commands.\n"
+                "- Make minimal, focused changes. Don't over-engineer.\n"
+                "- If a task is complex, break it into steps and execute them.\n"
+                "- If something fails, diagnose the root cause instead of retrying.\n"
+                "- Write safe, secure code. No command injection or XSS.\n"
+                "- Keep responses concise and actionable.\n"
             )
             claude_md_path = Path(working_directory) / "CLAUDE.md"
             if claude_md_path.exists():
@@ -234,6 +242,12 @@ class ClaudeSDKManager:
                 system_prompt=base_prompt,
                 setting_sources=["project"],
                 stderr=_stderr_callback,
+                thinking=self.config.claude_thinking,
+                max_thinking_tokens=(
+                    self.config.claude_max_thinking_tokens
+                    if self.config.claude_max_thinking_tokens > 0
+                    else None
+                ),
             )
 
             # Pass MCP server configuration if enabled

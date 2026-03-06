@@ -90,6 +90,19 @@ class Settings(BaseSettings):
         DEFAULT_CLAUDE_MAX_COST_PER_REQUEST,
         description="Max cost per individual request (SDK budget cap)",
     )
+    claude_thinking: bool = Field(
+        True, description="Enable extended thinking for better reasoning"
+    )
+    claude_max_thinking_tokens: int = Field(
+        16000, description="Max tokens for extended thinking (0 = SDK default)"
+    )
+    claude_auto_continue: bool = Field(
+        True,
+        description="Auto-continue when Claude hits max_turns limit",
+    )
+    claude_auto_continue_max: int = Field(
+        3, description="Max auto-continue attempts"
+    )
     # NOTE: When changing this list, also update docs/tools.md,
     # docs/configuration.md, .env.example,
     # src/claude/facade.py (_get_admin_instructions),

@@ -122,6 +122,16 @@ class ClaudeIntegration:
             # Ensure response has the session's final ID
             response.session_id = session.session_id
 
+            # Auto-continue: if Claude hit the turn limit, keep going
+            if self.config.claude_auto_continue:
+                response = await self._auto_continue_if_needed(
+                    response=response,
+                    session=session,
+                    working_directory=working_directory,
+                    user_id=user_id,
+                    on_stream=on_stream,
+                )
+
             if not response.session_id:
                 logger.warning(
                     "No session_id after execution; session cannot be resumed",
@@ -147,6 +157,74 @@ class ClaudeIntegration:
                 session_id=session.session_id,
             )
             raise
+
+    async def _auto_continue_if_needed(
+        self,
+        response: ClaudeResponse,
+        session: Any,
+        working_directory: Path,
+        user_id: int,
+        on_stream: Optional[Callable] = None,
+    ) -> ClaudeResponse:
+        """Auto-continue if Claude hit the max_turns limit.
+
+        Detects truncation by checking if num_turns reached the max_turns
+        limit, then sends a "continue" prompt to resume work.
+        """
+        max_attempts = self.config.claude_auto_continue_max
+        total_cost = response.cost
+        total_duration = response.duration_ms
+        combined_content_parts = [response.content]
+
+        for attempt in range(max_attempts):
+            # Check if Claude used all available turns (hit the limit)
+            if response.num_turns < self.config.claude_max_turns:
+                break
+
+            logger.info(
+                "Auto-continuing: Claude hit turn limit",
+                attempt=attempt + 1,
+                max_attempts=max_attempts,
+                num_turns=response.num_turns,
+                max_turns=self.config.claude_max_turns,
+                session_id=session.session_id,
+            )
+
+            try:
+                response = await self._execute(
+                    prompt="Continue where you left off. "
+                    "If you were in the middle of a task, keep going.",
+                    working_directory=working_directory,
+                    session_id=session.session_id,
+                    continue_session=True,
+                    stream_callback=on_stream,
+                )
+
+                await self.session_manager.update_session(session, response)
+                response.session_id = session.session_id
+
+                total_cost += response.cost
+                total_duration += response.duration_ms
+                if response.content:
+                    combined_content_parts.append(response.content)
+
+            except Exception as e:
+                logger.warning(
+                    "Auto-continue failed",
+                    attempt=attempt + 1,
+                    error=str(e),
+                )
+                break
+
+        # Merge all parts into the final response
+        if len(combined_content_parts) > 1:
+            response.content = "\n\n".join(
+                part for part in combined_content_parts if part
+            )
+        response.cost = total_cost
+        response.duration_ms = total_duration
+
+        return response
 
     async def _execute(
         self,
