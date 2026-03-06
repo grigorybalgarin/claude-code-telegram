@@ -77,8 +77,8 @@ class Settings(BaseSettings):
     claude_model: Optional[str] = Field(
         None, description="Claude model to use (defaults to CLI default if unset)"
     )
-    claude_max_turns: int = Field(
-        DEFAULT_CLAUDE_MAX_TURNS, description="Max conversation turns"
+    claude_max_turns: Optional[int] = Field(
+        None, description="Max conversation turns (None = unlimited)"
     )
     claude_timeout_seconds: int = Field(
         DEFAULT_CLAUDE_TIMEOUT_SECONDS, description="Claude timeout"

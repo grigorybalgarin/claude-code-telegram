@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk.types import ThinkingConfigAdaptive, ThinkingConfigEnabled
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import StreamEvent
@@ -215,7 +216,7 @@ class ClaudeSDKManager:
 
             # Build Claude Agent options
             options = ClaudeAgentOptions(
-                max_turns=self.config.claude_max_turns,
+                max_turns=self.config.claude_max_turns or None,
                 model=self.config.claude_model or None,
                 max_budget_usd=self.config.claude_max_cost_per_request or None,
                 cwd=str(working_directory),
@@ -231,10 +232,15 @@ class ClaudeSDKManager:
                 system_prompt=base_prompt,
                 setting_sources=["project"],
                 stderr=_stderr_callback,
-                thinking=self.config.claude_thinking,
-                max_thinking_tokens=(
-                    self.config.claude_max_thinking_tokens
-                    if self.config.claude_max_thinking_tokens > 0
+                thinking=(
+                    ThinkingConfigEnabled(
+                        type="enabled",
+                        budget_tokens=self.config.claude_max_thinking_tokens,
+                    )
+                    if self.config.claude_thinking
+                    and self.config.claude_max_thinking_tokens > 0
+                    else ThinkingConfigAdaptive(type="adaptive")
+                    if self.config.claude_thinking
                     else None
                 ),
             )

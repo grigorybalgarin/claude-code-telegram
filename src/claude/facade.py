@@ -178,6 +178,9 @@ class ClaudeIntegration:
 
         for attempt in range(max_attempts):
             # Check if Claude used all available turns (hit the limit)
+            # If max_turns is None (unlimited), auto-continue is not needed
+            if not self.config.claude_max_turns:
+                break
             if response.num_turns < self.config.claude_max_turns:
                 break
 
