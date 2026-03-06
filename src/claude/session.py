@@ -117,6 +117,9 @@ class SessionStorage:
 class SessionManager:
     """Manage Claude Code sessions."""
 
+    # Max entries in active_sessions before eviction
+    _MAX_CACHE_SIZE = 500
+
     def __init__(self, config: Settings, storage: SessionStorage):
         """Initialize session manager."""
         self.config = config
@@ -221,6 +224,10 @@ class SessionManager:
             self.active_sessions[session.session_id] = session
             await self.storage.save_session(session)
 
+            # Evict expired/oldest entries if cache is too large
+            if len(self.active_sessions) > self._MAX_CACHE_SIZE:
+                self._evict_cache()
+
         logger.debug(
             "Session updated",
             session_id=session.session_id,
@@ -235,6 +242,32 @@ class SessionManager:
 
         await self.storage.delete_session(session_id)
         logger.info("Session removed", session_id=session_id)
+
+    def _evict_cache(self) -> None:
+        """Remove expired and oldest sessions from in-memory cache."""
+        # First pass: remove expired
+        expired_ids = [
+            sid
+            for sid, s in self.active_sessions.items()
+            if s.is_expired(self.config.session_timeout_hours)
+        ]
+        for sid in expired_ids:
+            del self.active_sessions[sid]
+
+        # Second pass: if still too large, drop oldest
+        if len(self.active_sessions) > self._MAX_CACHE_SIZE:
+            sorted_sessions = sorted(
+                self.active_sessions.items(), key=lambda kv: kv[1].last_used
+            )
+            to_remove = len(self.active_sessions) - self._MAX_CACHE_SIZE
+            for sid, _ in sorted_sessions[:to_remove]:
+                del self.active_sessions[sid]
+
+        logger.debug(
+            "Session cache eviction complete",
+            remaining=len(self.active_sessions),
+            evicted_expired=len(expired_ids),
+        )
 
     async def cleanup_expired_sessions(self) -> int:
         """Remove expired sessions."""

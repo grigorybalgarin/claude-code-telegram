@@ -47,11 +47,16 @@ class CodebaseAnalysis:
 class FileHandler:
     """Handle various file operations"""
 
+    # Max age for temp files before cleanup (seconds)
+    _TEMP_MAX_AGE = 3600  # 1 hour
+
     def __init__(self, config: Settings, security: SecurityValidator):
         self.config = config
         self.security = security
         self.temp_dir = Path("/tmp/claude_bot_files")
         self.temp_dir.mkdir(exist_ok=True)
+        # Clean up old temp files on init
+        self._cleanup_old_temp_files()
 
         # Supported code extensions
         self.code_extensions = {
@@ -129,6 +134,25 @@ class FileHandler:
             ".json": "JSON",
             ".xml": "XML",
         }
+
+    def _cleanup_old_temp_files(self) -> None:
+        """Remove temp files older than _TEMP_MAX_AGE."""
+        import time
+
+        now = time.time()
+        try:
+            for item in self.temp_dir.iterdir():
+                try:
+                    age = now - item.stat().st_mtime
+                    if age > self._TEMP_MAX_AGE:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        else:
+                            item.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     async def handle_document_upload(
         self, document: Document, user_id: int, context: str = ""

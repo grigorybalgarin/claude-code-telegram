@@ -146,6 +146,8 @@ class MessageOrchestrator:
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
         self._pending_messages: Dict[int, List[_PendingMessage]] = {}
+        # Per-user lock to protect _active_tasks and _pending_messages
+        self._user_locks: Dict[int, asyncio.Lock] = {}
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -577,7 +579,8 @@ class MessageOrchestrator:
     async def agentic_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Compact one-line status, no buttons."""
+        """Compact status with task/queue info."""
+        user_id = update.effective_user.id
         current_dir = context.user_data.get(
             "current_directory", self.settings.approved_directory
         )
@@ -591,15 +594,25 @@ class MessageOrchestrator:
         rate_limiter = context.bot_data.get("rate_limiter")
         if rate_limiter:
             try:
-                user_status = rate_limiter.get_user_status(update.effective_user.id)
+                user_status = rate_limiter.get_user_status(user_id)
                 cost_usage = user_status.get("cost_usage", {})
                 current_cost = cost_usage.get("current", 0.0)
                 cost_str = f" · Cost: ${current_cost:.2f}"
             except Exception:
                 pass
 
+        # Active task info
+        task_str = ""
+        active = self._active_tasks.get(user_id)
+        if active and not active.task.done():
+            elapsed = int(time.time() - active.started_at)
+            task_str = f"\n⚙️ Task running ({elapsed}s)"
+            queue_size = len(self._pending_messages.get(user_id, []))
+            if queue_size:
+                task_str += f" · Queued: {queue_size}"
+
         await update.message.reply_text(
-            f"📂 {dir_display} · Session: {session_status}{cost_str}"
+            f"📂 {dir_display} · Session: {session_status}{cost_str}{task_str}"
         )
 
     def _get_verbose_level(self, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1119,35 +1132,37 @@ class MessageOrchestrator:
             message_length=len(message_text),
         )
 
-        # --- Interrupt / queue handling ---
-        active = self._active_tasks.get(user_id)
-        if active and not active.task.done():
-            if _STOP_PATTERNS.match(message_text.strip()):
-                # User wants to cancel the running task
-                active.cancel_requested = True
-                active.task.cancel()
-                self._active_tasks.pop(user_id, None)
-                # Also clear any queued messages
-                self._pending_messages.pop(user_id, None)
-                await update.message.reply_text(
-                    "Остановлено. Можешь дать новое задание."
-                )
-                logger.info("User cancelled active task", user_id=user_id)
-                return
-            else:
-                # Queue this message — it will be processed after current task
-                pending = self._pending_messages.setdefault(user_id, [])
-                pending.append(_PendingMessage(update=update, context=context))
-                await update.message.reply_text(
-                    "Принял, отвечу после текущей задачи.",
-                    disable_notification=True,
-                )
-                logger.info(
-                    "Message queued while task active",
-                    user_id=user_id,
-                    queue_size=len(pending),
-                )
-                return
+        # --- Interrupt / queue handling (lock-protected) ---
+        lock = self._user_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            active = self._active_tasks.get(user_id)
+            if active and not active.task.done():
+                if _STOP_PATTERNS.match(message_text.strip()):
+                    # User wants to cancel the running task
+                    active.cancel_requested = True
+                    active.task.cancel()
+                    self._active_tasks.pop(user_id, None)
+                    self._pending_messages.pop(user_id, None)
+                    await update.message.reply_text(
+                        "Остановлено. Можешь дать новое задание."
+                    )
+                    logger.info("User cancelled active task", user_id=user_id)
+                    return
+                else:
+                    # Queue this message — processed after current task
+                    pending = self._pending_messages.setdefault(user_id, [])
+                    pending.append(_PendingMessage(update=update, context=context))
+                    queue_pos = len(pending)
+                    await update.message.reply_text(
+                        f"Принял (в очереди: {queue_pos}). Отвечу после текущей задачи.",
+                        disable_notification=True,
+                    )
+                    logger.info(
+                        "Message queued while task active",
+                        user_id=user_id,
+                        queue_size=queue_pos,
+                    )
+                    return
 
         # Rate limit check
         rate_limiter = context.bot_data.get("rate_limiter")
@@ -1298,8 +1313,18 @@ class MessageOrchestrator:
             from .handlers.message import _format_error_message
             from .utils.formatting import FormattedMessage
 
+            # Enrich timeout errors with tool context
+            error_msg = _format_error_message(e)
+            if tool_log and "timeout" in type(e).__name__.lower():
+                tool_names = [t.get("name", "?") for t in tool_log[-5:]]
+                elapsed = int(time.time() - start_time)
+                error_msg += (
+                    f"\n\n<b>Context:</b> {elapsed}s elapsed, "
+                    f"last tools: {', '.join(tool_names)}"
+                )
+
             formatted_messages = [
-                FormattedMessage(_format_error_message(e), parse_mode="HTML")
+                FormattedMessage(error_msg, parse_mode="HTML")
             ]
         finally:
             self._active_tasks.pop(user_id, None)
@@ -1339,40 +1364,21 @@ class MessageOrchestrator:
             for i, message in enumerate(formatted_messages):
                 if not message.text or not message.text.strip():
                     continue
-                try:
-                    await update.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                        reply_markup=None,  # No keyboards in agentic mode
-                        reply_to_message_id=(
-                            update.message.message_id if i == 0 else None
-                        ),
-                    )
-                    if i < len(formatted_messages) - 1:
-                        await asyncio.sleep(0.5)
-                except Exception as send_err:
-                    logger.warning(
-                        "Failed to send HTML response, retrying as plain text",
-                        error=str(send_err),
-                        message_index=i,
-                    )
+                reply_id = update.message.message_id if i == 0 else None
+                sent = await self._send_with_retry(
+                    update, message.text, message.parse_mode, reply_id
+                )
+                if not sent:
+                    # Last resort: send truncated plain text
                     try:
                         await update.message.reply_text(
-                            message.text,
-                            reply_markup=None,
-                            reply_to_message_id=(
-                                update.message.message_id if i == 0 else None
-                            ),
+                            message.text[:4000],
+                            reply_to_message_id=reply_id,
                         )
-                    except Exception as plain_err:
-                        await update.message.reply_text(
-                            f"Failed to deliver response "
-                            f"(Telegram error: {str(plain_err)[:150]}). "
-                            f"Please try again.",
-                            reply_to_message_id=(
-                                update.message.message_id if i == 0 else None
-                            ),
-                        )
+                    except Exception:
+                        pass
+                if i < len(formatted_messages) - 1:
+                    await asyncio.sleep(0.5)
 
             # Send images separately if caption wasn't used
             if images:
@@ -1397,6 +1403,46 @@ class MessageOrchestrator:
 
         # Process queued messages (received while this task was running)
         await self._process_pending_messages(user_id)
+
+    @staticmethod
+    async def _send_with_retry(
+        update: Update,
+        text: str,
+        parse_mode: Optional[str],
+        reply_to_message_id: Optional[int],
+        max_retries: int = 3,
+    ) -> bool:
+        """Send a message with exponential backoff retry.
+
+        Tries HTML first, then plain text on parse error. Returns True on success.
+        """
+        for attempt in range(max_retries):
+            try:
+                pm = parse_mode if attempt == 0 else None
+                await update.message.reply_text(
+                    text,
+                    parse_mode=pm,
+                    reply_markup=None,
+                    reply_to_message_id=reply_to_message_id,
+                )
+                return True
+            except Exception as e:
+                err_str = str(e).lower()
+                # Parse errors won't be fixed by retrying with same parse_mode
+                if "parse" in err_str or "can't" in err_str:
+                    if parse_mode:
+                        parse_mode = None
+                        continue
+                # Transient errors — backoff and retry
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                else:
+                    logger.warning(
+                        "Failed to send after retries",
+                        error=str(e),
+                        attempts=max_retries,
+                    )
+        return False
 
     async def _process_pending_messages(self, user_id: int) -> None:
         """Process messages that were queued while a task was running."""
