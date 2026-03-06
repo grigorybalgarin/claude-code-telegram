@@ -119,7 +119,6 @@ class _ActiveTask:
     original_prompt: str
     started_at: float
     cancel_requested: bool = False
-    redirect_prompt: Optional[str] = None
 
 
 # Patterns that indicate user wants to stop/cancel
@@ -129,14 +128,24 @@ _STOP_PATTERNS = re.compile(
 )
 
 
+@dataclass
+class _PendingMessage:
+    """A queued message waiting for the active task to finish."""
+
+    update: Update
+    context: Any
+
+
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
-        # Track active Claude tasks per user for interrupt/redirect
+        # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
+        # Queue of messages received while a task is running
+        self._pending_messages: Dict[int, List[_PendingMessage]] = {}
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -1110,41 +1119,35 @@ class MessageOrchestrator:
             message_length=len(message_text),
         )
 
-        # --- Interrupt/redirect handling ---
+        # --- Interrupt / queue handling ---
         active = self._active_tasks.get(user_id)
         if active and not active.task.done():
             if _STOP_PATTERNS.match(message_text.strip()):
-                # User wants to cancel
+                # User wants to cancel the running task
                 active.cancel_requested = True
                 active.task.cancel()
                 self._active_tasks.pop(user_id, None)
+                # Also clear any queued messages
+                self._pending_messages.pop(user_id, None)
                 await update.message.reply_text(
                     "Остановлено. Можешь дать новое задание."
                 )
                 logger.info("User cancelled active task", user_id=user_id)
                 return
             else:
-                # User sent a correction/redirect while Claude is working
-                active.cancel_requested = True
-                active.redirect_prompt = message_text
-                active.task.cancel()
-                # Wait for the old task to finish cancellation
-                try:
-                    await active.task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                self._active_tasks.pop(user_id, None)
-
-                elapsed = int(time.time() - active.started_at)
+                # Queue this message — it will be processed after current task
+                pending = self._pending_messages.setdefault(user_id, [])
+                pending.append(_PendingMessage(update=update, context=context))
                 await update.message.reply_text(
-                    f"Переключаюсь на новое задание (предыдущее работало {elapsed}с)..."
+                    "Принял, отвечу после текущей задачи.",
+                    disable_notification=True,
                 )
                 logger.info(
-                    "User redirected active task",
+                    "Message queued while task active",
                     user_id=user_id,
-                    elapsed_seconds=elapsed,
+                    queue_size=len(pending),
                 )
-                # Fall through to execute the new message as a fresh task
+                return
 
         # Rate limit check
         rate_limiter = context.bot_data.get("rate_limiter")
@@ -1391,6 +1394,31 @@ class MessageOrchestrator:
                 args=[message_text[:100]],
                 success=success,
             )
+
+        # Process queued messages (received while this task was running)
+        await self._process_pending_messages(user_id)
+
+    async def _process_pending_messages(self, user_id: int) -> None:
+        """Process messages that were queued while a task was running."""
+        pending = self._pending_messages.pop(user_id, [])
+        if not pending:
+            return
+
+        logger.info(
+            "Processing queued messages",
+            user_id=user_id,
+            count=len(pending),
+        )
+
+        for msg in pending:
+            try:
+                await self.agentic_text(msg.update, msg.context)
+            except Exception as e:
+                logger.error(
+                    "Failed to process queued message",
+                    user_id=user_id,
+                    error=str(e),
+                )
 
     async def agentic_document(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
