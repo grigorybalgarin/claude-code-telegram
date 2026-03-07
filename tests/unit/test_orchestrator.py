@@ -249,12 +249,12 @@ async def test_agentic_start_shows_persistent_reply_keyboard(agentic_settings, d
         for row in markup.keyboard
         for button in row
     ]
-    assert "🎛️ Panel" in labels
-    assert "📁 Projects" in labels
-    assert "🧵 Jobs" in labels
-    assert "📡 Running" in labels
-    assert "🩺 Doctor" in labels
-    assert "✅ Verify" in labels
+    assert "🎛️ Панель" in labels
+    assert "📁 Проекты" in labels
+    assert "🧵 Задачи" in labels
+    assert "📡 Запущено" in labels
+    assert "🩺 Диагностика" in labels
+    assert "✅ Проверить" in labels
     assert "Alice" in call_kwargs.args[0]
     assert context.user_data["agentic_reply_keyboard_ready"] is True
 
@@ -273,7 +273,7 @@ async def test_agentic_new_resets_session(agentic_settings, deps):
 
     assert context.user_data["claude_session_id"] is None
     update.message.reply_text.assert_called_once()
-    assert update.message.reply_text.call_args.args[0] == "Session reset. What's next?"
+    assert update.message.reply_text.call_args.args[0] == "Сессия сброшена. Что делаем дальше?"
     assert update.message.reply_text.call_args.kwargs["reply_markup"] is not None
 
 
@@ -293,8 +293,8 @@ async def test_agentic_status_compact(agentic_settings, deps):
 
     call_args = update.message.reply_text.call_args
     text = call_args.args[0]
-    assert "Agentic Status" in text
-    assert "Session" in text
+    assert "Статус" in text
+    assert "Сессия" in text
     assert call_args.kwargs["reply_markup"] is not None
 
 
@@ -383,7 +383,7 @@ async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps)
 
     update = MagicMock()
     update.effective_user.id = 123
-    update.message.text = "📡 Running"
+    update.message.text = "📡 Запущено"
     update.message.reply_text = AsyncMock()
 
     context = MagicMock()
@@ -400,7 +400,7 @@ async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps)
 
     claude_integration.run_command.assert_not_called()
     update.message.reply_text.assert_called_once()
-    assert "Running Services" in update.message.reply_text.call_args.args[0]
+    assert "Запущенные сервисы" in update.message.reply_text.call_args.args[0]
 
 
 async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):
@@ -673,7 +673,7 @@ async def test_agentic_repo_lists_workspace_catalog(agentic_settings, tmp_dir):
     await orchestrator.agentic_repo(update, context)
 
     message = update.message.reply_text.call_args[0][0]
-    assert "Workspaces" in message
+    assert "Проекты" in message
     assert "ClaudeBot" in message
     assert "MacProjects/Poolych" in message
 
@@ -754,7 +754,7 @@ async def test_agentic_quick_action_panel_renders_control_panel(
 
     query.edit_message_text.assert_awaited_once()
     text = query.edit_message_text.call_args.args[0]
-    assert "Control Panel" in text
+    assert "Панель управления" in text
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
 
 
@@ -811,8 +811,8 @@ workspaces:
     query.message.reply_text.assert_awaited_once()
     status_msg.edit_text.assert_awaited_once()
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Health Check" in result_text
-    assert "Exit code: <code>0</code>" in result_text
+    assert "Проверка" in result_text
+    assert "Код выхода: <code>0</code>" in result_text
 
 
 async def test_agentic_quick_action_start_launches_background_job(
@@ -865,8 +865,8 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     text = query.edit_message_text.call_args.args[0]
-    assert "Background Job Started" in text
-    assert "Health verify" in text
+    assert "Фоновая задача запущена" in text
+    assert "Проверка после запуска" in text
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
 
     job = operator_runtime.get_latest_job(workspace_root)
@@ -914,11 +914,11 @@ workspaces:
 
     markup = orchestrator._build_agentic_control_panel_markup(profile)
     labels = [button.text for row in markup.inline_keyboard for button in row]
-    assert "✅ Verify" in labels
-    assert "📟 Service" in labels
-    assert "📜 Logs" in labels
-    assert "🔄 Restart" in labels
-    assert "🧩 Services" in labels
+    assert "✅ Проверить" in labels
+    assert "📟 Сервис" in labels
+    assert "📜 Логи" in labels
+    assert "🔄 Рестарт" in labels
+    assert "🧩 Сервисы" in labels
 
     query = MagicMock()
     query.data = "act:services"
@@ -940,7 +940,7 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     services_text = query.edit_message_text.call_args.args[0]
-    assert "Managed Services" in services_text
+    assert "Управляемые сервисы" in services_text
     assert "ClaudeBot Service" in services_text
 
     status_msg = AsyncMock()
@@ -952,9 +952,9 @@ workspaces:
 
     query.message.reply_text.assert_awaited_once()
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Service Action Complete" in result_text
-    assert "Service: <code>ClaudeBot Service</code>" in result_text
-    assert "Action: <code>status</code>" in result_text
+    assert "Действие сервиса выполнено" in result_text
+    assert "Сервис: <code>ClaudeBot Service</code>" in result_text
+    assert "Действие: <code>status</code>" in result_text
     assert "service ok" in result_text
 
 
@@ -1011,11 +1011,11 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Service Action Failed" in result_text
-    assert "Post-checks" in result_text
+    assert "Ошибка действия сервиса" in result_text
+    assert "Дополнительные проверки" in result_text
     assert "health" in result_text
     assert "unhealthy" in result_text
-    assert "Service logs" in result_text
+    assert "Логи сервиса" in result_text
     assert "recent service log" in result_text
 
 
@@ -1139,8 +1139,8 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Verification Complete" in result_text
-    assert "ClaudeBot Service health" in result_text
+    assert "Проверка завершена" in result_text
+    assert "ClaudeBot Service проверка" in result_text
     assert "service healthy" in result_text
     assert "tests passed" in result_text
     assert "build passed" in result_text
@@ -1215,7 +1215,7 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     text = query.edit_message_text.call_args.args[0]
-    assert "Running Services" in text
+    assert "Запущенные сервисы" in text
     assert "ClaudeBot Service" in text
     assert "service healthy" in text
     assert "claude-bot.service" in text
@@ -1240,7 +1240,7 @@ def test_format_agentic_job_status_includes_health_state(agentic_settings, deps,
     text = orchestrator._format_agentic_job_status(job, tmp_dir)
 
     assert "running start" in text
-    assert "health checking" in text
+    assert "идет проверка" in text
     assert "abcdef12" in text
 
 

@@ -509,22 +509,22 @@ class MessageOrchestrator:
         """Return bot commands appropriate for current mode."""
         if self.settings.agentic_mode:
             commands = [
-                BotCommand("start", "Start the bot"),
-                BotCommand("new", "Start a fresh session"),
-                BotCommand("status", "Show session status"),
-                BotCommand("diag", "Show bot and workspace diagnostics"),
-                BotCommand("recent", "Show recent prompts and commands"),
-                BotCommand("playbooks", "List deterministic playbooks"),
-                BotCommand("run", "Run a workspace playbook"),
-                BotCommand("verbose", "Set output verbosity (0/1/2)"),
-                BotCommand("stats", "Usage analytics & costs"),
-                BotCommand("template", "Manage prompt templates"),
-                BotCommand("context", "Persistent session instructions"),
-                BotCommand("repo", "List repos / switch workspace"),
-                BotCommand("restart", "Restart the bot"),
+                BotCommand("start", "Запустить бота"),
+                BotCommand("new", "Начать новую сессию"),
+                BotCommand("status", "Показать статус сессии"),
+                BotCommand("diag", "Диагностика бота и проекта"),
+                BotCommand("recent", "Недавние запросы и команды"),
+                BotCommand("playbooks", "Список сценариев"),
+                BotCommand("run", "Запустить сценарий проекта"),
+                BotCommand("verbose", "Уровень подробности (0/1/2)"),
+                BotCommand("stats", "Статистика и расходы"),
+                BotCommand("template", "Управление шаблонами"),
+                BotCommand("context", "Постоянные инструкции"),
+                BotCommand("repo", "Список проектов / переключение"),
+                BotCommand("restart", "Перезапустить бота"),
             ]
             if self.settings.enable_project_threads:
-                commands.append(BotCommand("sync_threads", "Sync project topics"))
+                commands.append(BotCommand("sync_threads", "Синхронизировать топики"))
             return commands
         else:
             commands = [
@@ -600,13 +600,13 @@ class MessageOrchestrator:
         safe_name = escape_html(user.first_name)
         keyboard = self._build_agentic_reply_keyboard(context)
         await update.message.reply_text(
-            f"Hi {safe_name}! I'm your AI coding assistant.\n"
-            f"Just tell me what you need — commands are optional.\n"
-            "Mention a project name when needed and I will route the request automatically.\n"
-            "Autopilot is on: I will detect the workspace, checkpoint risky edits, "
-            "run final verification, and roll back automatically if verification fails.\n"
-            "The main navigation buttons are pinned below.\n\n"
-            f"Working in: {dir_display}"
+            f"Привет, {safe_name}! Я твой AI-помощник по коду.\n"
+            "Можешь просто написать задачу обычным текстом, команды не обязательны.\n"
+            "Если нужно, упомяни проект по имени, и я сам переключу workspace.\n"
+            "Автопилот включен: я определяю проект, делаю checkpoint для рискованных правок, "
+            "проверяю результат и откатываю изменения, если проверка не прошла.\n"
+            "Основные кнопки управления закреплены внизу.\n\n"
+            f"Текущая папка: {dir_display}"
             f"{sync_line}",
             parse_mode="HTML",
             reply_markup=keyboard,
@@ -622,7 +622,7 @@ class MessageOrchestrator:
         context.user_data["force_new_session"] = True
 
         await update.message.reply_text(
-            "Session reset. What's next?",
+            "Сессия сброшена. Что делаем дальше?",
             reply_markup=self._build_agentic_reply_keyboard(context),
         )
         self._mark_agentic_reply_keyboard_ready(context)
@@ -656,13 +656,13 @@ class MessageOrchestrator:
         args = update.message.text.split()[1:] if update.message.text else []
         if not args:
             current = self._get_verbose_level(context)
-            labels = {0: "quiet", 1: "normal", 2: "detailed"}
+            labels = {0: "коротко", 1: "нормально", 2: "подробно"}
             await update.message.reply_text(
-                f"Verbosity: <b>{current}</b> ({labels.get(current, '?')})\n\n"
-                "Usage: <code>/verbose 0|1|2</code>\n"
-                "  0 = quiet (final response only)\n"
-                "  1 = normal (tools + reasoning)\n"
-                "  2 = detailed (tools with inputs + reasoning)",
+                f"Режим ответа: <b>{current}</b> ({labels.get(current, '?')})\n\n"
+                "Использование: <code>/verbose 0|1|2</code>\n"
+                "  0 = коротко (только финальный ответ)\n"
+                "  1 = нормально (инструменты + ход мысли)\n"
+                "  2 = подробно (инструменты с вводом + ход мысли)",
                 parse_mode="HTML",
             )
             return
@@ -673,14 +673,14 @@ class MessageOrchestrator:
                 raise ValueError
         except ValueError:
             await update.message.reply_text(
-                "Please use: /verbose 0, /verbose 1, or /verbose 2"
+                "Используй: /verbose 0, /verbose 1 или /verbose 2"
             )
             return
 
         context.user_data["verbose_level"] = level
-        labels = {0: "quiet", 1: "normal", 2: "detailed"}
+        labels = {0: "коротко", 1: "нормально", 2: "подробно"}
         await update.message.reply_text(
-            f"Verbosity set to <b>{level}</b> ({labels[level]})",
+            f"Режим ответа: <b>{level}</b> ({labels[level]})",
             parse_mode="HTML",
         )
 
@@ -691,7 +691,7 @@ class MessageOrchestrator:
         user_id = update.effective_user.id
         storage = context.bot_data.get("storage")
         if not storage:
-            await update.message.reply_text("Storage not available.")
+            await update.message.reply_text("Хранилище недоступно.")
             return
 
         try:
@@ -715,22 +715,22 @@ class MessageOrchestrator:
                 bar = "#" * min(int(c * 20), 30) if c else ""
                 cost_lines.append(f"  {d}  ${c:.3f}  ({m} msg) {bar}")
 
-            cost_chart = "\n".join(cost_lines) if cost_lines else "  No data yet"
+            cost_chart = "\n".join(cost_lines) if cost_lines else "  Пока данных нет"
 
             # Top tools
             tool_lines = []
             for t in top_tools[:8]:
                 icon = _tool_icon(t["tool_name"])
                 tool_lines.append(f"  {icon} {t['tool_name']}: {t['usage_count']}x")
-            tools_text = "\n".join(tool_lines) if tool_lines else "  No tools tracked"
+            tools_text = "\n".join(tool_lines) if tool_lines else "  Инструменты пока не отслеживались"
 
             text = (
-                f"<b>Your Stats</b>\n\n"
-                f"<b>Total:</b> ${total_cost:.4f} | "
-                f"{total_msgs} messages | {total_sessions} sessions\n"
-                f"<b>Avg response:</b> {avg_duration_s:.1f}s\n\n"
-                f"<b>Last 7 days:</b>\n<pre>{cost_chart}</pre>\n\n"
-                f"<b>Top tools:</b>\n{tools_text}"
+                f"<b>Твоя статистика</b>\n\n"
+                f"<b>Итого:</b> ${total_cost:.4f} | "
+                f"{total_msgs} сообщений | {total_sessions} сессий\n"
+                f"<b>Средний ответ:</b> {avg_duration_s:.1f}с\n\n"
+                f"<b>Последние 7 дней:</b>\n<pre>{cost_chart}</pre>\n\n"
+                f"<b>Топ инструментов:</b>\n{tools_text}"
             )
             _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
                 self._get_agentic_workspace_profile(context)
@@ -742,7 +742,7 @@ class MessageOrchestrator:
             )
         except Exception as e:
             logger.error("Stats command failed", error=str(e))
-            await update.message.reply_text(f"Error loading stats: {e}")
+            await update.message.reply_text(f"Ошибка загрузки статистики: {e}")
 
     async def agentic_template(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -876,24 +876,24 @@ class MessageOrchestrator:
         return InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                    InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
-                    InlineKeyboardButton("🧵 Jobs", callback_data="act:jobs"),
+                    InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                    InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
+                    InlineKeyboardButton("🧵 Задачи", callback_data="act:jobs"),
                 ],
                 [
-                    InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor"),
-                    InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
-                    InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                    InlineKeyboardButton("🩺 Диагностика", callback_data="act:doctor"),
+                    InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent"),
+                    InlineKeyboardButton("📂 Статус", callback_data="act:status"),
                 ],
                 [
-                    InlineKeyboardButton("📡 Running", callback_data="act:running"),
-                    InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
-                    InlineKeyboardButton("🆕 New Session", callback_data="act:new"),
+                    InlineKeyboardButton("📡 Запущено", callback_data="act:running"),
+                    InlineKeyboardButton("📊 Статистика", callback_data="act:stats"),
+                    InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new"),
                 ],
                 [
-                    InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
-                    InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
-                    InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
+                    InlineKeyboardButton("🔇 Коротко", callback_data="act:v0"),
+                    InlineKeyboardButton("🔉 Нормально", callback_data="act:v1"),
+                    InlineKeyboardButton("🔊 Подробно", callback_data="act:v2"),
                 ],
             ]
         )
@@ -906,31 +906,31 @@ class MessageOrchestrator:
             self._get_agentic_workspace_profile(context)
         )
         rows: List[List[str]] = [
-            ["🎛️ Panel", "📂 Status", "📡 Running"],
-            ["📁 Projects", "🧵 Jobs", "🕘 Recent"],
-            ["✅ Verify", "🩺 Doctor", "🆕 New"],
+            ["🎛️ Панель", "📂 Статус", "📡 Запущено"],
+            ["📁 Проекты", "🧵 Задачи", "🕘 Недавнее"],
+            ["✅ Проверить", "🩺 Диагностика", "🆕 Новая сессия"],
         ]
 
         primary_service = self._select_agentic_primary_service(profile)
         if primary_service:
             service_row: List[str] = []
             if primary_service.command_for("status"):
-                service_row.append("📟 Service")
+                service_row.append("📟 Сервис")
             if primary_service.command_for("logs"):
-                service_row.append("📜 Logs")
+                service_row.append("📜 Логи")
             if primary_service.command_for("restart"):
-                service_row.append("🔄 Restart")
+                service_row.append("🔄 Рестарт")
             if service_row:
                 rows.append(service_row)
 
         if profile:
             operator_row: List[str] = []
             if "start" in profile.commands:
-                operator_row.append("▶️ Start")
+                operator_row.append("▶️ Запуск")
             if "dev" in profile.commands:
-                operator_row.append("🛠️ Dev")
+                operator_row.append("🛠️ Разработка")
             if "deploy" in profile.commands:
-                operator_row.append("🚀 Deploy")
+                operator_row.append("🚀 Деплой")
             if operator_row:
                 rows.append(operator_row)
 
@@ -954,6 +954,18 @@ class MessageOrchestrator:
         """Map reply-keyboard button text to an internal action."""
         normalized = message_text.strip()
         action = {
+            "🎛️ Панель": "panel",
+            "📂 Статус": "status",
+            "📡 Запущено": "running",
+            "📁 Проекты": "projects",
+            "🧵 Задачи": "jobs",
+            "🕘 Недавнее": "recent",
+            "✅ Проверить": "verify",
+            "🩺 Диагностика": "doctor",
+            "🆕 Новая сессия": "new",
+            "▶️ Запуск": "start",
+            "🛠️ Разработка": "dev",
+            "🚀 Деплой": "deploy",
             "🎛️ Panel": "panel",
             "📂 Status": "status",
             "📡 Running": "running",
@@ -978,6 +990,9 @@ class MessageOrchestrator:
             return None
 
         service_actions = {
+            "📟 Сервис": "status",
+            "📜 Логи": "logs",
+            "🔄 Рестарт": "restart",
             "📟 Service": "status",
             "📜 Logs": "logs",
             "🔄 Restart": "restart",
@@ -1041,54 +1056,54 @@ class MessageOrchestrator:
         """Build a persistent control panel for agentic mode."""
         rows = [
             [
-                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
-                InlineKeyboardButton("🧵 Jobs", callback_data="act:jobs"),
+                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
+                InlineKeyboardButton("🧵 Задачи", callback_data="act:jobs"),
             ],
             [
-                InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
-                InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                InlineKeyboardButton("📡 Running", callback_data="act:running"),
+                InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent"),
+                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
+                InlineKeyboardButton("📡 Запущено", callback_data="act:running"),
             ],
             [
-                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
-                InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor"),
+                InlineKeyboardButton("📊 Статистика", callback_data="act:stats"),
+                InlineKeyboardButton("🩺 Диагностика", callback_data="act:doctor"),
             ],
         ]
 
         if profile:
-            action_row = [InlineKeyboardButton("🆕 New", callback_data="act:new")]
+            action_row = [InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new")]
             if profile.has_git_repo:
                 action_row.insert(
-                    0, InlineKeyboardButton("🧾 Review", callback_data="act:review")
+                    0, InlineKeyboardButton("🧾 Ревью", callback_data="act:review")
                 )
             rows.append(action_row)
 
             dynamic_row = []
             if "install" in profile.commands:
                 dynamic_row.append(
-                    InlineKeyboardButton("📦 Setup", callback_data="act:setup")
+                    InlineKeyboardButton("📦 Подготовка", callback_data="act:setup")
                 )
             if "test" in profile.commands:
                 dynamic_row.append(
-                    InlineKeyboardButton("🧪 Test", callback_data="act:test")
+                    InlineKeyboardButton("🧪 Тесты", callback_data="act:test")
                 )
             if "lint" in profile.commands or "format" in profile.commands:
                 dynamic_row.append(
-                    InlineKeyboardButton("🧹 Quality", callback_data="act:quality")
+                    InlineKeyboardButton("🧹 Качество", callback_data="act:quality")
                 )
             if dynamic_row:
                 rows.append(dynamic_row[:3])
             if self._build_agentic_verify_steps(profile):
-                rows.append([InlineKeyboardButton("✅ Verify", callback_data="act:verify")])
+                rows.append([InlineKeyboardButton("✅ Проверить", callback_data="act:verify")])
             operator_row = []
             if "health" in profile.commands:
                 operator_row.append(
-                    InlineKeyboardButton("❤️ Health", callback_data="act:health")
+                    InlineKeyboardButton("❤️ Проверка", callback_data="act:health")
                 )
             if "build" in profile.commands:
                 operator_row.append(
-                    InlineKeyboardButton("🏗️ Build", callback_data="act:build")
+                    InlineKeyboardButton("🏗️ Сборка", callback_data="act:build")
                 )
             if operator_row:
                 rows.append(operator_row[:3])
@@ -1096,9 +1111,9 @@ class MessageOrchestrator:
             if primary_service:
                 service_row = []
                 for action_key, label in (
-                    ("status", "📟 Service"),
-                    ("logs", "📜 Logs"),
-                    ("restart", "🔄 Restart"),
+                    ("status", "📟 Сервис"),
+                    ("logs", "📜 Логи"),
+                    ("restart", "🔄 Рестарт"),
                 ):
                     if primary_service.command_for(action_key):
                         service_row.append(
@@ -1111,31 +1126,31 @@ class MessageOrchestrator:
                     rows.append(service_row[:3])
             if profile.services:
                 rows.append(
-                    [InlineKeyboardButton("🧩 Services", callback_data="act:services")]
+                    [InlineKeyboardButton("🧩 Сервисы", callback_data="act:services")]
                 )
             background_row = []
             if "start" in profile.commands:
                 background_row.append(
-                    InlineKeyboardButton("▶️ Start", callback_data="act:start")
+                    InlineKeyboardButton("▶️ Запуск", callback_data="act:start")
                 )
             if "dev" in profile.commands:
                 background_row.append(
-                    InlineKeyboardButton("🛠️ Dev", callback_data="act:dev")
+                    InlineKeyboardButton("🛠️ Разработка", callback_data="act:dev")
                 )
             if "deploy" in profile.commands:
                 background_row.append(
-                    InlineKeyboardButton("🚀 Deploy", callback_data="act:deploy")
+                    InlineKeyboardButton("🚀 Деплой", callback_data="act:deploy")
                 )
             if background_row:
                 rows.append(background_row[:3])
         else:
-            rows.append([InlineKeyboardButton("🆕 New", callback_data="act:new")])
+            rows.append([InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new")])
 
         rows.append(
             [
-                InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
-                InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
-                InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
+                InlineKeyboardButton("🔇 Коротко", callback_data="act:v0"),
+                InlineKeyboardButton("🔉 Нормально", callback_data="act:v1"),
+                InlineKeyboardButton("🔊 Подробно", callback_data="act:v2"),
             ]
         )
         return InlineKeyboardMarkup(rows)
@@ -1148,7 +1163,7 @@ class MessageOrchestrator:
             self._get_agentic_workspace_profile(context)
         )
         session_id = context.user_data.get("claude_session_id")
-        session_status = "active" if session_id else "none"
+        session_status = "активна" if session_id else "нет"
 
         claude_integration = context.bot_data.get("claude_integration")
         if not session_id and claude_integration:
@@ -1156,7 +1171,7 @@ class MessageOrchestrator:
                 user_id, current_workspace
             )
             if existing:
-                session_status = f"resumable {existing.session_id[:8]}..."
+                session_status = f"можно восстановить {existing.session_id[:8]}..."
 
         cost_str = ""
         rate_limiter = context.bot_data.get("rate_limiter")
@@ -1167,55 +1182,55 @@ class MessageOrchestrator:
                 current_cost = cost_usage.get("current", 0.0)
                 cost_str = f"${current_cost:.2f}"
             except Exception:
-                cost_str = "n/a"
+                cost_str = "н/д"
 
         task_parts = []
         active = self._active_tasks.get(user_id)
         if active and not active.task.done():
             elapsed = int(time.time() - active.started_at)
-            task_parts.append(f"task running {elapsed}s")
+            task_parts.append(f"задача выполняется {elapsed}с")
             queue_size = len(self._pending_messages.get(user_id, []))
             if queue_size:
-                task_parts.append(f"queued {queue_size}")
+                task_parts.append(f"в очереди {queue_size}")
 
         lines = [
-            "<b>Agentic Status</b>",
+            "<b>Статус</b>",
             "",
-            f"📦 Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
-            f"📂 Directory: <code>{escape_html(self._format_agentic_relative_path(current_dir, boundary_root))}</code>",
-            f"🤖 Session: <code>{escape_html(session_status)}</code>",
-            f"🔊 Verbosity: <code>{escape_html({0: 'quiet', 1: 'normal', 2: 'detailed'}[self._get_verbose_level(context)])}</code>",
-            f"💰 Cost: <code>{escape_html(cost_str or 'n/a')}</code>",
+            f"📦 Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+            f"📂 Папка: <code>{escape_html(self._format_agentic_relative_path(current_dir, boundary_root))}</code>",
+            f"🤖 Сессия: <code>{escape_html(session_status)}</code>",
+            f"🔊 Режим ответа: <code>{escape_html({0: 'коротко', 1: 'нормально', 2: 'подробно'}[self._get_verbose_level(context)])}</code>",
+            f"💰 Стоимость: <code>{escape_html(cost_str or 'н/д')}</code>",
         ]
         if task_parts:
-            lines.append(f"⚙️ Runtime: <code>{escape_html(' · '.join(task_parts))}</code>")
+            lines.append(f"⚙️ Выполнение: <code>{escape_html(' · '.join(task_parts))}</code>")
         if profile and project_automation:
             playbooks = ", ".join(
                 playbook.slug for playbook in project_automation.list_playbooks(profile)
             )
             lines.append(
-                f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
+                f"🧭 Сценарии: <code>{escape_html(playbooks or 'нет')}</code>"
             )
             operator_commands = ", ".join(
                 key for key, _command in project_automation.list_operator_commands(profile)
             )
             if operator_commands:
                 lines.append(
-                    f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
+                    f"🧰 Операции: <code>{escape_html(operator_commands)}</code>"
                 )
             if profile.services:
                 service_names = ", ".join(
                     service.display_name for service in profile.services
                 )
                 lines.append(
-                    f"🧩 Services: <code>{escape_html(service_names)}</code>"
+                    f"🧩 Сервисы: <code>{escape_html(service_names)}</code>"
                 )
         operator_runtime = self._get_agentic_operator_runtime(context)
         if operator_runtime:
             latest_job = operator_runtime.get_latest_job(current_workspace)
             if latest_job:
                 lines.append(
-                    f"🧵 Job: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>"
+                    f"🧵 Задача: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>"
                 )
         return "\n".join(lines)
 
@@ -1226,52 +1241,52 @@ class MessageOrchestrator:
         _current_dir, current_workspace, boundary_root, project_automation, profile = (
             self._get_agentic_workspace_profile(context)
         )
-        lines = ["<b>Control Panel</b>", ""]
+        lines = ["<b>Панель управления</b>", ""]
         if profile:
             lines.append(
-                f"📦 Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>"
+                f"📦 Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>"
             )
             lines.append(
-                f"🧱 Stack: <code>{escape_html(', '.join(profile.stacks))}</code>"
+                f"🧱 Стек: <code>{escape_html(', '.join(profile.stacks))}</code>"
             )
-        lines.append(f"🛡️ Autopilot: <code>on</code>")
+        lines.append("🛡️ Автопилот: <code>включен</code>")
         lines.append(
-            f"🔊 Verbosity: <code>{escape_html({0: 'quiet', 1: 'normal', 2: 'detailed'}[self._get_verbose_level(context)])}</code>"
+            f"🔊 Режим ответа: <code>{escape_html({0: 'коротко', 1: 'нормально', 2: 'подробно'}[self._get_verbose_level(context)])}</code>"
         )
 
         claude_integration = context.bot_data.get("claude_integration")
         session_id = context.user_data.get("claude_session_id")
-        session_text = "none"
+        session_text = "нет"
         if session_id:
-            session_text = f"active {session_id[:8]}..."
+            session_text = f"активна {session_id[:8]}..."
         elif claude_integration:
             existing = await claude_integration._find_resumable_session(
                 user_id, current_workspace
             )
             if existing:
-                session_text = f"resumable {existing.session_id[:8]}..."
-        lines.append(f"🤖 Session: <code>{escape_html(session_text)}</code>")
+                session_text = f"можно восстановить {existing.session_id[:8]}..."
+        lines.append(f"🤖 Сессия: <code>{escape_html(session_text)}</code>")
 
         if profile and project_automation:
             playbooks = ", ".join(
                 playbook.slug for playbook in project_automation.list_playbooks(profile)
             )
             lines.append(
-                f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
+                f"🧭 Сценарии: <code>{escape_html(playbooks or 'нет')}</code>"
             )
             operator_commands = ", ".join(
                 key for key, _command in project_automation.list_operator_commands(profile)
             )
             if operator_commands:
                 lines.append(
-                    f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
+                    f"🧰 Операции: <code>{escape_html(operator_commands)}</code>"
                 )
             if profile.services:
                 service_names = ", ".join(
                     service.display_name for service in profile.services
                 )
                 lines.append(
-                    f"🧩 Services: <code>{escape_html(service_names)}</code>"
+                    f"🧩 Сервисы: <code>{escape_html(service_names)}</code>"
                 )
             if profile.operator_notes:
                 note_preview = profile.operator_notes[:160]
@@ -1280,7 +1295,7 @@ class MessageOrchestrator:
                 lines.extend(
                     [
                         "",
-                        f"📝 Notes: {escape_html(note_preview)}",
+                        f"📝 Заметки: {escape_html(note_preview)}",
                     ]
                 )
         operator_runtime = self._get_agentic_operator_runtime(context)
@@ -1290,14 +1305,14 @@ class MessageOrchestrator:
                 lines.extend(
                     [
                         "",
-                        f"🧵 Latest job: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>",
+                        f"🧵 Последняя задача: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>",
                     ]
                 )
 
         lines.extend(
             [
                 "",
-                "Use the buttons below to inspect the project, switch workspace, run a deterministic playbook, or launch a background operator action.",
+                "Используй кнопки ниже, чтобы посмотреть проект, переключить workspace, запустить сценарий или фоновую операцию.",
             ]
         )
         return "\n".join(lines)
@@ -1308,7 +1323,7 @@ class MessageOrchestrator:
         """Build a compact recent activity view for the control panel."""
         storage = context.bot_data.get("storage")
         if not storage:
-            return "Storage not available."
+            return "Хранилище недоступно."
 
         current_dir, _current_workspace, boundary_root, _project_automation, _profile = (
             self._get_agentic_workspace_profile(context)
@@ -1322,9 +1337,9 @@ class MessageOrchestrator:
             entry for entry in audit_entries if entry.event_type == "automation_run"
         ][:4]
 
-        lines = ["<b>Recent Activity</b>"]
+        lines = ["<b>Недавняя активность</b>"]
         if automation_entries:
-            lines.extend(["", "<b>Autopilot</b>"])
+            lines.extend(["", "<b>Автопилот</b>"])
             for entry in automation_entries:
                 details = (entry.event_data or {}).get("details", {})
                 playbook = escape_html(str(details.get("playbook", "general")))
@@ -1340,24 +1355,24 @@ class MessageOrchestrator:
                 )
 
         if command_entries:
-            lines.extend(["", "<b>Commands</b>"])
+            lines.extend(["", "<b>Команды</b>"])
             for entry in command_entries:
                 details = (entry.event_data or {}).get("details", {})
                 command_name = escape_html(str(details.get("command", "command")))
                 lines.append(f"• <code>{command_name}</code>")
 
         if messages:
-            lines.extend(["", "<b>Prompts</b>"])
+            lines.extend(["", "<b>Запросы</b>"])
             for message in messages:
                 preview = escape_html(" ".join(message.prompt.split())[:72])
                 lines.append(f"• {preview}")
 
         if len(lines) == 1:
-            lines.extend(["", "No recent activity yet."])
+            lines.extend(["", "Пока недавней активности нет."])
 
         lines.append("")
         lines.append(
-            f"Current workspace: <code>{escape_html(self._format_agentic_relative_path(_current_workspace, boundary_root))}</code>"
+            f"Текущий проект: <code>{escape_html(self._format_agentic_relative_path(_current_workspace, boundary_root))}</code>"
         )
         return "\n".join(lines)
 
@@ -1378,11 +1393,11 @@ class MessageOrchestrator:
 
         status = getattr(job, "verification_status", None) or "pending"
         label = {
-            "pending": "health pending",
-            "running": "health checking",
-            "passed": "health ok",
-            "failed": "health failed",
-        }.get(status, f"health {status}")
+            "pending": "проверка ожидается",
+            "running": "идет проверка",
+            "passed": "проверка пройдена",
+            "failed": "проверка не пройдена",
+        }.get(status, f"проверка {status}")
 
         attempts = getattr(job, "verification_attempts", 0) or 0
         if attempts and status in {"running", "passed", "failed"}:
@@ -1400,17 +1415,17 @@ class MessageOrchestrator:
         )
         operator_runtime = self._get_agentic_operator_runtime(context)
         if not operator_runtime:
-            return "Background jobs are not available.", self._build_agentic_start_keyboard()
+            return "Фоновые задачи недоступны.", self._build_agentic_start_keyboard()
 
         jobs = operator_runtime.list_jobs(limit=8)
         current_jobs = operator_runtime.list_jobs(workspace_root=current_workspace, limit=4)
 
-        lines = ["<b>Operator Jobs</b>"]
+        lines = ["<b>Фоновые задачи</b>"]
         if header:
             lines.extend(["", header])
 
         if current_jobs:
-            lines.extend(["", "<b>Current Workspace</b>"])
+            lines.extend(["", "<b>Текущий проект</b>"])
             for job in current_jobs:
                 lines.append(
                     f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
@@ -1418,44 +1433,44 @@ class MessageOrchestrator:
         if jobs:
             other_jobs = [job for job in jobs if job.workspace_root != current_workspace][:4]
             if other_jobs:
-                lines.extend(["", "<b>Recent</b>"])
+                lines.extend(["", "<b>Недавние</b>"])
                 for job in other_jobs:
                     lines.append(
                         f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
                     )
         if len(lines) == 1:
-            lines.extend(["", "No background jobs yet."])
+            lines.extend(["", "Фоновых задач пока нет."])
 
         latest_job = current_jobs[0] if current_jobs else None
         if latest_job:
             lines.extend(
                 [
                     "",
-                    "<b>Latest Job</b>",
-                    f"Action: <code>{escape_html(latest_job.action_key)}</code>",
-                    f"Status: <code>{escape_html(latest_job.status)}</code>",
+                    "<b>Последняя задача</b>",
+                    f"Действие: <code>{escape_html(latest_job.action_key)}</code>",
+                    f"Статус: <code>{escape_html(latest_job.status)}</code>",
                 ]
             )
             if latest_job.exit_code is not None:
-                lines.append(f"Exit code: <code>{latest_job.exit_code}</code>")
+                lines.append(f"Код выхода: <code>{latest_job.exit_code}</code>")
             if latest_job.verification_command:
                 verify_status = self._format_agentic_job_verification(latest_job)
                 if verify_status:
-                    lines.append(f"Health: <code>{escape_html(verify_status)}</code>")
+                    lines.append(f"Проверка: <code>{escape_html(verify_status)}</code>")
                 if latest_job.verification_exit_code is not None:
                     lines.append(
-                        f"Health exit: <code>{latest_job.verification_exit_code}</code>"
+                        f"Код проверки: <code>{latest_job.verification_exit_code}</code>"
                     )
                 if latest_job.verification_error:
                     lines.append(
-                        f"Health error: <code>{escape_html(latest_job.verification_error)}</code>"
+                        f"Ошибка проверки: <code>{escape_html(latest_job.verification_error)}</code>"
                     )
             log_tail = operator_runtime.read_log_tail(latest_job, limit=500)
             if log_tail:
                 lines.extend(
                     [
                         "",
-                        "<b>Latest log tail</b>",
+                        "<b>Последние логи</b>",
                         f"<pre>{escape_html(log_tail)}</pre>",
                     ]
                 )
@@ -1465,7 +1480,7 @@ class MessageOrchestrator:
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        f"🛑 Stop {latest_job.action_key}",
+                        f"🛑 Остановить {latest_job.action_key}",
                         callback_data=f"act:stop:{latest_job.job_id}",
                     )
                 ]
@@ -1474,9 +1489,9 @@ class MessageOrchestrator:
         if profile:
             action_row = []
             for key, label in (
-                ("start", "▶️ Start"),
-                ("dev", "🛠️ Dev"),
-                ("deploy", "🚀 Deploy"),
+                ("start", "▶️ Запуск"),
+                ("dev", "🛠️ Разработка"),
+                ("deploy", "🚀 Деплой"),
             ):
                 if key in profile.commands:
                     action_row.append(
@@ -1487,13 +1502,13 @@ class MessageOrchestrator:
 
         keyboard_rows.append(
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="act:jobs"),
-                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="act:jobs"),
+                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
             ]
         )
         keyboard_rows.append(
-            [InlineKeyboardButton("📁 Projects", callback_data="act:projects")]
+            [InlineKeyboardButton("📁 Проекты", callback_data="act:projects")]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1524,15 +1539,15 @@ class MessageOrchestrator:
         )
         if not profile or not profile.services:
             return (
-                "Managed services are not configured for this workspace.",
+                "Для этого проекта управляемые сервисы не настроены.",
                 self._build_agentic_control_panel_markup(profile),
             )
 
         lines = [
-            "<b>Managed Services</b>",
+            "<b>Управляемые сервисы</b>",
             "",
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
-            "Lifecycle actions auto-run follow-up checks and attach logs on failure.",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+            "Действия запуска и рестарта автоматически выполняют проверку и прикладывают логи при ошибке.",
         ]
         if header:
             lines.extend(["", header])
@@ -1543,7 +1558,7 @@ class MessageOrchestrator:
                 [
                     "",
                     f"• <b>{escape_html(service.display_name)}</b> · <code>{escape_html(service.service_type)}</code>",
-                    f"  actions: <code>{escape_html(actions)}</code>",
+                    f"  действия: <code>{escape_html(actions)}</code>",
                 ]
             )
 
@@ -1578,13 +1593,13 @@ class MessageOrchestrator:
 
         keyboard_rows.append(
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="act:services"),
-                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="act:services"),
+                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
             ]
         )
         keyboard_rows.append(
-            [InlineKeyboardButton("📁 Projects", callback_data="act:projects")]
+            [InlineKeyboardButton("📁 Проекты", callback_data="act:projects")]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1599,20 +1614,20 @@ class MessageOrchestrator:
         )
 
         lines = [
-            "<b>Running Services</b>",
+            "<b>Запущенные сервисы</b>",
             "",
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
         ]
         if header:
             lines.extend(["", header])
 
         if profile and profile.services:
-            lines.extend(["", "<b>Managed Services</b>"])
+            lines.extend(["", "<b>Управляемые сервисы</b>"])
             for service in profile.services:
                 command = service.health_command or service.status_command
                 if not command:
                     lines.append(
-                        f"• <code>{escape_html(service.display_name)}</code>: <code>no live check</code>"
+                        f"• <code>{escape_html(service.display_name)}</code>: <code>нет live-проверки</code>"
                     )
                     continue
                 result = await self._execute_agentic_shell_action(
@@ -1620,33 +1635,33 @@ class MessageOrchestrator:
                     command=command,
                     timeout_seconds=45,
                 )
-                state = "ok" if result.success else "failed"
+                state = "ok" if result.success else "ошибка"
                 if result.timed_out:
-                    state = "timeout"
+                    state = "таймаут"
                 lines.append(
                     f"• <code>{escape_html(service.display_name)}</code>: <code>{escape_html(state)}</code>"
                 )
                 summary = self._summarize_agentic_shell_result(result)
-                if summary and summary != "no output":
+                if summary and summary != "нет вывода":
                     lines.append(f"  <code>{escape_html(summary)}</code>")
         else:
-            lines.extend(["", "No managed services configured for this workspace."])
+            lines.extend(["", "Для этого проекта управляемые сервисы не настроены."])
 
         running_units_result = await self._list_agentic_running_systemd_units(
             current_workspace
         )
         running_units = self._parse_agentic_systemd_units(running_units_result)
-        lines.extend(["", "<b>Server running services</b>"])
+        lines.extend(["", "<b>Системные сервисы сервера</b>"])
         if running_units:
             for unit in running_units:
                 lines.append(f"• <code>{escape_html(unit)}</code>")
         else:
             summary = self._summarize_agentic_shell_result(running_units_result)
-            label = "systemd view unavailable"
+            label = "список systemd недоступен"
             if running_units_result.success:
-                label = "no running services reported"
+                label = "запущенные сервисы не найдены"
             lines.append(f"<code>{escape_html(label)}</code>")
-            if summary and summary not in {"no output", label}:
+            if summary and summary not in {"нет вывода", label}:
                 lines.append(f"<code>{escape_html(summary)}</code>")
 
         failed_units_result = await self._list_agentic_failed_systemd_units(
@@ -1654,19 +1669,19 @@ class MessageOrchestrator:
         )
         failed_units = self._parse_agentic_systemd_units(failed_units_result, limit=6)
         if failed_units:
-            lines.extend(["", "<b>Failed services</b>"])
+            lines.extend(["", "<b>Сервисы с ошибками</b>"])
             for unit in failed_units:
                 lines.append(f"• <code>{escape_html(unit)}</code>")
 
         keyboard_rows = [
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="act:running"),
-                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="act:running"),
+                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
             ],
             [
-                InlineKeyboardButton("🧩 Services", callback_data="act:services"),
-                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+                InlineKeyboardButton("🧩 Сервисы", callback_data="act:services"),
+                InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
             ],
         ]
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
@@ -1691,7 +1706,7 @@ class MessageOrchestrator:
         if project_automation:
             summaries = project_automation.list_workspace_summaries(boundary_root)
             if summaries:
-                lines: List[str] = ["<b>Workspaces</b>", ""]
+                lines: List[str] = ["<b>Проекты</b>", ""]
                 for summary in summaries:
                     lines.extend(
                         project_automation.describe_workspace_summary_lines(
@@ -1701,7 +1716,7 @@ class MessageOrchestrator:
                 lines.extend(
                     [
                         "",
-                        "Autopilot can route by project name, alias, or relative path.",
+                        "Автопилот умеет выбирать проект по имени, алиасу или относительному пути.",
                     ]
                 )
 
@@ -1721,17 +1736,17 @@ class MessageOrchestrator:
 
                 keyboard_rows.append(
                     [
-                        InlineKeyboardButton("🔄 Refresh", callback_data="act:projects"),
-                        InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
-                        InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                        InlineKeyboardButton("🔄 Обновить", callback_data="act:projects"),
+                        InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
+                        InlineKeyboardButton("📂 Статус", callback_data="act:status"),
                     ]
                 )
                 keyboard_rows.append(
-                    [InlineKeyboardButton("🕘 Recent", callback_data="act:recent")]
+                    [InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent")]
                 )
                 return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
-        lines = ["<b>Workspaces</b>", ""]
+        lines = ["<b>Проекты</b>", ""]
         try:
             entries = sorted(
                 [
@@ -1742,7 +1757,7 @@ class MessageOrchestrator:
                 key=lambda d: d.name.casefold(),
             )
         except OSError as e:
-            return f"Error reading workspace: {escape_html(str(e))}", self._build_agentic_start_keyboard()
+            return f"Ошибка чтения проекта: {escape_html(str(e))}", self._build_agentic_start_keyboard()
 
         keyboard_rows: List[list] = []
         for entry in entries:
@@ -1761,8 +1776,8 @@ class MessageOrchestrator:
             keyboard_rows.append(row)
         keyboard_rows.append(
             [
-                InlineKeyboardButton("🔄 Refresh", callback_data="act:projects"),
-                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="act:projects"),
+                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
             ]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
@@ -1780,19 +1795,19 @@ class MessageOrchestrator:
         )
         claude_integration = context.bot_data.get("claude_integration")
         if not claude_integration or not project_automation or not profile:
-            await query.edit_message_text("Project automation is not available.")
+            await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
         playbook = project_automation.get_playbook(playbook_slug, profile)
         if playbook is None:
-            await query.answer("Playbook is not available in this workspace.", show_alert=True)
+            await query.answer("Сценарий недоступен для этого проекта.", show_alert=True)
             return
 
         prompt = project_automation.build_playbook_prompt(playbook_slug, profile)
         status_msg = await query.message.reply_text(
-            "▶️ <b>Running Playbook</b>\n\n"
-            f"Playbook: <code>{escape_html(playbook.slug)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+            "▶️ <b>Запуск сценария</b>\n\n"
+            f"Сценарий: <code>{escape_html(playbook.slug)}</code>\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
             parse_mode="HTML",
         )
 
@@ -1931,9 +1946,9 @@ class MessageOrchestrator:
                 )
             try:
                 await status_msg.edit_text(
-                    "❌ <b>Playbook Failed</b>\n\n"
-                    f"Playbook: <code>{escape_html(playbook_slug)}</code>\n"
-                    f"Error: <code>{escape_html(str(e))}</code>",
+                    "❌ <b>Ошибка сценария</b>\n\n"
+                    f"Сценарий: <code>{escape_html(playbook_slug)}</code>\n"
+                    f"Ошибка: <code>{escape_html(str(e))}</code>",
                     parse_mode="HTML",
                 )
             except Exception:
@@ -2025,10 +2040,10 @@ class MessageOrchestrator:
         """Format a shell action result into Telegram-friendly lines."""
         if result.error:
             return [
-                "❌ <b>Command Failed</b>",
+                "❌ <b>Ошибка команды</b>",
                 "",
-                f"Action: <code>{escape_html(title)}</code>",
-                f"Error: <code>{escape_html(result.error)}</code>",
+                f"Действие: <code>{escape_html(title)}</code>",
+                f"Ошибка: <code>{escape_html(result.error)}</code>",
             ]
 
         lines = [
@@ -2036,12 +2051,12 @@ class MessageOrchestrator:
             if result.success
             else f"❌ <b>{escape_html(title)}</b>",
             "",
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
-            f"Command: <code>{escape_html(result.command)}</code>",
-            f"Exit code: <code>{result.returncode}</code>",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
+            f"Команда: <code>{escape_html(result.command)}</code>",
+            f"Код выхода: <code>{result.returncode}</code>",
         ]
         if result.timed_out:
-            lines.append("Timed out.")
+            lines.append("Вышло время ожидания.")
         if result.stdout_text:
             lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(result.stdout_text)}</pre>"])
         if result.stderr_text:
@@ -2057,7 +2072,7 @@ class MessageOrchestrator:
             summary = result.stdout_text or result.stderr_text or ""
         compact = " ".join(summary.split())
         if not compact:
-            compact = "no output"
+            compact = "нет вывода"
         if len(compact) <= limit:
             return compact
         return compact[: limit - 3] + "..."
@@ -2104,9 +2119,9 @@ class MessageOrchestrator:
                 if not service_command or service_command in seen_commands:
                     continue
                 label = (
-                    f"{service.display_name} health"
+                    f"{service.display_name} проверка"
                     if service.health_command
-                    else f"{service.display_name} status"
+                    else f"{service.display_name} статус"
                 )
                 steps.append(
                     _VerifyStep(
@@ -2117,8 +2132,14 @@ class MessageOrchestrator:
                 )
                 seen_commands.add(service_command)
 
-        for label in ("lint", "typecheck", "test", "build"):
-            command = profile.commands.get(label)
+        label_map = {
+            "lint": "линт",
+            "typecheck": "typecheck",
+            "test": "тесты",
+            "build": "сборка",
+        }
+        for key, label in label_map.items():
+            command = profile.commands.get(key)
             if command and command not in seen_commands:
                 steps.append(_VerifyStep(label=label, command=command))
                 seen_commands.add(command)
@@ -2226,10 +2247,10 @@ class MessageOrchestrator:
         """Run a deterministic shell action and report the result in Telegram."""
         user_id = query.from_user.id
         status_msg = await query.message.reply_text(
-            "▶️ <b>Running Command</b>\n\n"
-            f"Action: <code>{escape_html(title)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
-            f"Command: <code>{escape_html(command)}</code>",
+            "▶️ <b>Выполнение команды</b>\n\n"
+            f"Действие: <code>{escape_html(title)}</code>\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
+            f"Команда: <code>{escape_html(command)}</code>",
             parse_mode="HTML",
         )
 
@@ -2272,17 +2293,17 @@ class MessageOrchestrator:
             self._get_agentic_workspace_profile(context)
         )
         if not project_automation or not profile:
-            await query.edit_message_text("Project automation is not available.")
+            await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
         command = profile.commands.get(command_key)
         if not command:
-            await query.answer("Command is not available in this workspace.", show_alert=True)
+            await query.answer("Команда недоступна для этого проекта.", show_alert=True)
             return
 
         title = {
-            "health": "Health Check",
-            "build": "Build",
+            "health": "Проверка",
+            "build": "Сборка",
         }.get(command_key, command_key.title())
         await self._run_agentic_shell_action(
             query=query,
@@ -2307,22 +2328,22 @@ class MessageOrchestrator:
         )
         service = self._resolve_agentic_service(profile, service_key)
         if not profile or not service:
-            await query.answer("Service is not configured for this workspace.", show_alert=True)
+            await query.answer("Сервис не настроен для этого проекта.", show_alert=True)
             return
 
         command = service.command_for(action_key)
         if not command:
-            await query.answer("Action is not available for this service.", show_alert=True)
+            await query.answer("Это действие недоступно для сервиса.", show_alert=True)
             return
 
         title = f"{service.display_name}: {action_key}"
         user_id = query.from_user.id
         status_msg = await query.message.reply_text(
-            "▶️ <b>Running Service Action</b>\n\n"
-            f"Service: <code>{escape_html(service.display_name)}</code>\n"
-            f"Action: <code>{escape_html(action_key)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Command: <code>{escape_html(command)}</code>",
+            "▶️ <b>Выполнение действия сервиса</b>\n\n"
+            f"Сервис: <code>{escape_html(service.display_name)}</code>\n"
+            f"Действие: <code>{escape_html(action_key)}</code>\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Команда: <code>{escape_html(command)}</code>",
             parse_mode="HTML",
         )
 
@@ -2337,9 +2358,9 @@ class MessageOrchestrator:
         checks_ok = True
         if action_key in {"start", "restart", "stop"} and main_result.success:
             await status_msg.edit_text(
-                "⏳ <b>Waiting For Service Checks</b>\n\n"
-                f"Service: <code>{escape_html(service.display_name)}</code>\n"
-                f"Action: <code>{escape_html(action_key)}</code>",
+                "⏳ <b>Ожидание проверки сервиса</b>\n\n"
+                f"Сервис: <code>{escape_html(service.display_name)}</code>\n"
+                f"Действие: <code>{escape_html(action_key)}</code>",
                 parse_mode="HTML",
             )
             checks, logs_result, checks_ok = await self._run_agentic_service_follow_up_checks(
@@ -2356,37 +2377,37 @@ class MessageOrchestrator:
 
         final_success = main_result.success and checks_ok
         lines = [
-            "✅ <b>Service Action Complete</b>"
+            "✅ <b>Действие сервиса выполнено</b>"
             if final_success
-            else "❌ <b>Service Action Failed</b>",
+            else "❌ <b>Ошибка действия сервиса</b>",
             "",
-            f"Service: <code>{escape_html(service.display_name)}</code>",
-            f"Action: <code>{escape_html(action_key)}</code>",
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
-            f"Command: <code>{escape_html(command)}</code>",
-            f"Exit code: <code>{main_result.returncode}</code>",
+            f"Сервис: <code>{escape_html(service.display_name)}</code>",
+            f"Действие: <code>{escape_html(action_key)}</code>",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+            f"Команда: <code>{escape_html(command)}</code>",
+            f"Код выхода: <code>{main_result.returncode}</code>",
         ]
         if main_result.error:
-            lines.append(f"Error: <code>{escape_html(main_result.error)}</code>")
+            lines.append(f"Ошибка: <code>{escape_html(main_result.error)}</code>")
         elif main_result.timed_out:
-            lines.append("Timed out.")
+            lines.append("Вышло время ожидания.")
         if main_result.stdout_text:
             lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(main_result.stdout_text)}</pre>"])
         if main_result.stderr_text:
             lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(main_result.stderr_text)}</pre>"])
 
         if checks:
-            lines.extend(["", "<b>Post-checks</b>"])
+            lines.extend(["", "<b>Дополнительные проверки</b>"])
             for label, result in checks:
-                check_state = "ok" if result.success else "failed"
+                check_state = "ok" if result.success else "ошибка"
                 if result.timed_out:
-                    check_state = "timeout"
+                    check_state = "таймаут"
                 lines.append(
                     f"• <code>{escape_html(label)}</code>: <code>{escape_html(check_state)}</code> "
                     f"(exit <code>{result.returncode}</code>)"
                 )
                 summary = self._summarize_agentic_shell_result(result)
-                if summary and summary != "no output":
+                if summary and summary != "нет вывода":
                     lines.append(f"  <code>{escape_html(summary)}</code>")
 
         if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
@@ -2396,7 +2417,7 @@ class MessageOrchestrator:
             lines.extend(
                 [
                     "",
-                    "<b>Service logs</b>",
+                    "<b>Логи сервиса</b>",
                     f"<pre>{escape_html(log_body)}</pre>",
                 ]
             )
@@ -2422,18 +2443,18 @@ class MessageOrchestrator:
             self._get_agentic_workspace_profile(context)
         )
         if not project_automation or not profile:
-            await query.edit_message_text("Project automation is not available.")
+            await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
         steps = self._build_agentic_verify_steps(profile)
         if not steps:
-            await query.answer("No verification steps detected for this workspace.", show_alert=True)
+            await query.answer("Для этого проекта шаги проверки не найдены.", show_alert=True)
             return
 
         status_msg = await query.message.reply_text(
-            "▶️ <b>Running Verify</b>\n\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Steps: <code>{escape_html(', '.join(step.label for step in steps))}</code>",
+            "▶️ <b>Запуск проверки</b>\n\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Шаги: <code>{escape_html(', '.join(step.label for step in steps))}</code>",
             parse_mode="HTML",
         )
 
@@ -2443,10 +2464,10 @@ class MessageOrchestrator:
 
         for index, step in enumerate(steps, start=1):
             await status_msg.edit_text(
-                "⏳ <b>Running Verify</b>\n\n"
-                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-                f"Step <code>{index}/{len(steps)}</code>: <code>{escape_html(step.label)}</code>\n"
-                f"Command: <code>{escape_html(step.command)}</code>",
+                "⏳ <b>Выполняю проверку</b>\n\n"
+                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                f"Шаг <code>{index}/{len(steps)}</code>: <code>{escape_html(step.label)}</code>\n"
+                f"Команда: <code>{escape_html(step.command)}</code>",
                 parse_mode="HTML",
             )
             result = await self._execute_agentic_shell_action(
@@ -2467,25 +2488,25 @@ class MessageOrchestrator:
 
         success = failed_step is None
         lines = [
-            "✅ <b>Verification Complete</b>"
+            "✅ <b>Проверка завершена</b>"
             if success
-            else "❌ <b>Verification Failed</b>",
+            else "❌ <b>Проверка не пройдена</b>",
             "",
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
         ]
         if failed_step:
-            lines.append(f"Failed at: <code>{escape_html(failed_step.label)}</code>")
-        lines.extend(["", "<b>Steps</b>"])
+            lines.append(f"Ошибка на шаге: <code>{escape_html(failed_step.label)}</code>")
+        lines.extend(["", "<b>Шаги</b>"])
         for step, result in results:
-            state = "ok" if result.success else "failed"
+            state = "ok" if result.success else "ошибка"
             if result.timed_out:
-                state = "timeout"
+                state = "таймаут"
             lines.append(
                 f"• <code>{escape_html(step.label)}</code>: <code>{escape_html(state)}</code> "
                 f"(exit <code>{result.returncode}</code>)"
             )
             summary = self._summarize_agentic_shell_result(result)
-            if summary and summary != "no output":
+            if summary and summary != "нет вывода":
                 lines.append(f"  <code>{escape_html(summary)}</code>")
 
         if results:
@@ -2498,7 +2519,7 @@ class MessageOrchestrator:
                 lines.extend(
                     [
                         "",
-                        f"<b>Failure output: {escape_html(last_step.label)}</b>",
+                        f"<b>Вывод ошибки: {escape_html(last_step.label)}</b>",
                         f"<pre>{escape_html(detail_text)}</pre>",
                     ]
                 )
@@ -2508,7 +2529,7 @@ class MessageOrchestrator:
             lines.extend(
                 [
                     "",
-                    "<b>Service logs</b>",
+                    "<b>Логи сервиса</b>",
                     f"<pre>{escape_html(log_body)}</pre>",
                 ]
             )
@@ -2537,12 +2558,12 @@ class MessageOrchestrator:
         )
         operator_runtime = self._get_agentic_operator_runtime(context)
         if not project_automation or not profile or not operator_runtime:
-            await query.edit_message_text("Background jobs are not available.")
+            await query.edit_message_text("Фоновые задачи недоступны.")
             return
 
         command = profile.commands.get(action_key)
         if not command:
-            await query.answer("Action is not available in this workspace.", show_alert=True)
+            await query.answer("Это действие недоступно для проекта.", show_alert=True)
             return
 
         verification_command = self._select_agentic_background_verification(profile)
@@ -2563,9 +2584,9 @@ class MessageOrchestrator:
                 verification_interval_seconds = 3.0
 
         title = {
-            "start": "Start",
-            "dev": "Dev",
-            "deploy": "Deploy",
+            "start": "Запуск",
+            "dev": "Разработка",
+            "deploy": "Деплой",
         }.get(action_key, action_key.title())
 
         try:
@@ -2591,16 +2612,16 @@ class MessageOrchestrator:
             return
 
         header = (
-            "▶️ <b>Background Job Started</b>\n\n"
-            f"Action: <code>{escape_html(title)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Job: <code>{escape_html(job.job_id)}</code>\n"
-            f"Command: <code>{escape_html(command)}</code>"
+            "▶️ <b>Фоновая задача запущена</b>\n\n"
+            f"Действие: <code>{escape_html(title)}</code>\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Задача: <code>{escape_html(job.job_id)}</code>\n"
+            f"Команда: <code>{escape_html(command)}</code>"
         )
         if verification_command and verification_mode:
             header += (
                 "\n"
-                f"Health verify: <code>{escape_html(verification_command)}</code>"
+                f"Проверка после запуска: <code>{escape_html(verification_command)}</code>"
             )
         text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
         await query.edit_message_text(
@@ -2627,7 +2648,7 @@ class MessageOrchestrator:
         """Stop a persisted background workspace job."""
         operator_runtime = self._get_agentic_operator_runtime(context)
         if not operator_runtime:
-            await query.edit_message_text("Background jobs are not available.")
+            await query.edit_message_text("Фоновые задачи недоступны.")
             return
 
         try:
@@ -2637,10 +2658,10 @@ class MessageOrchestrator:
             return
 
         header = (
-            "🛑 <b>Stop Requested</b>\n\n"
-            f"Job: <code>{escape_html(job.job_id)}</code>\n"
-            f"Action: <code>{escape_html(job.action_key)}</code>\n"
-            f"Status: <code>{escape_html(job.status)}</code>"
+            "🛑 <b>Остановка запрошена</b>\n\n"
+            f"Задача: <code>{escape_html(job.job_id)}</code>\n"
+            f"Действие: <code>{escape_html(job.action_key)}</code>\n"
+            f"Статус: <code>{escape_html(job.status)}</code>"
         )
         text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
         await query.edit_message_text(
@@ -3962,7 +3983,7 @@ class MessageOrchestrator:
 
             is_git = (target_path / ".git").is_dir()
             git_badge = " (git)" if is_git else ""
-            session_badge = " · session resumed" if session_id else ""
+            session_badge = " · сессия восстановлена" if session_id else ""
             relative_display = (
                 summary.relative_path
                 if summary
@@ -3981,7 +4002,7 @@ class MessageOrchestrator:
             ) = self._get_agentic_workspace_profile(context)
 
             await update.message.reply_text(
-                f"Switched to <code>{escape_html(relative_display)}</code>"
+                f"Переключился на <code>{escape_html(relative_display)}</code>"
                 f"{git_badge}{session_badge}",
                 parse_mode="HTML",
                 reply_markup=self._build_agentic_control_panel_markup(switched_profile),
@@ -4012,7 +4033,7 @@ class MessageOrchestrator:
             context.user_data["session_started"] = True
             context.user_data["force_new_session"] = True
             await query.edit_message_text(
-                "Session reset. What's next?",
+                "Сессия сброшена. Что делаем дальше?",
                 reply_markup=self._build_agentic_start_keyboard(),
             )
 
@@ -4075,7 +4096,7 @@ class MessageOrchestrator:
         elif action == "stats":
             storage = context.bot_data.get("storage")
             if not storage:
-                await query.edit_message_text("Storage not available.")
+                await query.edit_message_text("Хранилище недоступно.")
                 return
             try:
                 stats = await storage.analytics.get_user_stats(query.from_user.id)
@@ -4086,14 +4107,14 @@ class MessageOrchestrator:
                 avg_duration = summary.get("avg_duration") or 0
                 avg_s = avg_duration / 1000 if avg_duration else 0
                 await query.edit_message_text(
-                    f"<b>Stats:</b> ${total_cost:.4f} | "
-                    f"{total_msgs} msgs | {total_sessions} sessions | "
-                    f"avg {avg_s:.1f}s",
+                    f"<b>Статистика:</b> ${total_cost:.4f} | "
+                    f"{total_msgs} сообщений | {total_sessions} сессий | "
+                    f"среднее {avg_s:.1f}с",
                     parse_mode="HTML",
                     reply_markup=self._build_agentic_control_panel_markup(profile),
                 )
             except Exception:
-                await query.edit_message_text("Failed to load stats.")
+                await query.edit_message_text("Не удалось загрузить статистику.")
 
         elif action in {"doctor", "review", "setup", "test", "quality"}:
             await self._run_agentic_playbook_action(query, context, action)
@@ -4121,9 +4142,9 @@ class MessageOrchestrator:
         elif action.startswith("v"):
             level = int(action[1])
             context.user_data["verbose_level"] = level
-            labels = {0: "quiet", 1: "normal", 2: "detailed"}
+            labels = {0: "коротко", 1: "нормально", 2: "подробно"}
             await query.edit_message_text(
-                f"Verbosity: <b>{level}</b> ({labels[level]})",
+                f"Режим ответа: <b>{level}</b> ({labels[level]})",
                 parse_mode="HTML",
                 reply_markup=self._build_agentic_control_panel_markup(profile),
             )
@@ -4164,7 +4185,7 @@ class MessageOrchestrator:
 
         if not new_path.is_dir():
             await query.edit_message_text(
-                f"Directory not found: <code>{escape_html(project_name)}</code>",
+                f"Папка не найдена: <code>{escape_html(project_name)}</code>",
                 parse_mode="HTML",
             )
             return
@@ -4186,7 +4207,7 @@ class MessageOrchestrator:
 
         is_git = (new_path / ".git").is_dir()
         git_badge = " (git)" if is_git else ""
-        session_badge = " · session resumed" if session_id else ""
+        session_badge = " · сессия восстановлена" if session_id else ""
         relative_display = (
             project_name
             if project_name == "/"
@@ -4201,7 +4222,7 @@ class MessageOrchestrator:
         ) = self._get_agentic_workspace_profile(context)
 
         await query.edit_message_text(
-            f"Switched to <code>{escape_html(relative_display)}</code>"
+            f"Переключился на <code>{escape_html(relative_display)}</code>"
             f"{git_badge}{session_badge}",
             parse_mode="HTML",
             reply_markup=self._build_agentic_control_panel_markup(profile),
