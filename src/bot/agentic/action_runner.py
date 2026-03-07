@@ -20,6 +20,12 @@ from ..utils.formatting import FormattedMessage, ResponseFormatter
 from ..utils.html_format import escape_html
 from .context import AgenticWorkspaceContext, ShellActionResult, VerifyStep
 from .panel_builder import PanelBuilder
+from .problem_classifier import (
+    classify_problem,
+    format_resolve_summary,
+    format_service_summary,
+    format_verify_summary,
+)
 from .resolve_runner import ResolveRunner
 from .service_controller import ServiceController
 from .shell_executor import ShellExecutor
@@ -478,44 +484,42 @@ class ActionRunner:
             )
 
         final_success = main_result.success and checks_ok
-        lines = [
-            "✅ <b>Действие сервиса выполнено</b>"
-            if final_success
-            else "❌ <b>Ошибка действия сервиса</b>",
-            "",
-            f"Сервис: <code>{escape_html(service.display_name)}</code>",
-            f"Действие: <code>{escape_html(action_key)}</code>",
-            f"Проект: <code>{escape_html(rel_path)}</code>",
-            f"Команда: <code>{escape_html(command)}</code>",
-            f"Код выхода: <code>{main_result.returncode}</code>",
-        ]
-        if main_result.error:
-            lines.append(f"Ошибка: <code>{escape_html(main_result.error)}</code>")
-        elif main_result.timed_out:
-            lines.append("Вышло время ожидания.")
-        if main_result.stdout_text:
-            lines.extend(
-                ["", "<b>stdout</b>", f"<pre>{escape_html(main_result.stdout_text)}</pre>"]
-            )
-        if main_result.stderr_text:
-            lines.extend(
-                ["", "<b>stderr</b>", f"<pre>{escape_html(main_result.stderr_text)}</pre>"]
-            )
+
+        # Smart summary first
+        summary = format_service_summary(
+            service_name=service.display_name,
+            action=action_key,
+            success=final_success,
+            main_result=main_result,
+            checks_ok=checks_ok,
+            checks=checks,
+        )
+
+        # Detailed output below summary
+        lines = [summary]
 
         if checks:
-            lines.extend(["", "<b>Дополнительные проверки</b>"])
+            lines.extend(["", "<b>Проверки</b>"])
             for label, result in checks:
                 check_state = "ok" if result.success else "ошибка"
                 if result.timed_out:
                     check_state = "таймаут"
                 lines.append(
-                    f"• <code>{escape_html(label)}</code>: "
-                    f"<code>{escape_html(check_state)}</code> "
-                    f"(exit <code>{result.returncode}</code>)"
+                    f"  {label}: {check_state}"
                 )
-                summary = self.shell.summarize(result)
-                if summary and summary != "нет вывода":
-                    lines.append(f"  <code>{escape_html(summary)}</code>")
+
+        # Show output only on failure (don't dump stdout on success)
+        if not final_success:
+            if main_result.stderr_text:
+                lines.extend(
+                    ["", "<b>Вывод ошибки</b>",
+                     f"<pre>{escape_html(main_result.stderr_text)}</pre>"]
+                )
+            elif main_result.stdout_text:
+                lines.extend(
+                    ["", "<b>Вывод</b>",
+                     f"<pre>{escape_html(main_result.stdout_text)}</pre>"]
+                )
 
         if logs_result and (
             logs_result.stdout_text or logs_result.stderr_text or logs_result.error
@@ -524,11 +528,8 @@ class ActionRunner:
             if logs_result.error:
                 log_body = logs_result.error
             lines.extend(
-                [
-                    "",
-                    "<b>Логи сервиса</b>",
-                    f"<pre>{escape_html(log_body)}</pre>",
-                ]
+                ["", "<b>Логи сервиса</b>",
+                 f"<pre>{escape_html(log_body)}</pre>"]
             )
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
@@ -583,8 +584,13 @@ class ActionRunner:
             )
 
         report = await self.verify.execute(profile, on_step=_on_step)
+        diagnosis = classify_problem(report)
+
+        # Smart summary + detailed report below
+        summary = format_verify_summary(report, diagnosis, rel_path)
+        detail = self.verify.format_report(profile, boundary_root, report)
         await status_msg.edit_text(
-            self.verify.format_report(profile, boundary_root, report),
+            f"{summary}\n\n{detail}",
             parse_mode="HTML",
         )
 
@@ -596,6 +602,8 @@ class ActionRunner:
             "failed_step": report.failed_step.label if report.failed_step else None,
             "steps_total": len(report.results),
             "steps_passed": sum(1 for _, r in report.results if r.success),
+            "problem_type": diagnosis.problem_type.value,
+            "short_cause": diagnosis.short_cause,
             "timestamp": _time.time(),
         }
 
@@ -723,19 +731,28 @@ class ActionRunner:
                         )
 
             if result.final_report:
-                attempts_note = (
-                    f" (попытка {result.attempts})" if result.attempts > 1 else ""
+                diagnosis = classify_problem(initial_report)
+                final_passed = sum(
+                    1 for _, r in result.final_report.results if r.success
                 )
-                header = (
-                    f"✅ <b>Разобрался{attempts_note}</b>"
-                    if result.success
-                    else f"⚠️ <b>Проблему нашел, но до конца не добил{attempts_note}</b>"
+                final_total = len(result.final_report.results)
+                resolve_summary = format_resolve_summary(
+                    diagnosis=diagnosis,
+                    success=result.success,
+                    attempts=result.attempts,
+                    rollback=bool(
+                        result.rollback_report
+                        and getattr(result.rollback_report, "rollback_triggered", False)
+                    ),
+                    error=result.error,
+                    passed=final_passed,
+                    total=final_total,
                 )
                 verify_report_text = self.verify.format_report(
                     profile, boundary_root, result.final_report
                 )
                 await query.message.reply_text(
-                    f"{header}\n\n{verify_report_text}",
+                    f"{resolve_summary}\n\n{verify_report_text}",
                     parse_mode="HTML",
                 )
 
@@ -748,6 +765,7 @@ class ActionRunner:
         # Persist last resolve result for status display
         import time as _time
 
+        resolve_diagnosis = classify_problem(initial_report)
         context.user_data["last_resolve"] = {
             "success": result.success,
             "attempts": result.attempts,
@@ -756,6 +774,7 @@ class ActionRunner:
                 result.rollback_report
                 and getattr(result.rollback_report, "rollback_triggered", False)
             ),
+            "problem_type": resolve_diagnosis.problem_type.value,
             "timestamp": _time.time(),
         }
 

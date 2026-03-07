@@ -33,6 +33,7 @@ from ..projects import PrivateTopicsUnavailableError
 from .agentic.context import AgenticWorkspaceContext
 from .agentic.action_runner import ActionRunner
 from .agentic.panel_builder import PanelBuilder
+from .agentic.response_sender import ResponseSender
 from .agentic.stream_handler import StreamHandler, _tool_icon
 from .agentic.shell_executor import ShellExecutor
 from .agentic.resolve_runner import ResolveRunner
@@ -129,6 +130,7 @@ class MessageOrchestrator:
             self.services, self.resolver, self.panel,
         )
         self.stream = StreamHandler()
+        self.response_sender = ResponseSender(self.stream)
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -1251,93 +1253,16 @@ class MessageOrchestrator:
                 except Exception:
                     logger.debug("Draft flush failed in finally block", user_id=user_id)
 
-        try:
-            await progress_msg.delete()
-        except Exception:
-            logger.debug("Failed to delete progress message, ignoring")
-
-        # Use MCP-collected images (from send_image_to_user tool calls)
-        images: List[ImageAttachment] = mcp_images
         panel_markup = self.panel.build_control_panel_markup()
-
-        # Try to combine text + images in one message when possible
-        caption_sent = False
-        if images and len(formatted_messages) == 1:
-            msg = formatted_messages[0]
-            if msg.text and len(msg.text) <= 1024:
-                try:
-                    caption_sent = await self.stream.send_images(
-                        update,
-                        images,
-                        reply_to_message_id=update.message.message_id,
-                        caption=msg.text,
-                        caption_parse_mode=msg.parse_mode,
-                    )
-                except Exception as img_err:
-                    logger.warning("Image+caption send failed", error=str(img_err))
-
-        # Send text messages (skip if caption was already embedded in photos)
-        sent_any_text = False
-        if not caption_sent:
-            visible_messages = [
-                message
-                for message in formatted_messages
-                if message.text and message.text.strip()
-            ]
-            for i, message in enumerate(formatted_messages):
-                if not message.text or not message.text.strip():
-                    continue
-                reply_id = update.message.message_id if i == 0 else None
-                sent_any_text = True
-                is_last_visible = (
-                    bool(visible_messages)
-                    and message is visible_messages[-1]
-                    and not (guard_report and change_guard)
-                )
-                sent = await self._send_with_retry(
-                    update,
-                    message.text,
-                    message.parse_mode,
-                    reply_id,
-                    reply_markup=panel_markup if is_last_visible else None,
-                )
-                if not sent:
-                    # Last resort: send truncated plain text
-                    try:
-                        await update.message.reply_text(
-                            message.text[:4000],
-                            reply_to_message_id=reply_id,
-                            reply_markup=panel_markup if is_last_visible else None,
-                        )
-                    except Exception:
-                        pass
-                if i < len(formatted_messages) - 1:
-                    await asyncio.sleep(0.5)
-
-            # Send images separately if caption wasn't used
-            if images:
-                try:
-                    await self.stream.send_images(
-                        update,
-                        images,
-                        reply_to_message_id=update.message.message_id,
-                    )
-                except Exception as img_err:
-                    logger.warning("Image send failed", error=str(img_err))
-
-        if guard_report and change_guard:
-            await update.message.reply_text(
-                change_guard.format_report_html(guard_report),
-                parse_mode="HTML",
-                reply_to_message_id=update.message.message_id,
-                reply_markup=panel_markup,
-            )
-        elif caption_sent and not sent_any_text:
-            await update.message.reply_text(
-                "Actions:",
-                reply_markup=panel_markup,
-                reply_to_message_id=update.message.message_id,
-            )
+        await self.response_sender.deliver(
+            update,
+            formatted_messages,
+            images=mcp_images,
+            panel_markup=panel_markup,
+            progress_msg=progress_msg,
+            guard_report=guard_report,
+            change_guard=change_guard,
+        )
 
         if not context.user_data.get("agentic_reply_keyboard_ready"):
             await update.message.reply_text(
@@ -1391,47 +1316,6 @@ class MessageOrchestrator:
 
         # Process queued messages (received while this task was running)
         await self._process_pending_messages(user_id)
-
-    @staticmethod
-    async def _send_with_retry(
-        update: Update,
-        text: str,
-        parse_mode: Optional[str],
-        reply_to_message_id: Optional[int],
-        reply_markup: Optional[Any] = None,
-        max_retries: int = 3,
-    ) -> bool:
-        """Send a message with exponential backoff retry.
-
-        Tries HTML first, then plain text on parse error. Returns True on success.
-        """
-        for attempt in range(max_retries):
-            try:
-                pm = parse_mode if attempt == 0 else None
-                await update.message.reply_text(
-                    text,
-                    parse_mode=pm,
-                    reply_markup=reply_markup,
-                    reply_to_message_id=reply_to_message_id,
-                )
-                return True
-            except Exception as e:
-                err_str = str(e).lower()
-                # Parse errors won't be fixed by retrying with same parse_mode
-                if "parse" in err_str or "can't" in err_str:
-                    if parse_mode:
-                        parse_mode = None
-                        continue
-                # Transient errors — backoff and retry
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-                else:
-                    logger.warning(
-                        "Failed to send after retries",
-                        error=str(e),
-                        attempts=max_retries,
-                    )
-        return False
 
     async def _process_pending_messages(self, user_id: int) -> None:
         """Process messages that were queued while a task was running."""
@@ -1578,51 +1462,12 @@ class MessageOrchestrator:
                 claude_response.content
             )
 
-            try:
-                await progress_msg.delete()
-            except Exception:
-                logger.debug("Failed to delete progress message, ignoring")
-
-            # Use MCP-collected images (from send_image_to_user tool calls)
-            images: List[ImageAttachment] = mcp_images_doc
-
-            caption_sent = False
-            if images and len(formatted_messages) == 1:
-                msg = formatted_messages[0]
-                if msg.text and len(msg.text) <= 1024:
-                    try:
-                        caption_sent = await self.stream.send_images(
-                            update,
-                            images,
-                            reply_to_message_id=update.message.message_id,
-                            caption=msg.text,
-                            caption_parse_mode=msg.parse_mode,
-                        )
-                    except Exception as img_err:
-                        logger.warning("Image+caption send failed", error=str(img_err))
-
-            if not caption_sent:
-                for i, message in enumerate(formatted_messages):
-                    await update.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                        reply_markup=None,
-                        reply_to_message_id=(
-                            update.message.message_id if i == 0 else None
-                        ),
-                    )
-                    if i < len(formatted_messages) - 1:
-                        await asyncio.sleep(0.5)
-
-                if images:
-                    try:
-                        await self.stream.send_images(
-                            update,
-                            images,
-                            reply_to_message_id=update.message.message_id,
-                        )
-                    except Exception as img_err:
-                        logger.warning("Image send failed", error=str(img_err))
+            await self.response_sender.deliver(
+                update,
+                formatted_messages,
+                images=mcp_images_doc,
+                progress_msg=progress_msg,
+            )
 
         except Exception as e:
             from .handlers.message import _format_error_message
@@ -1858,51 +1703,12 @@ class MessageOrchestrator:
         formatter = ResponseFormatter(self.settings)
         formatted_messages = formatter.format_claude_response(claude_response.content)
 
-        try:
-            await progress_msg.delete()
-        except Exception:
-            logger.debug("Failed to delete progress message, ignoring")
-
-        # Use MCP-collected images (from send_image_to_user tool calls).
-        images: List[ImageAttachment] = mcp_images_media
-
-        caption_sent = False
-        if images and len(formatted_messages) == 1:
-            msg = formatted_messages[0]
-            if msg.text and len(msg.text) <= 1024:
-                try:
-                    caption_sent = await self.stream.send_images(
-                        update,
-                        images,
-                        reply_to_message_id=update.message.message_id,
-                        caption=msg.text,
-                        caption_parse_mode=msg.parse_mode,
-                    )
-                except Exception as img_err:
-                    logger.warning("Image+caption send failed", error=str(img_err))
-
-        if not caption_sent:
-            for i, message in enumerate(formatted_messages):
-                if not message.text or not message.text.strip():
-                    continue
-                await update.message.reply_text(
-                    message.text,
-                    parse_mode=message.parse_mode,
-                    reply_markup=None,
-                    reply_to_message_id=(update.message.message_id if i == 0 else None),
-                )
-                if i < len(formatted_messages) - 1:
-                    await asyncio.sleep(0.5)
-
-            if images:
-                try:
-                    await self.stream.send_images(
-                        update,
-                        images,
-                        reply_to_message_id=update.message.message_id,
-                    )
-                except Exception as img_err:
-                    logger.warning("Image send failed", error=str(img_err))
+        await self.response_sender.deliver(
+            update,
+            formatted_messages,
+            images=mcp_images_media,
+            progress_msg=progress_msg,
+        )
 
     def _voice_unavailable_message(self) -> str:
         """Return provider-aware guidance when voice feature is unavailable."""

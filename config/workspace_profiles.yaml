@@ -18,6 +18,10 @@ workspaces:
       install: make install
       dev: make dev
       build: .venv/bin/python -m compileall -q src
+      lint: poetry run flake8 src --max-line-length 120 --count --statistics
+      test: poetry run pytest tests/ -x -q --tb=short
+      health: .venv/bin/python -m compileall -q src
+      deploy: ssh root@194.87.44.239 "cd /srv/claude-bot/app && sudo -u claude-bot git pull origin main && systemctl restart claude-bot.service && sleep 3 && systemctl is-active claude-bot.service && journalctl -u claude-bot.service -n 20 --no-pager"
     services:
       - key: app
         name: ClaudeBot Service

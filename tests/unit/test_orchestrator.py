@@ -972,10 +972,9 @@ workspaces:
 
     query.message.reply_text.assert_awaited_once()
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Действие сервиса выполнено" in result_text
-    assert "Сервис: <code>ClaudeBot Service</code>" in result_text
-    assert "Действие: <code>status</code>" in result_text
-    assert "service ok" in result_text
+    assert "ClaudeBot Service" in result_text
+    assert "status" in result_text
+    assert "выполнено" in result_text
 
 
 async def test_agentic_service_restart_runs_post_checks_and_logs(agentic_settings, tmp_dir):
@@ -1031,10 +1030,8 @@ workspaces:
     await orchestrator._agentic_quick_action(update, context)
 
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "Ошибка действия сервиса" in result_text
-    assert "Дополнительные проверки" in result_text
+    assert "не удалось" in result_text
     assert "health" in result_text
-    assert "unhealthy" in result_text
     assert "Логи сервиса" in result_text
     assert "recent service log" in result_text
 
