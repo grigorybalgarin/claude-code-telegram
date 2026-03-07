@@ -812,13 +812,15 @@ class MessageOrchestrator:
                 [
                     InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
                     InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+                    InlineKeyboardButton("🧵 Jobs", callback_data="act:jobs"),
                 ],
                 [
                     InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor"),
                     InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
+                    InlineKeyboardButton("📂 Status", callback_data="act:status"),
                 ],
                 [
-                    InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                    InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
                     InlineKeyboardButton("🆕 New Session", callback_data="act:new"),
                 ],
                 [
@@ -849,6 +851,17 @@ class MessageOrchestrator:
         profile = project_automation.build_profile(current_dir, boundary_root)
         return current_dir, profile.root_path, boundary_root, project_automation, profile
 
+    def _get_agentic_operator_runtime(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> Optional[Any]:
+        """Resolve the persistent background operator runtime."""
+        features = context.bot_data.get("features")
+        return (
+            getattr(features, "get_workspace_operator", lambda: None)()
+            if features
+            else None
+        )
+
     def _format_agentic_relative_path(self, path: Path, boundary_root: Path) -> str:
         """Format a workspace-relative path for Telegram output."""
         try:
@@ -865,9 +878,10 @@ class MessageOrchestrator:
             [
                 InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
                 InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
-                InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
+                InlineKeyboardButton("🧵 Jobs", callback_data="act:jobs"),
             ],
             [
+                InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
                 InlineKeyboardButton("📂 Status", callback_data="act:status"),
                 InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
             ],
@@ -908,6 +922,21 @@ class MessageOrchestrator:
                 )
             if operator_row:
                 rows.append(operator_row[:3])
+            background_row = []
+            if "start" in profile.commands:
+                background_row.append(
+                    InlineKeyboardButton("▶️ Start", callback_data="act:start")
+                )
+            if "dev" in profile.commands:
+                background_row.append(
+                    InlineKeyboardButton("🛠️ Dev", callback_data="act:dev")
+                )
+            if "deploy" in profile.commands:
+                background_row.append(
+                    InlineKeyboardButton("🚀 Deploy", callback_data="act:deploy")
+                )
+            if background_row:
+                rows.append(background_row[:3])
         else:
             rows.append([InlineKeyboardButton("🆕 New", callback_data="act:new")])
 
@@ -983,6 +1012,13 @@ class MessageOrchestrator:
                 lines.append(
                     f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
                 )
+        operator_runtime = self._get_agentic_operator_runtime(context)
+        if operator_runtime:
+            latest_job = operator_runtime.get_latest_job(current_workspace)
+            if latest_job:
+                lines.append(
+                    f"🧵 Job: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>"
+                )
         return "\n".join(lines)
 
     async def _build_agentic_panel_text(
@@ -1042,11 +1078,21 @@ class MessageOrchestrator:
                         f"📝 Notes: {escape_html(note_preview)}",
                     ]
                 )
+        operator_runtime = self._get_agentic_operator_runtime(context)
+        if operator_runtime:
+            latest_job = operator_runtime.get_latest_job(current_workspace)
+            if latest_job:
+                lines.extend(
+                    [
+                        "",
+                        f"🧵 Latest job: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>",
+                    ]
+                )
 
         lines.extend(
             [
                 "",
-                "Use the buttons below to inspect the project, switch workspace, or run a deterministic playbook.",
+                "Use the buttons below to inspect the project, switch workspace, run a deterministic playbook, or launch a background operator action.",
             ]
         )
         return "\n".join(lines)
@@ -1109,6 +1155,105 @@ class MessageOrchestrator:
             f"Current workspace: <code>{escape_html(self._format_agentic_relative_path(_current_workspace, boundary_root))}</code>"
         )
         return "\n".join(lines)
+
+    def _format_agentic_job_status(self, job: Any, boundary_root: Path) -> str:
+        """Build a compact one-line status for a persisted operator job."""
+        workspace = self._format_agentic_relative_path(job.workspace_root, boundary_root)
+        status = job.status
+        if job.status == "running":
+            status = f"running {job.action_key}"
+        elif job.status == "stopping":
+            status = f"stopping {job.action_key}"
+        elif job.status == "succeeded":
+            status = f"succeeded {job.action_key}"
+        elif job.status == "failed":
+            status = f"failed {job.action_key}"
+        elif job.status == "stopped":
+            status = f"stopped {job.action_key}"
+        return f"{workspace} · {status} · {job.job_id[:8]}"
+
+    async def _build_agentic_jobs_text(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        header: Optional[str] = None,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        """Render recent background workspace jobs and management buttons."""
+        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        operator_runtime = self._get_agentic_operator_runtime(context)
+        if not operator_runtime:
+            return "Background jobs are not available.", self._build_agentic_start_keyboard()
+
+        jobs = operator_runtime.list_jobs(limit=8)
+        current_jobs = operator_runtime.list_jobs(workspace_root=current_workspace, limit=4)
+
+        lines = ["<b>Operator Jobs</b>"]
+        if header:
+            lines.extend(["", header])
+
+        if current_jobs:
+            lines.extend(["", "<b>Current Workspace</b>"])
+            for job in current_jobs:
+                lines.append(
+                    f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
+                )
+        if jobs:
+            other_jobs = [job for job in jobs if job.workspace_root != current_workspace][:4]
+            if other_jobs:
+                lines.extend(["", "<b>Recent</b>"])
+                for job in other_jobs:
+                    lines.append(
+                        f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
+                    )
+        if len(lines) == 1:
+            lines.extend(["", "No background jobs yet."])
+
+        latest_job = current_jobs[0] if current_jobs else None
+        if latest_job:
+            log_tail = operator_runtime.read_log_tail(latest_job, limit=500)
+            if log_tail:
+                lines.extend(
+                    [
+                        "",
+                        "<b>Latest log tail</b>",
+                        f"<pre>{escape_html(log_tail)}</pre>",
+                    ]
+                )
+
+        keyboard_rows: List[list] = []
+        if latest_job and latest_job.is_active:
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"🛑 Stop {latest_job.action_key}",
+                        callback_data=f"act:stop:{latest_job.job_id}",
+                    )
+                ]
+            )
+
+        if profile:
+            action_row = []
+            for key, label in (
+                ("start", "▶️ Start"),
+                ("dev", "🛠️ Dev"),
+                ("deploy", "🚀 Deploy"),
+            ):
+                if key in profile.commands:
+                    action_row.append(
+                        InlineKeyboardButton(label, callback_data=f"act:{key}")
+                    )
+            if action_row:
+                keyboard_rows.append(action_row[:3])
+
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+            ]
+        )
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
     async def _build_agentic_workspace_catalog(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -1477,6 +1622,113 @@ class MessageOrchestrator:
                     args=[command],
                     success=success,
                 )
+
+    async def _run_agentic_background_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        action_key: str,
+    ) -> None:
+        """Launch a long-running workspace command in the background."""
+        user_id = query.from_user.id
+        _current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        operator_runtime = self._get_agentic_operator_runtime(context)
+        if not project_automation or not profile or not operator_runtime:
+            await query.edit_message_text("Background jobs are not available.")
+            return
+
+        command = profile.commands.get(action_key)
+        if not command:
+            await query.answer("Action is not available in this workspace.", show_alert=True)
+            return
+
+        title = {
+            "start": "Start",
+            "dev": "Dev",
+            "deploy": "Deploy",
+        }.get(action_key, action_key.title())
+
+        try:
+            job = await operator_runtime.launch_job(
+                workspace_root=profile.root_path,
+                action_key=action_key,
+                command=command,
+                title=title,
+            )
+        except RuntimeError as exc:
+            await query.answer(str(exc), show_alert=True)
+            text, reply_markup = await self._build_agentic_jobs_text(context)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+            return
+
+        header = (
+            "▶️ <b>Background Job Started</b>\n\n"
+            f"Action: <code>{escape_html(title)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Job: <code>{escape_html(job.job_id)}</code>\n"
+            f"Command: <code>{escape_html(command)}</code>"
+        )
+        text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command=f"workspace_job_{action_key}",
+                args=[command, str(current_workspace)],
+                success=True,
+            )
+
+    async def _stop_agentic_background_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        job_id: str,
+    ) -> None:
+        """Stop a persisted background workspace job."""
+        operator_runtime = self._get_agentic_operator_runtime(context)
+        if not operator_runtime:
+            await query.edit_message_text("Background jobs are not available.")
+            return
+
+        try:
+            job = await operator_runtime.stop_job(job_id)
+        except RuntimeError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+
+        header = (
+            "🛑 <b>Stop Requested</b>\n\n"
+            f"Job: <code>{escape_html(job.job_id)}</code>\n"
+            f"Action: <code>{escape_html(job.action_key)}</code>\n"
+            f"Status: <code>{escape_html(job.status)}</code>"
+        )
+        text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=query.from_user.id,
+                command="workspace_job_stop",
+                args=[job_id],
+                success=True,
+            )
 
     def _format_verbose_progress(
         self,
@@ -2808,6 +3060,14 @@ class MessageOrchestrator:
                 reply_markup=reply_markup,
             )
 
+        elif action == "jobs":
+            text, reply_markup = await self._build_agentic_jobs_text(context)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+
         elif action == "recent":
             text = await self._build_agentic_recent_text(context, query.from_user.id)
             await query.edit_message_text(
@@ -2852,6 +3112,14 @@ class MessageOrchestrator:
 
         elif action in {"health", "build"}:
             await self._run_agentic_command_action(query, context, action)
+
+        elif action in {"start", "dev", "deploy"}:
+            await self._run_agentic_background_action(query, context, action)
+
+        elif action.startswith("stop:"):
+            await self._stop_agentic_background_action(
+                query, context, action.split(":", 1)[1]
+            )
 
         elif action.startswith("v"):
             level = int(action[1])

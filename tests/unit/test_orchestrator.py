@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.bot.features.operator_runtime import WorkspaceOperatorRuntime
 from src.bot.features.project_automation import ProjectAutomationManager
 from src.bot.orchestrator import MessageOrchestrator, _redact_secrets
 from src.config import create_test_config
@@ -250,6 +251,7 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
     ]
     assert "🎛️ Panel" in labels
     assert "📁 Projects" in labels
+    assert "🧵 Jobs" in labels
     assert "🩺 Doctor" in labels
     assert "Alice" in call_kwargs.args[0]
 
@@ -759,6 +761,68 @@ workspaces:
     result_text = status_msg.edit_text.call_args.args[0]
     assert "Health Check" in result_text
     assert "Exit code: <code>0</code>" in result_text
+
+
+async def test_agentic_quick_action_start_launches_background_job(
+    agentic_settings, tmp_dir
+):
+    """Start quick action should launch a persistent background job."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "FreelanceAggregator"
+    workspace_root.mkdir()
+    (workspace_root / "requirements.txt").write_text(
+        "fastapi==0.115.0\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: FreelanceAggregator
+    name: FreelanceAggregator
+    commands:
+      start: python3 -c "import time; print('boot'); time.sleep(10)"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    operator_runtime = WorkspaceOperatorRuntime(tmp_dir / "operator_runtime")
+
+    query = MagicMock()
+    query.data = "act:start"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(
+            get_project_automation=lambda: manager,
+            get_workspace_operator=lambda: operator_runtime,
+        ),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    text = query.edit_message_text.call_args.args[0]
+    assert "Background Job Started" in text
+    assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
+
+    job = operator_runtime.get_latest_job(workspace_root)
+    assert job is not None
+    assert job.action_key == "start"
+    assert job.is_active is True
+
+    stopped = await operator_runtime.stop_job(job.job_id)
+    if stopped.is_active:
+        await asyncio.sleep(0.3)
 
 
 async def test_agentic_callback_switches_nested_workspace_and_keeps_markup(

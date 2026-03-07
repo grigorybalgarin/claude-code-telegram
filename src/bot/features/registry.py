@@ -2,6 +2,7 @@
 Central feature registry and management
 """
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import structlog
@@ -15,6 +16,7 @@ from .conversation_mode import ConversationEnhancer
 from .file_handler import FileHandler
 from .git_integration import GitIntegration
 from .image_handler import ImageHandler
+from .operator_runtime import WorkspaceOperatorRuntime
 from .project_automation import ProjectAutomationManager
 from .quick_actions import QuickActionManager
 from .session_export import SessionExporter
@@ -70,6 +72,24 @@ class FeatureRegistry:
             logger.info("Project change guard enabled")
         except Exception as e:
             logger.error("Failed to initialize project change guard", error=str(e))
+
+        try:
+            state_root = (
+                self.config.database_path.parent / "operator_runtime"
+                if self.config.database_path
+                else Path("data/operator_runtime").resolve()
+            )
+            self.features["workspace_operator"] = WorkspaceOperatorRuntime(
+                state_root=state_root
+            )
+            logger.info(
+                "Workspace operator runtime enabled",
+                state_root=str(state_root),
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to initialize workspace operator runtime", error=str(e)
+            )
 
         # Quick actions - skip in agentic mode
         if self.config.enable_quick_actions and not self.config.agentic_mode:
@@ -147,6 +167,10 @@ class FeatureRegistry:
     def get_project_change_guard(self) -> Optional[ProjectChangeGuard]:
         """Get automatic checkpoint/verify/rollback feature."""
         return self.get_feature("change_guard")
+
+    def get_workspace_operator(self) -> Optional[WorkspaceOperatorRuntime]:
+        """Get background operator runtime feature."""
+        return self.get_feature("workspace_operator")
 
     def get_session_export(self) -> Optional[SessionExporter]:
         """Get session export feature"""
