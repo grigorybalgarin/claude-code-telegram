@@ -586,6 +586,10 @@ class ProjectAutomationManager:
             steps = []
             if "lint" in profile.commands:
                 steps.append(f"Run lint first: {profile.commands['lint']}")
+            if "typecheck" in profile.commands:
+                steps.append(
+                    f"Run type checks before finishing: {profile.commands['typecheck']}"
+                )
             if "format" in profile.commands:
                 steps.append(f"Run formatting when helpful: {profile.commands['format']}")
             steps.extend(
@@ -602,13 +606,27 @@ class ProjectAutomationManager:
                 step_block = "1. Use the project's available quality tools."
             body = f"Goal:\n{step_block}\n"
         else:
+            doctor_steps = [
+                "1. Inspect git state and recent changes.",
+                "2. Review the current workspace for risk, regressions, and missing follow-up work.",
+                "3. Use git status/diff/log when relevant.",
+            ]
+            if "health" in profile.commands:
+                doctor_steps.append(
+                    f"4. Run the detected health command when useful: {profile.commands['health']}"
+                )
+            if "typecheck" in profile.commands:
+                doctor_steps.append(
+                    f"{len(doctor_steps) + 1}. Include the detected typecheck command when it helps surface risk: {profile.commands['typecheck']}"
+                )
+            doctor_steps.extend(
+                [
+                    f"{len(doctor_steps) + 1}. Do not modify files unless fixing a trivial broken state is clearly necessary.",
+                    f"{len(doctor_steps) + 2}. End with findings first, then a short change summary.",
+                ]
+            )
             body = (
-                "Goal:\n"
-                "1. Inspect git state and recent changes.\n"
-                "2. Review the current workspace for risk, regressions, and missing follow-up work.\n"
-                "3. Use git status/diff/log when relevant.\n"
-                "4. Do not modify files unless fixing a trivial broken state is clearly necessary.\n"
-                "5. End with findings first, then a short change summary.\n"
+                "Goal:\n" + "\n".join(doctor_steps) + "\n"
             )
 
         extra = (
@@ -648,7 +666,7 @@ class ProjectAutomationManager:
     def get_verification_commands(self, profile: ProjectProfile) -> List[str]:
         """Return project-wide verification commands in priority order."""
         commands: List[str] = []
-        for key in ("lint", "test", "build"):
+        for key in ("lint", "typecheck", "test", "build"):
             command = profile.commands.get(key)
             if command and command not in commands:
                 commands.append(command)
@@ -691,7 +709,18 @@ class ProjectAutomationManager:
         if not isinstance(scripts, dict):
             return commands
 
-        for name in ("test", "lint", "format", "build"):
+        for name in (
+            "test",
+            "lint",
+            "format",
+            "build",
+            "typecheck",
+            "check",
+            "health",
+            "deploy",
+            "start",
+            "dev",
+        ):
             if name in scripts:
                 commands[name] = f"{package_manager} run {name}"
 
@@ -750,6 +779,9 @@ class ProjectAutomationManager:
         elif "black" in lowered:
             commands.setdefault("format", f"{prefix}black .".strip())
 
+        if "mypy" in lowered:
+            commands.setdefault("typecheck", f"{prefix}mypy .".strip())
+
         if not commands.get("test") and (root / "tests").exists():
             commands["test"] = f"{prefix}pytest".strip()
 
@@ -769,10 +801,22 @@ class ProjectAutomationManager:
             targets.setdefault("lint", "make lint")
         if "format" in lowered:
             targets.setdefault("format", "make format")
+        if "typecheck" in lowered:
+            targets.setdefault("typecheck", "make typecheck")
+        if "check" in lowered:
+            targets.setdefault("typecheck", "make check")
         if "install" in lowered:
             targets.setdefault("install", "make install")
         if "build" in lowered:
             targets.setdefault("build", "make build")
+        if "health" in lowered:
+            targets.setdefault("health", "make health")
+        if "deploy" in lowered:
+            targets.setdefault("deploy", "make deploy")
+        if "start" in lowered:
+            targets.setdefault("start", "make start")
+        if "dev" in lowered:
+            targets.setdefault("dev", "make dev")
         return targets
 
     def _find_compose_file(self, root: Path) -> Optional[Path]:

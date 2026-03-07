@@ -32,6 +32,9 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
         """.strip(),
         encoding="utf-8",
     )
@@ -49,6 +52,7 @@ line-length = 100
     assert profile.commands["test"] == "poetry run pytest"
     assert profile.commands["lint"] == "poetry run ruff check ."
     assert profile.commands["format"] == "poetry run ruff format ."
+    assert profile.commands["typecheck"] == "poetry run mypy ."
     assert [playbook.slug for playbook in playbooks] == [
         "doctor",
         "setup",
@@ -71,6 +75,7 @@ def test_detects_node_workspace_from_subdirectory(tmp_path):
                 "scripts": {
                     "test": "vitest run",
                     "lint": "eslint .",
+                    "typecheck": "tsc --noEmit",
                     "build": "vite build",
                 },
             }
@@ -87,6 +92,7 @@ def test_detects_node_workspace_from_subdirectory(tmp_path):
     assert profile.commands["install"] == "pnpm install"
     assert profile.commands["test"] == "pnpm run test"
     assert profile.commands["lint"] == "pnpm run lint"
+    assert profile.commands["typecheck"] == "pnpm run typecheck"
     assert profile.commands["build"] == "pnpm run build"
 
 
@@ -107,6 +113,29 @@ def test_build_playbook_prompt_includes_detected_commands_and_extra_note(tmp_pat
     assert 'You are running the "setup" project playbook.' in prompt
     assert "poetry install" in prompt
     assert "Prefer the API service first" in prompt
+
+
+def test_quality_playbook_prompt_mentions_typecheck_when_available(tmp_path):
+    """Quality playbook should mention detected typecheck commands."""
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "webapp",
+                "scripts": {
+                    "lint": "eslint .",
+                    "typecheck": "tsc --noEmit",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    profile = manager.build_profile(tmp_path, tmp_path)
+    prompt = manager.build_playbook_prompt("quality", profile)
+
+    assert "Run type checks before finishing" in prompt
+    assert "npm run typecheck" in prompt
 
 
 def test_build_automation_plan_matches_test_playbook(tmp_path):
@@ -227,6 +256,34 @@ def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(t
 
     assert plan.workspace_root == current_root
     assert plan.workspace_changed is False
+
+
+def test_verification_commands_include_typecheck(tmp_path):
+    """Auto-verify should include typecheck between lint and tests when available."""
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "webapp",
+                "scripts": {
+                    "lint": "eslint .",
+                    "typecheck": "tsc --noEmit",
+                    "test": "vitest run",
+                    "build": "vite build",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    profile = manager.build_profile(tmp_path, tmp_path)
+
+    assert manager.get_verification_commands(profile) == [
+        "npm run lint",
+        "npm run typecheck",
+        "npm run test",
+        "npm run build",
+    ]
 
 
 def test_list_workspace_summaries_skips_container_directories(tmp_path):
