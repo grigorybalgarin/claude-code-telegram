@@ -33,6 +33,8 @@ from telegram.ext import (
 from ..claude.sdk_integration import StreamUpdate
 from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
+from .features.change_guard import ChangeGuardReport
+from ..utils.redaction import redact_sensitive_text
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
 from .utils.html_format import escape_html
 from .utils.image_extractor import (
@@ -43,46 +45,10 @@ from .utils.image_extractor import (
 
 logger = structlog.get_logger()
 
-# Patterns that look like secrets/credentials in CLI arguments
-_SECRET_PATTERNS: List[re.Pattern[str]] = [
-    # API keys / tokens (sk-ant-..., sk-..., ghp_..., gho_..., github_pat_..., xoxb-...)
-    re.compile(
-        r"(sk-ant-api\d*-[A-Za-z0-9_-]{10})[A-Za-z0-9_-]*"
-        r"|(sk-[A-Za-z0-9_-]{20})[A-Za-z0-9_-]*"
-        r"|(ghp_[A-Za-z0-9]{5})[A-Za-z0-9]*"
-        r"|(gho_[A-Za-z0-9]{5})[A-Za-z0-9]*"
-        r"|(github_pat_[A-Za-z0-9_]{5})[A-Za-z0-9_]*"
-        r"|(xoxb-[A-Za-z0-9]{5})[A-Za-z0-9-]*"
-    ),
-    # AWS access keys
-    re.compile(r"(AKIA[0-9A-Z]{4})[0-9A-Z]{12}"),
-    # Generic long hex/base64 tokens after common flags/env patterns
-    re.compile(
-        r"((?:--token|--secret|--password|--api-key|--apikey|--auth)"
-        r"[= ]+)['\"]?[A-Za-z0-9+/_.:-]{8,}['\"]?"
-    ),
-    # Inline env assignments like KEY=value
-    re.compile(
-        r"((?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|AUTH_TOKEN|PRIVATE_KEY"
-        r"|ACCESS_KEY|CLIENT_SECRET|WEBHOOK_SECRET)"
-        r"=)['\"]?[^\s'\"]{8,}['\"]?"
-    ),
-    # Bearer / Basic auth headers
-    re.compile(r"(Bearer )[A-Za-z0-9+/_.:-]{8,}" r"|(Basic )[A-Za-z0-9+/=]{8,}"),
-    # Connection strings with credentials  user:pass@host
-    re.compile(r"://([^:]+:)[^@]{4,}(@)"),
-]
-
 
 def _redact_secrets(text: str) -> str:
     """Replace likely secrets/credentials with redacted placeholders."""
-    result = text
-    for pattern in _SECRET_PATTERNS:
-        result = pattern.sub(
-            lambda m: next((g + "***" for g in m.groups() if g is not None), "***"),
-            result,
-        )
-    return result
+    return redact_sensitive_text(text)
 
 
 # Tool name -> friendly emoji mapping for verbose output
@@ -322,6 +288,14 @@ class MessageOrchestrator:
         if update.effective_message:
             await update.effective_message.reply_text(message, parse_mode="HTML")
 
+    def _get_boundary_root(self, context: ContextTypes.DEFAULT_TYPE) -> Path:
+        """Resolve the approved root for the current thread or chat."""
+        if self.settings.enable_project_threads:
+            thread_context = context.user_data.get("_thread_context")
+            if thread_context:
+                return Path(thread_context["project_root"]).resolve()
+        return self.settings.approved_directory
+
     def register_handlers(self, app: Application) -> None:
         """Register handlers based on mode."""
         if self.settings.agentic_mode:
@@ -338,6 +312,10 @@ class MessageOrchestrator:
             ("start", self.agentic_start),
             ("new", self.agentic_new),
             ("status", self.agentic_status),
+            ("diag", command.diag_command),
+            ("recent", command.recent_activity_command),
+            ("playbooks", command.playbooks_command),
+            ("run", command.run_playbook_command),
             ("verbose", self.agentic_verbose),
             ("stats", self.agentic_stats),
             ("template", self.agentic_template),
@@ -422,6 +400,10 @@ class MessageOrchestrator:
             ("pwd", command.print_working_directory),
             ("projects", command.show_projects),
             ("status", command.session_status),
+            ("diag", command.diag_command),
+            ("recent", command.recent_activity_command),
+            ("playbooks", command.playbooks_command),
+            ("run", command.run_playbook_command),
             ("export", command.export_session),
             ("actions", command.quick_actions),
             ("git", command.git_command),
@@ -458,7 +440,7 @@ class MessageOrchestrator:
             CallbackQueryHandler(self._inject_deps(callback.handle_callback_query))
         )
 
-        logger.info("Classic handlers registered (13 commands + full handler set)")
+        logger.info("Classic handlers registered (18 commands + full handler set)")
 
     async def get_bot_commands(self) -> list:  # type: ignore[type-arg]
         """Return bot commands appropriate for current mode."""
@@ -467,6 +449,10 @@ class MessageOrchestrator:
                 BotCommand("start", "Start the bot"),
                 BotCommand("new", "Start a fresh session"),
                 BotCommand("status", "Show session status"),
+                BotCommand("diag", "Show bot and workspace diagnostics"),
+                BotCommand("recent", "Show recent prompts and commands"),
+                BotCommand("playbooks", "List deterministic playbooks"),
+                BotCommand("run", "Run a workspace playbook"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("stats", "Usage analytics & costs"),
                 BotCommand("template", "Manage prompt templates"),
@@ -489,6 +475,10 @@ class MessageOrchestrator:
                 BotCommand("pwd", "Show current directory"),
                 BotCommand("projects", "Show all projects"),
                 BotCommand("status", "Show session status"),
+                BotCommand("diag", "Show bot and workspace diagnostics"),
+                BotCommand("recent", "Show recent prompts and commands"),
+                BotCommand("playbooks", "List deterministic playbooks"),
+                BotCommand("run", "Run a workspace playbook"),
                 BotCommand("export", "Export current session"),
                 BotCommand("actions", "Show quick actions"),
                 BotCommand("git", "Git repository commands"),
@@ -559,7 +549,9 @@ class MessageOrchestrator:
         ])
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
-            f"Just tell me what you need — I can read, write, and run code.\n\n"
+            f"Just tell me what you need — commands are optional.\n"
+            "Autopilot is on: I will detect the workspace, checkpoint risky edits, "
+            "run final verification, and roll back automatically if verification fails.\n\n"
             f"Working in: {dir_display}"
             f"{sync_line}",
             parse_mode="HTML",
@@ -1192,6 +1184,21 @@ class MessageOrchestrator:
             "current_directory", self.settings.approved_directory
         )
         session_id = context.user_data.get("claude_session_id")
+        working_dir = current_dir
+        guard_report: Optional[ChangeGuardReport] = None
+        checkpoint = None
+
+        features = context.bot_data.get("features")
+        project_automation = (
+            getattr(features, "get_project_automation", lambda: None)()
+            if features
+            else None
+        )
+        change_guard = (
+            getattr(features, "get_project_change_guard", lambda: None)()
+            if features
+            else None
+        )
 
         # Check if /new was used — skip auto-resume for this first message.
         # Flag is only cleared after a successful run so retries keep the intent.
@@ -1229,6 +1236,19 @@ class MessageOrchestrator:
         # Prepend custom instructions to prompt if set
         custom_instructions = context.user_data.get("custom_instructions", [])
         final_prompt = message_text
+        autopilot_plan = None
+        if project_automation:
+            autopilot_plan = project_automation.build_automation_plan(
+                message_text,
+                current_dir,
+                self._get_boundary_root(context),
+            )
+            final_prompt = autopilot_plan.prompt
+            working_dir = autopilot_plan.workspace_root
+            if working_dir != current_dir:
+                session_id = None
+            if autopilot_plan.should_checkpoint and change_guard:
+                checkpoint = await change_guard.create_checkpoint(working_dir)
         if custom_instructions:
             instructions_block = "\n".join(
                 f"- {inst}" for inst in custom_instructions
@@ -1253,7 +1273,7 @@ class MessageOrchestrator:
         try:
             claude_response = await claude_integration.run_command(
                 prompt=final_prompt,
-                working_directory=current_dir,
+                working_directory=working_dir,
                 user_id=user_id,
                 session_id=session_id,
                 on_stream=on_stream,
@@ -1287,6 +1307,38 @@ class MessageOrchestrator:
                 except Exception as e:
                     logger.warning("Failed to log interaction", error=str(e))
 
+            if autopilot_plan and autopilot_plan.should_verify and change_guard:
+                verification_results = await change_guard.run_verification_commands(
+                    working_dir,
+                    project_automation.get_verification_commands(autopilot_plan.profile),
+                )
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=checkpoint is not None,
+                    checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    verification_results=verification_results,
+                )
+                failed_result = next(
+                    (result for result in verification_results if not result.success),
+                    None,
+                )
+                if failed_result and checkpoint:
+                    rollback_report = await change_guard.rollback(
+                        checkpoint,
+                        reason=f"verification failed: {failed_result.command}",
+                    )
+                    guard_report.rollback_triggered = rollback_report.rollback_triggered
+                    guard_report.rollback_succeeded = rollback_report.rollback_succeeded
+                    guard_report.failure_reason = rollback_report.failure_reason
+                    guard_report.rollback_error = rollback_report.rollback_error
+                elif checkpoint:
+                    await change_guard.cleanup_checkpoint(checkpoint)
+            elif checkpoint and change_guard:
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=True,
+                    checkpoint_id=checkpoint.checkpoint_id,
+                )
+                await change_guard.cleanup_checkpoint(checkpoint)
+
             # Format response (no reply_markup — strip keyboards)
             from .utils.formatting import ResponseFormatter
 
@@ -1312,6 +1364,12 @@ class MessageOrchestrator:
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
             from .handlers.message import _format_error_message
             from .utils.formatting import FormattedMessage
+
+            if checkpoint and change_guard:
+                guard_report = await change_guard.rollback(
+                    checkpoint,
+                    reason=f"claude error: {type(e).__name__}",
+                )
 
             # Enrich timeout errors with tool context
             error_msg = _format_error_message(e)
@@ -1390,6 +1448,13 @@ class MessageOrchestrator:
                     )
                 except Exception as img_err:
                     logger.warning("Image send failed", error=str(img_err))
+
+        if guard_report and change_guard:
+            await update.message.reply_text(
+                change_guard.format_report_html(guard_report),
+                parse_mode="HTML",
+                reply_to_message_id=update.message.message_id,
+            )
 
         # Audit log
         audit_logger = context.bot_data.get("audit_logger")

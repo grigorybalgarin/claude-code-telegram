@@ -10,10 +10,12 @@ from src.config.settings import Settings
 from src.security.validators import SecurityValidator
 from src.storage.facade import Storage
 
+from .change_guard import ProjectChangeGuard
 from .conversation_mode import ConversationEnhancer
 from .file_handler import FileHandler
 from .git_integration import GitIntegration
 from .image_handler import ImageHandler
+from .project_automation import ProjectAutomationManager
 from .quick_actions import QuickActionManager
 from .session_export import SessionExporter
 from .voice_handler import VoiceHandler
@@ -54,6 +56,20 @@ class FeatureRegistry:
                 logger.info("Git integration feature enabled")
             except Exception as e:
                 logger.error("Failed to initialize git integration", error=str(e))
+
+        # Project automation is always available because it only inspects the
+        # current workspace and provides deterministic playbooks.
+        try:
+            self.features["project_automation"] = ProjectAutomationManager()
+            logger.info("Project automation feature enabled")
+        except Exception as e:
+            logger.error("Failed to initialize project automation", error=str(e))
+
+        try:
+            self.features["change_guard"] = ProjectChangeGuard()
+            logger.info("Project change guard enabled")
+        except Exception as e:
+            logger.error("Failed to initialize project change guard", error=str(e))
 
         # Quick actions - skip in agentic mode
         if self.config.enable_quick_actions and not self.config.agentic_mode:
@@ -123,6 +139,14 @@ class FeatureRegistry:
     def get_quick_actions(self) -> Optional[QuickActionManager]:
         """Get quick actions feature"""
         return self.get_feature("quick_actions")
+
+    def get_project_automation(self) -> Optional[ProjectAutomationManager]:
+        """Get project automation feature."""
+        return self.get_feature("project_automation")
+
+    def get_project_change_guard(self) -> Optional[ProjectChangeGuard]:
+        """Get automatic checkpoint/verify/rollback feature."""
+        return self.get_feature("change_guard")
 
     def get_session_export(self) -> Optional[SessionExporter]:
         """Get session export feature"""

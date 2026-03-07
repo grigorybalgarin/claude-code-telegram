@@ -1,10 +1,18 @@
 """Tests for security audit logging."""
 
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from src.security.audit import AuditEvent, AuditLogger, InMemoryAuditStorage
+from src.security.audit import (
+    AuditEvent,
+    AuditLogger,
+    InMemoryAuditStorage,
+    SQLiteAuditStorage,
+)
+from src.storage.database import DatabaseManager
 
 
 class TestAuditEvent:
@@ -454,3 +462,50 @@ class TestAuditLogger:
         assert dashboard["active_users"] == 2
         assert "path_traversal" in dashboard["top_violation_types"]
         assert "injection" in dashboard["top_violation_types"]
+
+
+class TestSQLiteAuditStorage:
+    """Test SQLite-backed audit storage."""
+
+    @pytest.fixture
+    async def storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "test.db"
+            db_manager = DatabaseManager(f"sqlite:///{db_path}")
+            await db_manager.initialize()
+            yield SQLiteAuditStorage(db_manager)
+            await db_manager.close()
+
+    async def test_store_and_get_event(self, storage):
+        """Stored events should be retrievable in reverse chronological order."""
+        event = AuditEvent(
+            timestamp=datetime.now(UTC),
+            user_id=123,
+            event_type="command",
+            success=True,
+            details={"command": "ls"},
+            risk_level="low",
+        )
+
+        await storage.store_event(event)
+        events = await storage.get_events(user_id=123)
+
+        assert len(events) == 1
+        assert events[0].event_type == "command"
+        assert events[0].details["command"] == "ls"
+
+    async def test_store_event_redacts_sensitive_details(self, storage):
+        """Sensitive values should be redacted before persisting audit payloads."""
+        event = AuditEvent(
+            timestamp=datetime.now(UTC),
+            user_id=123,
+            event_type="command",
+            success=True,
+            details={"Authorization": "Bearer super-secret-token"},
+            risk_level="high",
+        )
+
+        await storage.store_event(event)
+        events = await storage.get_events(user_id=123)
+
+        assert events[0].details["Authorization"] == "***"

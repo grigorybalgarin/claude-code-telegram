@@ -82,8 +82,8 @@ def deps():
     }
 
 
-def test_agentic_registers_6_commands(agentic_settings, deps):
-    """Agentic mode registers start, new, status, verbose, repo, restart commands."""
+def test_agentic_registers_13_commands(agentic_settings, deps):
+    """Agentic mode registers built-in commands plus diagnostics and playbooks."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -100,18 +100,22 @@ def test_agentic_registers_6_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 9
+    assert len(cmd_handlers) == 13
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
+    assert frozenset({"diag"}) in commands
+    assert frozenset({"recent"}) in commands
+    assert frozenset({"playbooks"}) in commands
+    assert frozenset({"run"}) in commands
     assert frozenset({"verbose"}) in commands
     assert frozenset({"repo"}) in commands
     assert frozenset({"restart"}) in commands
     assert frozenset({"stats"}) in commands
 
 
-def test_classic_registers_14_commands(classic_settings, deps):
-    """Classic mode registers all 14 commands."""
+def test_classic_registers_18_commands(classic_settings, deps):
+    """Classic mode registers the full command set including automation tools."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -126,7 +130,7 @@ def test_classic_registers_14_commands(classic_settings, deps):
         if isinstance(call[0][0], CommandHandler)
     ]
 
-    assert len(cmd_handlers) == 14
+    assert len(cmd_handlers) == 18
 
 
 def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
@@ -157,28 +161,36 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
-    """Agentic mode returns 6 bot commands."""
+    """Agentic mode returns command menu with diagnostics and playbooks."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 9
+    assert len(commands) == 13
     cmd_names = [c.command for c in commands]
     assert "start" in cmd_names
     assert "new" in cmd_names
     assert "status" in cmd_names
+    assert "diag" in cmd_names
+    assert "recent" in cmd_names
+    assert "playbooks" in cmd_names
+    assert "run" in cmd_names
     assert "verbose" in cmd_names
     assert "stats" in cmd_names
 
 
 async def test_classic_bot_commands(classic_settings, deps):
-    """Classic mode returns 14 bot commands."""
+    """Classic mode returns the full command menu including automation tools."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 14
+    assert len(commands) == 18
     cmd_names = [c.command for c in commands]
     assert "start" in cmd_names
     assert "help" in cmd_names
+    assert "diag" in cmd_names
+    assert "recent" in cmd_names
+    assert "playbooks" in cmd_names
+    assert "run" in cmd_names
     assert "git" in cmd_names
     assert "restart" in cmd_names
 
@@ -324,6 +336,71 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
     ]
     for call in response_calls:
         assert call.kwargs.get("reply_markup") is None
+
+
+async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):
+    """Agentic text should route through autopilot when project automation is available."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "project"
+    workspace_root.mkdir()
+    nested_dir = workspace_root / "src"
+    nested_dir.mkdir()
+
+    mock_response = MagicMock()
+    mock_response.session_id = "session-xyz"
+    mock_response.content = "Done."
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+
+    autopilot_plan = SimpleNamespace(
+        prompt="AUTOPILOT PROMPT",
+        workspace_root=workspace_root,
+        profile=SimpleNamespace(),
+        matched_playbook=None,
+        should_checkpoint=False,
+        should_verify=False,
+    )
+    project_automation = MagicMock()
+    project_automation.build_automation_plan.return_value = autopilot_plan
+    change_guard = MagicMock()
+    features = SimpleNamespace(
+        get_project_automation=lambda: project_automation,
+        get_project_change_guard=lambda: change_guard,
+    )
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.text = "Fix this bug"
+    update.message.message_id = 1
+    update.message.chat.type = "private"
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    context = MagicMock()
+    context.user_data = {"current_directory": nested_dir}
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+        "features": features,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    claude_integration.run_command.assert_called_once()
+    kwargs = claude_integration.run_command.call_args.kwargs
+    assert kwargs["prompt"] == "AUTOPILOT PROMPT"
+    assert kwargs["working_directory"] == workspace_root
+    assert kwargs["session_id"] is None
 
 
 async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):

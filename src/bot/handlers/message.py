@@ -1,6 +1,7 @@
 """Message handlers for non-command inputs."""
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -19,6 +20,7 @@ from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.rate_limiter import RateLimiter
 from ...security.validators import SecurityValidator
+from ..features.change_guard import ChangeGuardReport
 from ..utils.html_format import escape_html
 from ..utils.image_extractor import (
     ImageAttachment,
@@ -27,6 +29,15 @@ from ..utils.image_extractor import (
 )
 
 logger = structlog.get_logger()
+
+
+def _get_boundary_root(settings: Settings, context: ContextTypes.DEFAULT_TYPE) -> Path:
+    """Resolve the approved root for the current conversation context."""
+    if settings.enable_project_threads:
+        thread_context = context.user_data.get("_thread_context")
+        if thread_context:
+            return Path(thread_context["project_root"]).resolve()
+    return settings.approved_directory
 
 
 async def _format_progress_update(update_obj) -> Optional[str]:
@@ -347,6 +358,7 @@ async def handle_text_message(
         current_dir = context.user_data.get(
             "current_directory", settings.approved_directory
         )
+        working_dir = current_dir
 
         # Get existing session ID
         session_id = context.user_data.get("claude_session_id")
@@ -357,6 +369,34 @@ async def handle_text_message(
 
         # MCP image collection via stream intercept
         mcp_images: list[ImageAttachment] = []
+        guard_report: Optional[ChangeGuardReport] = None
+        checkpoint = None
+
+        features = context.bot_data.get("features")
+        project_automation = (
+            getattr(features, "get_project_automation", lambda: None)()
+            if features
+            else None
+        )
+        change_guard = (
+            getattr(features, "get_project_change_guard", lambda: None)()
+            if features
+            else None
+        )
+        autopilot_plan = None
+        prompt_text = message_text
+        if project_automation:
+            autopilot_plan = project_automation.build_automation_plan(
+                message_text,
+                current_dir,
+                _get_boundary_root(settings, context),
+            )
+            prompt_text = autopilot_plan.prompt
+            working_dir = autopilot_plan.workspace_root
+            if working_dir != current_dir:
+                session_id = None
+            if autopilot_plan.should_checkpoint and change_guard:
+                checkpoint = await change_guard.create_checkpoint(working_dir)
 
         # Enhanced stream updates handler with progress tracking
         async def stream_handler(update_obj):
@@ -387,8 +427,8 @@ async def handle_text_message(
         # Run Claude command
         try:
             claude_response = await claude_integration.run_command(
-                prompt=message_text,
-                working_directory=current_dir,
+                prompt=prompt_text,
+                working_directory=working_dir,
                 user_id=user_id,
                 session_id=session_id,
                 on_stream=stream_handler,
@@ -420,6 +460,38 @@ async def handle_text_message(
                 except Exception as e:
                     logger.warning("Failed to log interaction to storage", error=str(e))
 
+            if autopilot_plan and autopilot_plan.should_verify and change_guard:
+                verification_results = await change_guard.run_verification_commands(
+                    working_dir,
+                    project_automation.get_verification_commands(autopilot_plan.profile),
+                )
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=checkpoint is not None,
+                    checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    verification_results=verification_results,
+                )
+                failed_result = next(
+                    (result for result in verification_results if not result.success),
+                    None,
+                )
+                if failed_result and checkpoint:
+                    rollback_report = await change_guard.rollback(
+                        checkpoint,
+                        reason=f"verification failed: {failed_result.command}",
+                    )
+                    guard_report.rollback_triggered = rollback_report.rollback_triggered
+                    guard_report.rollback_succeeded = rollback_report.rollback_succeeded
+                    guard_report.failure_reason = rollback_report.failure_reason
+                    guard_report.rollback_error = rollback_report.rollback_error
+                elif checkpoint:
+                    await change_guard.cleanup_checkpoint(checkpoint)
+            elif checkpoint and change_guard:
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=True,
+                    checkpoint_id=checkpoint.checkpoint_id,
+                )
+                await change_guard.cleanup_checkpoint(checkpoint)
+
             # Format response
             from ..utils.formatting import ResponseFormatter
 
@@ -431,6 +503,12 @@ async def handle_text_message(
         except Exception as e:
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
             from ..utils.formatting import FormattedMessage
+
+            if checkpoint and change_guard:
+                guard_report = await change_guard.rollback(
+                    checkpoint,
+                    reason=f"claude error: {type(e).__name__}",
+                )
 
             formatted_messages = [
                 FormattedMessage(_format_error_message(e), parse_mode="HTML")
@@ -574,17 +652,24 @@ async def handle_text_message(
                     except Exception as doc_err:
                         logger.warning(
                             "Failed to send document image",
-                            path=str(img.path),
-                            error=str(doc_err),
-                        )
+                                path=str(img.path),
+                                error=str(doc_err),
+                            )
+
+        if guard_report and change_guard:
+            await update.message.reply_text(
+                change_guard.format_report_html(guard_report),
+                parse_mode="HTML",
+            )
 
         # Update session info
         context.user_data["last_message"] = update.message.text
 
         # Add conversation enhancements if available
-        features = context.bot_data.get("features")
         conversation_enhancer = (
-            features.get_conversation_enhancer() if features else None
+            getattr(features, "get_conversation_enhancer", lambda: None)()
+            if features
+            else None
         )
 
         if conversation_enhancer and claude_response:

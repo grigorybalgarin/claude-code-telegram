@@ -26,10 +26,10 @@ from src.exceptions import ConfigurationError
 from src.notifications.service import NotificationService
 from src.projects import ProjectThreadManager, load_project_registry
 from src.scheduler.scheduler import JobScheduler
-from src.security.audit import AuditLogger, InMemoryAuditStorage
+from src.security.audit import AuditLogger, SQLiteAuditStorage
 from src.security.auth import (
     AuthenticationManager,
-    InMemoryTokenStorage,
+    SQLiteTokenStorage,
     TokenAuthProvider,
     WhitelistAuthProvider,
 )
@@ -37,6 +37,26 @@ from src.security.rate_limiter import RateLimiter
 from src.security.validators import SecurityValidator
 from src.storage.facade import Storage
 from src.storage.session_storage import SQLiteSessionStorage
+from src.utils.process_lock import SingleInstanceLock
+from src.utils.redaction import redact_sensitive_text, redact_sensitive_value
+
+
+class _RedactingLogFilter(logging.Filter):
+    """Best-effort redaction for standard-library log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_sensitive_text(record.msg, max_length=4000)
+        if record.args:
+            record.args = redact_sensitive_value(record.args, max_string_length=2000)
+        return True
+
+
+def _redact_structlog_event(
+    _logger: Any, _method_name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Redact likely secrets from structured log payloads."""
+    return redact_sensitive_value(event_dict, max_string_length=4000)
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -50,6 +70,15 @@ def setup_logging(debug: bool = False) -> None:
         stream=sys.stdout,
     )
 
+    root_logger = logging.getLogger()
+    log_filter = _RedactingLogFilter()
+    for handler in root_logger.handlers:
+        handler.addFilter(log_filter)
+
+    # Avoid noisy third-party request logs that can leak tokens in URLs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Configure structlog
     structlog.configure(
         processors=[
@@ -61,6 +90,7 @@ def setup_logging(debug: bool = False) -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
+            _redact_structlog_event,
             (
                 structlog.processors.JSONRenderer()
                 if not debug
@@ -112,8 +142,8 @@ async def create_application(config: Settings) -> Dict[str, Any]:
 
     # Add token provider if enabled
     if config.enable_token_auth:
-        token_storage = InMemoryTokenStorage()  # TODO: Use database storage
-        providers.append(TokenAuthProvider(config.auth_token_secret, token_storage))
+        token_storage = SQLiteTokenStorage(storage.db_manager)
+        providers.append(TokenAuthProvider(config.auth_secret_str or "", token_storage))
 
     # Fall back to allowing all users in development mode
     if not providers and config.development_mode:
@@ -133,7 +163,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     rate_limiter = RateLimiter(config)
 
     # Create audit storage and logger
-    audit_storage = InMemoryAuditStorage()  # TODO: Use database storage in production
+    audit_storage = SQLiteAuditStorage(storage.db_manager)
     audit_logger = AuditLogger(audit_storage)
 
     # Create Claude integration components with persistent storage
@@ -207,6 +237,11 @@ async def create_application(config: Settings) -> Dict[str, Any]:
 
     logger.info("Application components created successfully")
 
+    if config.database_path:
+        lock_path = config.database_path.parent / "claude-code-telegram.lock"
+    else:
+        lock_path = config.approved_directory / ".claude-code-telegram.lock"
+
     return {
         "bot": bot,
         "claude_integration": claude_integration,
@@ -217,6 +252,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         "agent_handler": agent_handler,
         "auth_manager": auth_manager,
         "security_validator": security_validator,
+        "instance_lock": SingleInstanceLock(lock_path),
     }
 
 
@@ -258,6 +294,7 @@ async def run_application(app: Dict[str, Any]) -> None:
     config: Settings = app["config"]
     features: FeatureFlags = app["features"]
     event_bus: EventBus = app["event_bus"]
+    instance_lock: SingleInstanceLock = app["instance_lock"]
 
     mem0_client = bot.deps.get("mem0_client")
     notification_service: Optional[NotificationService] = None
@@ -276,6 +313,8 @@ async def run_application(app: Dict[str, Any]) -> None:
 
     try:
         logger.info("Starting Claude Code Telegram Bot")
+
+        instance_lock.acquire()
 
         # Kill any orphaned claude CLI processes from previous runs
         _kill_orphaned_claude_processes()
@@ -413,6 +452,8 @@ async def run_application(app: Dict[str, Any]) -> None:
             await storage.close()
         except Exception as e:
             logger.error("Error during shutdown", error=str(e))
+        finally:
+            instance_lock.release()
 
         logger.info("Application shutdown complete")
 

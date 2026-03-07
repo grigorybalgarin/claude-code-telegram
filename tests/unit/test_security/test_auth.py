@@ -1,6 +1,8 @@
 """Tests for authentication system."""
 
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -8,10 +10,12 @@ from src.exceptions import SecurityError
 from src.security.auth import (
     AuthenticationManager,
     InMemoryTokenStorage,
+    SQLiteTokenStorage,
     TokenAuthProvider,
     UserSession,
     WhitelistAuthProvider,
 )
+from src.storage.database import DatabaseManager
 
 
 class TestUserSession:
@@ -194,6 +198,48 @@ class TestTokenAuthProvider:
         # Should fail after revocation
         result = await provider.authenticate(user_id, {"token": token})
         assert result is False
+
+
+class TestSQLiteTokenStorage:
+    """Test SQLite-backed token storage."""
+
+    @pytest.fixture
+    async def storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "test.db"
+            db_manager = DatabaseManager(f"sqlite:///{db_path}")
+            await db_manager.initialize()
+            yield SQLiteTokenStorage(db_manager)
+            await db_manager.close()
+
+    async def test_store_and_retrieve_token(self, storage):
+        """Stored tokens should survive through the DB layer."""
+        expires_at = datetime.now(UTC) + timedelta(days=1)
+
+        await storage.store_token(123, "hash-1", expires_at)
+        token_data = await storage.get_user_token(123)
+
+        assert token_data is not None
+        assert token_data["hash"] == "hash-1"
+        assert token_data["expires_at"] == expires_at
+
+    async def test_store_replaces_previous_active_token(self, storage):
+        """Saving a new token should revoke previous active tokens for user."""
+        await storage.store_token(123, "hash-1", datetime.now(UTC) + timedelta(days=1))
+        await storage.store_token(123, "hash-2", datetime.now(UTC) + timedelta(days=1))
+
+        token_data = await storage.get_user_token(123)
+
+        assert token_data is not None
+        assert token_data["hash"] == "hash-2"
+
+    async def test_expired_token_is_revoked(self, storage):
+        """Expired tokens should be hidden and revoked automatically."""
+        await storage.store_token(123, "hash-1", datetime.now(UTC) - timedelta(days=1))
+
+        token_data = await storage.get_user_token(123)
+
+        assert token_data is None
 
 
 class TestAuthenticationManager:

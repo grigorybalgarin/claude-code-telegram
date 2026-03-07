@@ -66,6 +66,7 @@ def load_config(
 
         # Validate configuration
         _validate_config(settings)
+        _warn_on_risky_runtime_settings(settings)
 
         logger.info(
             "Configuration loaded successfully",
@@ -164,6 +165,34 @@ def _validate_config(settings: Settings) -> None:
 
     if settings.claude_max_cost_per_request <= 0:
         raise InvalidConfigError("claude_max_cost_per_request must be positive")
+
+
+def _warn_on_risky_runtime_settings(settings: Settings) -> None:
+    """Emit warnings for risky but still-allowed runtime configuration."""
+    risky_settings = []
+
+    approved_directory = settings.approved_directory.resolve()
+    if approved_directory in {Path("/"), Path("/root"), Path.home().resolve()}:
+        risky_settings.append(
+            f"approved_directory is very broad: {approved_directory}"
+        )
+
+    if settings.disable_security_patterns:
+        risky_settings.append("disable_security_patterns is enabled")
+
+    if settings.disable_tool_validation:
+        risky_settings.append("disable_tool_validation is enabled")
+
+    if settings.enable_mcp and settings.disable_tool_validation:
+        risky_settings.append(
+            "MCP is enabled while tool validation is disabled"
+        )
+
+    if risky_settings:
+        logger.warning(
+            "Configuration enables risky runtime behavior",
+            issues=risky_settings,
+        )
 
 
 def _get_enabled_features_summary(settings: Settings) -> list[str]:

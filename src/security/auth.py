@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import structlog
 
 from src.exceptions import SecurityError
+from src.storage.database import DatabaseManager
 
 # from src.exceptions import AuthenticationError  # Future use
 
@@ -137,6 +138,92 @@ class InMemoryTokenStorage(TokenStorage):
     async def revoke_token(self, user_id: int) -> None:
         """Remove token from memory."""
         self._tokens.pop(user_id, None)
+
+
+class SQLiteTokenStorage(TokenStorage):
+    """SQLite-backed token storage for persistent authentication."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+
+    async def _ensure_user_exists(self, user_id: int) -> None:
+        """Create a minimal user row so token storage satisfies FK constraints."""
+        now = datetime.now(UTC)
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO users
+                (user_id, first_seen, last_active, is_allowed)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, now, now, False),
+            )
+            await conn.commit()
+
+    async def store_token(
+        self, user_id: int, token_hash: str, expires_at: datetime
+    ) -> None:
+        """Persist a token hash for user and deactivate previous active tokens."""
+        await self._ensure_user_exists(user_id)
+
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_tokens SET is_active = FALSE WHERE user_id = ?",
+                (user_id,),
+            )
+            await conn.execute(
+                """
+                INSERT INTO user_tokens
+                (user_id, token_hash, created_at, expires_at, is_active)
+                VALUES (?, ?, ?, ?, TRUE)
+                """,
+                (user_id, token_hash, datetime.now(UTC), expires_at),
+            )
+            await conn.commit()
+
+    async def get_user_token(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Load the most recent active token for a user."""
+        async with self.db_manager.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT token_hash, created_at, expires_at
+                FROM user_tokens
+                WHERE user_id = ? AND is_active = TRUE
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        created_at = row["created_at"]
+        expires_at = row["expires_at"]
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+
+        if expires_at <= datetime.now(UTC):
+            await self.revoke_token(user_id)
+            return None
+
+        return {
+            "hash": row["token_hash"],
+            "created_at": created_at,
+            "expires_at": expires_at,
+        }
+
+    async def revoke_token(self, user_id: int) -> None:
+        """Deactivate all tokens for a user."""
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_tokens SET is_active = FALSE WHERE user_id = ?",
+                (user_id,),
+            )
+            await conn.commit()
 
 
 class TokenAuthProvider(AuthProvider):

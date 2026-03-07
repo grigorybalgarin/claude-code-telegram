@@ -14,10 +14,11 @@ Key Components:
 - AuditLogger: Security event logging
 """
 
-from .audit import AuditEvent, AuditLogger
+from .audit import AuditEvent, AuditLogger, SQLiteAuditStorage
 from .auth import (
     AuthenticationManager,
     AuthProvider,
+    SQLiteTokenStorage,
     TokenAuthProvider,
     UserSession,
     WhitelistAuthProvider,
@@ -29,6 +30,7 @@ __all__ = [
     "AuthProvider",
     "WhitelistAuthProvider",
     "TokenAuthProvider",
+    "SQLiteTokenStorage",
     "AuthenticationManager",
     "UserSession",
     "RateLimiter",
@@ -36,4 +38,5 @@ __all__ = [
     "SecurityValidator",
     "AuditLogger",
     "AuditEvent",
+    "SQLiteAuditStorage",
 ]

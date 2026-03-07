@@ -107,6 +107,41 @@ class TestStorageFacade:
         assert updated_session.message_count == 1
         assert updated_session.total_turns == 1
 
+    async def test_save_claude_interaction_redacts_sensitive_tool_input(self, storage):
+        """Tool input should be sanitized before persistence."""
+        await storage.get_or_create_user(123470, "claudeuser")
+        await storage.create_session(123470, "/test/claude", "claude-session-redacted")
+
+        claude_response = ClaudeResponse(
+            content="Test response content",
+            session_id="claude-session-redacted",
+            cost=0.05,
+            duration_ms=1500,
+            num_turns=1,
+            tools_used=[
+                {
+                    "name": "Bash",
+                    "input": {
+                        "command": "curl https://api.telegram.org/bot123456:SUPERSECRET/getMe",
+                    },
+                }
+            ],
+        )
+
+        await storage.save_claude_interaction(
+            user_id=123470,
+            session_id="claude-session-redacted",
+            prompt="Test prompt",
+            response=claude_response,
+        )
+
+        tool_usage = await storage.tools.get_session_tool_usage(
+            "claude-session-redacted"
+        )
+        assert len(tool_usage) == 1
+        assert "SUPERSECRET" not in tool_usage[0].tool_input["command"]
+        assert "***" in tool_usage[0].tool_input["command"]
+
     async def test_is_user_allowed(self, storage):
         """Test checking user permissions."""
         # Create allowed user

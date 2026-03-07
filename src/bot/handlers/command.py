@@ -4,7 +4,7 @@ import os
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -46,6 +46,59 @@ def _is_private_chat(update: Update) -> bool:
     """Return True when update is from a private chat."""
     chat = update.effective_chat
     return bool(chat and getattr(chat, "type", "") == "private")
+
+
+def _get_current_directory(
+    settings: Settings, context: ContextTypes.DEFAULT_TYPE
+) -> Path:
+    """Get current working directory from user context."""
+    return context.user_data.get("current_directory", settings.approved_directory)
+
+
+def _format_relative_path(path: Path, root: Path) -> str:
+    """Format path relative to root, falling back to the absolute path."""
+    try:
+        relative = path.relative_to(root)
+        return "/" if str(relative) == "." else str(relative)
+    except ValueError:
+        return str(path)
+
+
+def _preview_text(text: str, limit: int = 72) -> str:
+    """Collapse and trim free-form text for compact Telegram output."""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _format_event_timestamp(value: datetime) -> str:
+    """Format timestamps consistently for compact activity output."""
+    return value.astimezone(timezone.utc).strftime("%m-%d %H:%M UTC")
+
+
+def _get_project_automation(context: ContextTypes.DEFAULT_TYPE) -> Optional[Any]:
+    """Get project automation feature when available."""
+    features = context.bot_data.get("features")
+    if not features:
+        return None
+    return getattr(features, "get_project_automation", lambda: None)()
+
+
+def _get_workspace_profile(
+    settings: Settings, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[Path, Path, Optional[Any], Optional[Any]]:
+    """Resolve current workspace root and detected project profile."""
+    current_dir = _get_current_directory(settings, context)
+    project_root = _get_thread_project_root(settings, context)
+    boundary_root = project_root or settings.approved_directory
+    project_automation = _get_project_automation(context)
+
+    if not project_automation:
+        return current_dir, boundary_root, None, None
+
+    profile = project_automation.build_profile(current_dir, boundary_root)
+    return current_dir, boundary_root, project_automation, profile
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,6 +167,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     welcome_message = (
         f"👋 Welcome to Claude Code Telegram Bot, {escape_html(user.first_name)}!\n\n"
         f"🤖 I help you access Claude Code remotely through Telegram.\n\n"
+        f"🧠 You can simply describe a task in plain language. Commands are optional.\n\n"
         f"<b>Available Commands:</b>\n"
         f"• <code>/help</code> - Show detailed help\n"
         f"• <code>/new</code> - Start a new Claude session\n"
@@ -121,6 +175,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• <code>/cd &lt;dir&gt;</code> - Change directory\n"
         f"• <code>/projects</code> - Show available projects\n"
         f"• <code>/status</code> - Show session status\n"
+        f"• <code>/diag</code> - Show bot and workspace diagnostics\n"
+        f"• <code>/recent</code> - Show recent prompts and commands\n"
+        f"• <code>/playbooks</code> - List workspace automation playbooks\n"
+        f"• <code>/run &lt;playbook&gt;</code> - Run a deterministic playbook\n"
         f"• <code>/actions</code> - Show quick actions\n"
         f"• <code>/git</code> - Git repository commands\n\n"
         f"<b>Quick Start:</b>\n"
@@ -162,6 +220,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle /help command."""
     help_text = (
         "🤖 <b>Claude Code Telegram Bot Help</b>\n\n"
+        "🧠 <b>Good default:</b> just describe the task in plain language. "
+        "The bot now auto-detects the workspace, creates checkpoints before risky edits, "
+        "runs final verification, and auto-rolls back when verification fails.\n\n"
         "<b>Navigation Commands:</b>\n"
         "• <code>/ls</code> - List files and directories\n"
         "• <code>/cd &lt;directory&gt;</code> - Change to directory\n"
@@ -172,6 +233,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/continue [message]</code> - Explicitly continue last session\n"
         "• <code>/end</code> - End current session and clear context\n"
         "• <code>/status</code> - Show session and usage status\n"
+        "• <code>/diag</code> - Show workspace and runtime diagnostics\n"
+        "• <code>/recent</code> - Show your recent prompts and commands\n"
+        "• <code>/playbooks</code> - List deterministic automation playbooks\n"
+        "• <code>/run &lt;playbook&gt;</code> - Execute a playbook in the current workspace\n"
         "• <code>/export</code> - Export session history\n"
         "• <code>/actions</code> - Show context-aware quick actions\n"
         "• <code>/git</code> - Git repository information\n\n"
@@ -954,6 +1019,142 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show compact runtime and workspace diagnostics."""
+    user_id = update.effective_user.id
+    settings: Settings = context.bot_data["settings"]
+    audit_logger: AuditLogger = context.bot_data.get("audit_logger")
+    storage = context.bot_data.get("storage")
+    mem0_client = context.bot_data.get("mem0_client")
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    features = context.bot_data.get("features")
+    current_dir, _boundary_root, project_automation, profile = _get_workspace_profile(
+        settings, context
+    )
+
+    claude_session_id = context.user_data.get("claude_session_id")
+    session_line = "❌ none"
+    if claude_session_id:
+        session_line = f"✅ <code>{escape_html(claude_session_id[:8])}...</code>"
+    elif claude_integration:
+        resumable = await claude_integration._find_resumable_session(
+            user_id, profile.root_path if profile else current_dir
+        )
+        if resumable:
+            session_line = f"🔄 resumable <code>{escape_html(resumable.session_id[:8])}...</code>"
+
+    storage_ok = await storage.health_check() if storage else False
+    mem0_status = "disabled"
+    if mem0_client:
+        mem0_status = "healthy" if await mem0_client.health() else "unreachable"
+
+    lines = [
+        "🩺 <b>Diagnostics</b>",
+        "",
+        f"🤖 Mode: <code>{'agentic' if settings.agentic_mode else 'classic'}</code>",
+        "🛡️ Autopilot: <code>always on</code>",
+        f"📍 Current directory: <code>{escape_html(_format_relative_path(current_dir, settings.approved_directory))}</code>",
+        f"🧠 Claude session: {session_line}",
+        f"💾 Storage: <code>{'ok' if storage_ok else 'error'}</code>",
+        f"🗃️ mem0: <code>{escape_html(mem0_status)}</code>",
+        f"🧵 Thread mode: <code>{'on' if settings.enable_project_threads else 'off'}</code>",
+    ]
+
+    if profile and project_automation:
+        lines.append(
+            f"📦 Workspace root: <code>{escape_html(_format_relative_path(profile.root_path, settings.approved_directory))}</code>"
+        )
+        lines.extend(project_automation.describe_profile_lines(profile, settings.approved_directory))
+        playbooks = ", ".join(
+            playbook.slug for playbook in project_automation.list_playbooks(profile)
+        )
+        lines.append(f"▶️ Playbooks: <code>{escape_html(playbooks)}</code>")
+
+    git_integration = features.get_git_integration() if features else None
+    if git_integration and profile and profile.has_git_repo:
+        try:
+            git_status = await git_integration.get_status(profile.root_path)
+            clean_state = "clean" if git_status.is_clean else "dirty"
+            lines.append(
+                f"🌿 Git: <code>{escape_html(git_status.branch)}</code> ({clean_state})"
+            )
+        except Exception as e:
+            lines.append(f"🌿 Git: <code>error: {escape_html(str(e))}</code>")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    if audit_logger:
+        await audit_logger.log_command(
+            user_id=user_id,
+            command="diag",
+            args=[],
+            success=True,
+            working_directory=str(profile.root_path if profile else current_dir),
+        )
+
+
+async def recent_activity_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Show recent prompts and bot commands for the current user."""
+    user_id = update.effective_user.id
+    settings: Settings = context.bot_data["settings"]
+    audit_logger: AuditLogger = context.bot_data.get("audit_logger")
+    storage = context.bot_data.get("storage")
+
+    if not storage:
+        await update.message.reply_text(
+            "❌ <b>Recent Activity Unavailable</b>\n\nStorage is not initialized.",
+            parse_mode="HTML",
+        )
+        return
+
+    current_dir = _get_current_directory(settings, context)
+    messages = await storage.messages.get_user_messages(user_id, limit=5)
+    audit_entries = await storage.audit.get_user_audit_log(user_id, limit=10)
+    command_entries = [entry for entry in audit_entries if entry.event_type == "command"][:5]
+
+    lines = ["🕘 <b>Recent Activity</b>"]
+
+    if messages:
+        lines.extend(["", "<b>Recent prompts</b>"])
+        for message in messages:
+            result = "❌" if message.error else "✅"
+            session_id = escape_html(message.session_id[:8])
+            preview = escape_html(_preview_text(message.prompt))
+            lines.append(
+                f"{result} {escape_html(_format_event_timestamp(message.timestamp))} • "
+                f"<code>{session_id}...</code> • {preview}"
+            )
+
+    if command_entries:
+        lines.extend(["", "<b>Recent commands</b>"])
+        for entry in command_entries:
+            payload = entry.event_data or {}
+            details = payload.get("details", {})
+            command_name = escape_html(str(details.get("command", entry.event_type)))
+            risk = escape_html(str(payload.get("risk_level", "low")))
+            result = "✅" if entry.success else "❌"
+            lines.append(
+                f"{result} {escape_html(_format_event_timestamp(entry.timestamp))} • "
+                f"<code>{command_name}</code> • risk <code>{risk}</code>"
+            )
+
+    if len(lines) == 1:
+        lines.extend(["", "No recent prompts or commands yet."])
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    if audit_logger:
+        await audit_logger.log_command(
+            user_id=user_id,
+            command="recent",
+            args=[],
+            success=True,
+            working_directory=str(current_dir),
+        )
+
+
 async def export_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /export command."""
     update.effective_user.id
@@ -1125,7 +1326,7 @@ async def quick_actions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         # Create inline keyboard
-        keyboard = quick_action_manager.create_inline_keyboard(actions, max_columns=2)
+        keyboard = quick_action_manager.create_inline_keyboard(actions, columns=2)
 
         relative_path = current_dir.relative_to(settings.approved_directory)
         await update.message.reply_text(
@@ -1230,6 +1431,175 @@ async def git_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         await update.message.reply_text(f"❌ <b>Git Error</b>\n\n{str(e)}")
         logger.error("Error in git_command", error=str(e), user_id=user_id)
+
+
+async def playbooks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List available deterministic playbooks for the current workspace."""
+    user_id = update.effective_user.id
+    settings: Settings = context.bot_data["settings"]
+    audit_logger: AuditLogger = context.bot_data.get("audit_logger")
+    current_dir, _boundary_root, project_automation, profile = _get_workspace_profile(
+        settings, context
+    )
+
+    if not project_automation or not profile:
+        await update.message.reply_text(
+            "❌ <b>Playbooks Unavailable</b>\n\nProject automation is not initialized.",
+            parse_mode="HTML",
+        )
+        return
+
+    playbooks = project_automation.list_playbooks(profile)
+    lines = [
+        "🧭 <b>Workspace Playbooks</b>",
+        "",
+        f"📦 Workspace: <code>{escape_html(_format_relative_path(profile.root_path, settings.approved_directory))}</code>",
+        f"🧱 Stack: <code>{escape_html(', '.join(profile.stacks))}</code>",
+        "",
+        "<b>Available playbooks</b>",
+    ]
+    for playbook in playbooks:
+        lines.append(
+            f"• <code>{escape_html(playbook.slug)}</code> — {escape_html(playbook.description)}"
+        )
+    lines.extend(
+        [
+            "",
+            "Run one with <code>/run &lt;playbook&gt;</code>.",
+            "Optional extra instructions: <code>/run test focus on websocket handlers</code>",
+        ]
+    )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    if audit_logger:
+        await audit_logger.log_command(
+            user_id=user_id,
+            command="playbooks",
+            args=[],
+            success=True,
+            working_directory=str(profile.root_path if profile else current_dir),
+        )
+
+
+async def run_playbook_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Execute a deterministic project playbook via Claude."""
+    user_id = update.effective_user.id
+    settings: Settings = context.bot_data["settings"]
+    audit_logger: AuditLogger = context.bot_data.get("audit_logger")
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    current_dir, _boundary_root, project_automation, profile = _get_workspace_profile(
+        settings, context
+    )
+
+    if not context.args:
+        await update.message.reply_text(
+            "▶️ <b>Usage</b>\n\n"
+            "Run <code>/playbooks</code> to see available automation playbooks,\n"
+            "then execute one with <code>/run &lt;playbook&gt;</code>.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not claude_integration or not project_automation or not profile:
+        await update.message.reply_text(
+            "❌ <b>Playbook Runner Unavailable</b>\n\n"
+            "Claude integration or project automation is not initialized.",
+            parse_mode="HTML",
+        )
+        return
+
+    playbook_slug = context.args[0].strip().lower()
+    extra_instructions = " ".join(context.args[1:]).strip()
+    playbook = project_automation.get_playbook(playbook_slug, profile)
+    if playbook is None:
+        available = ", ".join(
+            pb.slug for pb in project_automation.list_playbooks(profile)
+        )
+        await update.message.reply_text(
+            "❌ <b>Unknown Playbook</b>\n\n"
+            f"Requested: <code>{escape_html(playbook_slug)}</code>\n"
+            f"Available: <code>{escape_html(available)}</code>",
+            parse_mode="HTML",
+        )
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command="run",
+                args=context.args or [],
+                success=False,
+                working_directory=str(profile.root_path),
+            )
+        return
+
+    prompt = project_automation.build_playbook_prompt(
+        playbook_slug, profile, extra_instructions=extra_instructions
+    )
+
+    status_msg = await update.message.reply_text(
+        "▶️ <b>Running Playbook</b>\n\n"
+        f"Playbook: <code>{escape_html(playbook.slug)}</code>\n"
+        f"Workspace: <code>{escape_html(_format_relative_path(profile.root_path, settings.approved_directory))}</code>",
+        parse_mode="HTML",
+    )
+
+    try:
+        claude_response = await claude_integration.run_command(
+            prompt=prompt,
+            working_directory=profile.root_path,
+            user_id=user_id,
+            session_id=context.user_data.get("claude_session_id")
+            if current_dir == profile.root_path
+            else None,
+        )
+        context.user_data["claude_session_id"] = claude_response.session_id
+
+        await status_msg.delete()
+
+        from ..utils.formatting import ResponseFormatter
+
+        formatter = ResponseFormatter(settings)
+        for msg in formatter.format_claude_response(claude_response.content):
+            await update.message.reply_text(
+                msg.text,
+                parse_mode=msg.parse_mode,
+                reply_markup=msg.reply_markup,
+            )
+
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command="run",
+                args=context.args or [],
+                success=True,
+                working_directory=str(profile.root_path),
+            )
+    except Exception as e:
+        logger.error(
+            "Error running playbook",
+            error=str(e),
+            playbook=playbook_slug,
+            user_id=user_id,
+        )
+        try:
+            await status_msg.edit_text(
+                "❌ <b>Playbook Failed</b>\n\n"
+                f"Playbook: <code>{escape_html(playbook_slug)}</code>\n"
+                f"Error: <code>{escape_html(str(e))}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command="run",
+                args=context.args or [],
+                success=False,
+                working_directory=str(profile.root_path),
+            )
 
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

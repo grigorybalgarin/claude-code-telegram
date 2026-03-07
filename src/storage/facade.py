@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import structlog
 
 from ..claude.sdk_integration import ClaudeResponse
+from ..utils.redaction import redact_sensitive_value
 from .database import DatabaseManager
 from .models import (
     AuditLogModel,
@@ -102,7 +103,10 @@ class Storage:
                     session_id=session_id,
                     message_id=message_id,
                     tool_name=tool["name"],
-                    tool_input=tool.get("input", {}),
+                    tool_input=redact_sensitive_value(
+                        tool.get("input", {}),
+                        max_string_length=2000,
+                    ),
                     timestamp=datetime.now(UTC),
                     success=not response.is_error,
                     error_message=response.error_type if response.is_error else None,
@@ -134,14 +138,16 @@ class Storage:
             id=None,
             user_id=user_id,
             event_type="claude_interaction",
-            event_data={
-                "session_id": session_id,
-                "cost": response.cost,
-                "duration_ms": response.duration_ms,
-                "num_turns": response.num_turns,
-                "is_error": response.is_error,
-                "tools_used": [t["name"] for t in response.tools_used],
-            },
+            event_data=redact_sensitive_value(
+                {
+                    "session_id": session_id,
+                    "cost": response.cost,
+                    "duration_ms": response.duration_ms,
+                    "num_turns": response.num_turns,
+                    "is_error": response.is_error,
+                    "tools_used": [t["name"] for t in response.tools_used],
+                }
+            ),
             success=not response.is_error,
             timestamp=datetime.now(UTC),
             ip_address=ip_address,
@@ -202,7 +208,7 @@ class Storage:
             id=None,
             user_id=user_id,
             event_type=event_type,
-            event_data=event_data,
+            event_data=redact_sensitive_value(event_data),
             success=success,
             timestamp=datetime.now(UTC),
             ip_address=ip_address,
@@ -221,7 +227,7 @@ class Storage:
             id=None,
             user_id=user_id,
             event_type=event_type,
-            event_data=event_data,
+            event_data=redact_sensitive_value(event_data),
             success=success,
             timestamp=datetime.now(UTC),
         )

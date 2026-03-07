@@ -31,6 +31,7 @@ from claude_agent_sdk.types import StreamEvent
 
 from ..config.settings import Settings
 from ..security.validators import SecurityValidator
+from ..utils.redaction import redact_sensitive_text
 from .exceptions import (
     ClaudeMCPError,
     ClaudeParsingError,
@@ -177,8 +178,9 @@ class ClaudeSDKManager:
             stderr_lines: deque = deque(maxlen=30)
 
             def _stderr_callback(line: str) -> None:
-                stderr_lines.append(line)
-                logger.debug("Claude CLI stderr", line=line)
+                sanitized_line = redact_sensitive_text(line, max_length=1000)
+                stderr_lines.append(sanitized_line)
+                logger.debug("Claude CLI stderr", line=sanitized_line)
 
             # Build system prompt, loading CLAUDE.md from working directory if present
             base_prompt = self._build_system_prompt(working_directory)
@@ -453,7 +455,7 @@ class ClaudeSDKManager:
             raise ClaudeProcessError(error_msg)
 
         except ProcessError as e:
-            error_str = str(e)
+            error_str = redact_sensitive_text(str(e), max_length=2000)
             # Include captured stderr for better diagnostics
             captured_stderr = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
             if captured_stderr:
@@ -470,7 +472,7 @@ class ClaudeSDKManager:
             raise ClaudeProcessError(f"Claude process error: {error_str}")
 
         except CLIConnectionError as e:
-            error_str = str(e)
+            error_str = redact_sensitive_text(str(e), max_length=2000)
             logger.error("Claude connection error", error=error_str)
             # Check if the connection error is MCP-related
             if "mcp" in error_str.lower() or "server" in error_str.lower():
@@ -478,12 +480,14 @@ class ClaudeSDKManager:
             raise ClaudeProcessError(f"Failed to connect to Claude: {error_str}")
 
         except CLIJSONDecodeError as e:
-            logger.error("Claude SDK JSON decode error", error=str(e))
-            raise ClaudeParsingError(f"Failed to decode Claude response: {str(e)}")
+            error_str = redact_sensitive_text(str(e), max_length=2000)
+            logger.error("Claude SDK JSON decode error", error=error_str)
+            raise ClaudeParsingError(f"Failed to decode Claude response: {error_str}")
 
         except ClaudeSDKError as e:
-            logger.error("Claude SDK error", error=str(e))
-            raise ClaudeProcessError(f"Claude SDK error: {str(e)}")
+            error_str = redact_sensitive_text(str(e), max_length=2000)
+            logger.error("Claude SDK error", error=error_str)
+            raise ClaudeProcessError(f"Claude SDK error: {error_str}")
 
         except Exception as e:
             exceptions = getattr(e, "exceptions", None)
@@ -491,21 +495,26 @@ class ClaudeSDKManager:
                 # ExceptionGroup from TaskGroup operations (Python 3.11+)
                 logger.error(
                     "Task group error in Claude SDK",
-                    error=str(e),
+                    error=redact_sensitive_text(str(e), max_length=2000),
                     error_type=type(e).__name__,
                     exception_count=len(exceptions),
-                    exceptions=[str(ex) for ex in exceptions[:3]],
+                    exceptions=[
+                        redact_sensitive_text(str(ex), max_length=1000)
+                        for ex in exceptions[:3]
+                    ],
                 )
                 raise ClaudeProcessError(
-                    f"Claude SDK task error: {exceptions[0] if exceptions else e}"
+                    "Claude SDK task error: "
+                    f"{redact_sensitive_text(str(exceptions[0] if exceptions else e), max_length=2000)}"
                 )
 
+            error_str = redact_sensitive_text(str(e), max_length=2000)
             logger.error(
                 "Unexpected error in Claude SDK",
-                error=str(e),
+                error=error_str,
                 error_type=type(e).__name__,
             )
-            raise ClaudeProcessError(f"Unexpected error: {str(e)}")
+            raise ClaudeProcessError(f"Unexpected error: {error_str}")
 
     @staticmethod
     def _build_system_prompt(working_directory: Path) -> str:
@@ -539,6 +548,8 @@ You are an expert software engineer with deep knowledge of many programming lang
 - Don't add docstrings, type annotations, or comments to code you didn't change.
 
 ## Tool usage
+- Use relative paths.
+- Prefer relative paths whenever possible inside the working directory.
 - Use Read to read files, not cat/head/tail via Bash.
 - Use Grep to search file contents, not grep via Bash.
 - Use Glob to find files, not find via Bash.

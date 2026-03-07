@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
+from src.storage.database import DatabaseManager
+from src.utils.redaction import redact_sensitive_value
+
 # from src.exceptions import SecurityError  # Future use
 
 logger = structlog.get_logger()
@@ -125,6 +128,126 @@ class InMemoryAuditStorage(AuditStorage):
         self, user_id: Optional[int] = None, limit: int = 100
     ) -> List[AuditEvent]:
         """Get security violations."""
+        return await self.get_events(
+            user_id=user_id, event_type="security_violation", limit=limit
+        )
+
+
+class SQLiteAuditStorage(AuditStorage):
+    """SQLite-backed audit storage for persistent security history."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+
+    async def _ensure_user_exists(self, user_id: int) -> None:
+        """Create a minimal user row so audit events satisfy FK constraints."""
+        now = datetime.now(UTC)
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO users
+                (user_id, first_seen, last_active, is_allowed)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, now, now, False),
+            )
+            await conn.commit()
+
+    async def store_event(self, event: AuditEvent) -> None:
+        """Persist an audit event."""
+        await self._ensure_user_exists(event.user_id)
+
+        event_data = redact_sensitive_value(
+            {
+                "details": event.details,
+                "session_id": event.session_id,
+                "risk_level": event.risk_level,
+            }
+        )
+
+        async with self.db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_log
+                (user_id, event_type, event_data, success, timestamp, ip_address)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.user_id,
+                    event.event_type,
+                    json.dumps(event_data),
+                    event.success,
+                    event.timestamp,
+                    event.ip_address,
+                ),
+            )
+            await conn.commit()
+
+    async def get_events(
+        self,
+        user_id: Optional[int] = None,
+        event_type: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> List[AuditEvent]:
+        """Retrieve audit events with optional filters."""
+        query = [
+            "SELECT user_id, event_type, event_data, success, timestamp, ip_address",
+            "FROM audit_log",
+            "WHERE 1 = 1",
+        ]
+        params: list[Any] = []
+
+        if user_id is not None:
+            query.append("AND user_id = ?")
+            params.append(user_id)
+        if event_type is not None:
+            query.append("AND event_type = ?")
+            params.append(event_type)
+        if start_time is not None:
+            query.append("AND timestamp >= ?")
+            params.append(start_time)
+        if end_time is not None:
+            query.append("AND timestamp <= ?")
+            params.append(end_time)
+
+        query.append("ORDER BY timestamp DESC LIMIT ?")
+        params.append(limit)
+
+        async with self.db_manager.get_connection() as conn:
+            cursor = await conn.execute(" ".join(query), params)
+            rows = await cursor.fetchall()
+
+        events = []
+        for row in rows:
+            payload = {}
+            if row["event_data"]:
+                payload = json.loads(row["event_data"])
+
+            timestamp = row["timestamp"]
+            if isinstance(timestamp, str):
+                timestamp = datetime.fromisoformat(timestamp)
+
+            events.append(
+                AuditEvent(
+                    timestamp=timestamp,
+                    user_id=row["user_id"],
+                    event_type=row["event_type"],
+                    success=bool(row["success"]),
+                    details=payload.get("details", {}),
+                    ip_address=row["ip_address"],
+                    session_id=payload.get("session_id"),
+                    risk_level=payload.get("risk_level", "low"),
+                )
+            )
+
+        return events
+
+    async def get_security_violations(
+        self, user_id: Optional[int] = None, limit: int = 100
+    ) -> List[AuditEvent]:
+        """Get persisted security violations."""
         return await self.get_events(
             user_id=user_id, event_type="security_violation", limit=limit
         )
