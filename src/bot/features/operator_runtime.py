@@ -17,7 +17,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-_ACTIVE_STATUSES = {"starting", "running", "stopping"}
+_ACTIVE_STATUSES = {"starting", "running", "stopping", "verifying"}
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,18 @@ class OperatorJob:
     status: str
     created_at: str
     log_path: Path
+    verification_command: Optional[str] = None
+    verification_mode: Optional[str] = None
     pid: Optional[int] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     exit_code: Optional[int] = None
+    verification_status: Optional[str] = None
+    verification_attempts: int = 0
+    verification_started_at: Optional[str] = None
+    verification_finished_at: Optional[str] = None
+    verification_exit_code: Optional[int] = None
+    verification_error: Optional[str] = None
     stop_requested_at: Optional[str] = None
     error: Optional[str] = None
 
@@ -56,6 +64,16 @@ class OperatorJob:
             status=str(payload["status"]),
             created_at=str(payload["created_at"]),
             log_path=Path(str(payload["log_path"])).resolve(),
+            verification_command=(
+                str(payload["verification_command"])
+                if payload.get("verification_command") is not None
+                else None
+            ),
+            verification_mode=(
+                str(payload["verification_mode"])
+                if payload.get("verification_mode") is not None
+                else None
+            ),
             pid=payload.get("pid") if isinstance(payload.get("pid"), int) else None,
             started_at=(
                 str(payload["started_at"]) if payload.get("started_at") is not None else None
@@ -68,6 +86,36 @@ class OperatorJob:
             exit_code=(
                 payload.get("exit_code")
                 if isinstance(payload.get("exit_code"), int)
+                else None
+            ),
+            verification_status=(
+                str(payload["verification_status"])
+                if payload.get("verification_status") is not None
+                else None
+            ),
+            verification_attempts=(
+                int(payload["verification_attempts"])
+                if payload.get("verification_attempts") is not None
+                else 0
+            ),
+            verification_started_at=(
+                str(payload["verification_started_at"])
+                if payload.get("verification_started_at") is not None
+                else None
+            ),
+            verification_finished_at=(
+                str(payload["verification_finished_at"])
+                if payload.get("verification_finished_at") is not None
+                else None
+            ),
+            verification_exit_code=(
+                payload.get("verification_exit_code")
+                if isinstance(payload.get("verification_exit_code"), int)
+                else None
+            ),
+            verification_error=(
+                str(payload["verification_error"])
+                if payload.get("verification_error") is not None
                 else None
             ),
             stop_requested_at=(
@@ -103,6 +151,11 @@ class WorkspaceOperatorRuntime:
         action_key: str,
         command: str,
         title: Optional[str] = None,
+        verification_command: Optional[str] = None,
+        verification_mode: Optional[str] = None,
+        verification_delay_seconds: float = 0.0,
+        verification_retries: int = 1,
+        verification_interval_seconds: float = 0.0,
     ) -> OperatorJob:
         """Launch a background command and persist its state."""
         workspace = workspace_root.resolve()
@@ -124,6 +177,8 @@ class WorkspaceOperatorRuntime:
             status="starting",
             created_at=self._now(),
             log_path=log_path,
+            verification_command=verification_command,
+            verification_mode=verification_mode,
         )
         self._write_job(job)
         log_path.write_text(
@@ -138,22 +193,30 @@ class WorkspaceOperatorRuntime:
         env = os.environ.copy()
         env["CLAUDE_OPERATOR_COMMAND"] = command
         env["CLAUDE_OPERATOR_STATE_PATH"] = str(self._job_path(job.job_id))
-        env["CLAUDE_OPERATOR_PYTHON"] = sys.executable
+        env["CLAUDE_OPERATOR_WORKSPACE"] = str(workspace)
+        env["CLAUDE_OPERATOR_LOG_PATH"] = str(log_path)
+        if verification_command:
+            env["CLAUDE_OPERATOR_VERIFY_COMMAND"] = verification_command
+        if verification_mode:
+            env["CLAUDE_OPERATOR_VERIFY_MODE"] = verification_mode
+        env["CLAUDE_OPERATOR_VERIFY_DELAY_SECONDS"] = str(
+            verification_delay_seconds
+        )
+        env["CLAUDE_OPERATOR_VERIFY_RETRIES"] = str(max(1, verification_retries))
+        env["CLAUDE_OPERATOR_VERIFY_INTERVAL_SECONDS"] = str(
+            max(0.0, verification_interval_seconds)
+        )
 
-        log_handle = log_path.open("ab")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-lc",
-                self._runner_script(),
-                cwd=workspace,
-                stdout=log_handle,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-                start_new_session=True,
-            )
-        finally:
-            log_handle.close()
+        runner_path = Path(__file__).with_name("operator_job_runner.py").resolve()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(runner_path),
+            cwd=workspace,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
 
         running_job = replace(
             job,
@@ -263,37 +326,10 @@ class WorkspaceOperatorRuntime:
                 job,
                 status="stopped" if job.stop_requested_at else "unknown",
                 finished_at=job.finished_at or self._now(),
+                verification_error=job.verification_error or job.error,
                 error=job.error or "process not running",
             )
             self._write_job(refreshed)
-
-    @staticmethod
-    def _runner_script() -> str:
-        """Return the shell wrapper used for detached background jobs."""
-        return r"""
-set +e
-/bin/sh -lc "$CLAUDE_OPERATOR_COMMAND"
-status=$?
-CLAUDE_OPERATOR_EXIT_CODE="$status" "$CLAUDE_OPERATOR_PYTHON" - <<'PY'
-import json
-import os
-from datetime import UTC, datetime
-from pathlib import Path
-
-state_path = Path(os.environ["CLAUDE_OPERATOR_STATE_PATH"])
-payload = json.loads(state_path.read_text(encoding="utf-8"))
-exit_code = int(os.environ["CLAUDE_OPERATOR_EXIT_CODE"])
-payload["status"] = (
-    "stopped"
-    if payload.get("stop_requested_at")
-    else ("succeeded" if exit_code == 0 else "failed")
-)
-payload["exit_code"] = exit_code
-payload["finished_at"] = datetime.now(UTC).isoformat()
-state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-PY
-exit "$status"
-""".strip()
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:

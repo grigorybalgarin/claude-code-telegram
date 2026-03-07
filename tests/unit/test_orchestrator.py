@@ -784,6 +784,7 @@ workspaces:
     name: FreelanceAggregator
     commands:
       start: python3 -c "import time; print('boot'); time.sleep(10)"
+      health: python3 -c "print('healthy')"
         """.strip(),
         encoding="utf-8",
     )
@@ -813,16 +814,41 @@ workspaces:
 
     text = query.edit_message_text.call_args.args[0]
     assert "Background Job Started" in text
+    assert "Health verify" in text
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
 
     job = operator_runtime.get_latest_job(workspace_root)
     assert job is not None
     assert job.action_key == "start"
     assert job.is_active is True
+    assert job.verification_command == 'python3 -c "print(\'healthy\')"'
+    assert job.verification_mode == "while_running"
 
     stopped = await operator_runtime.stop_job(job.job_id)
     if stopped.is_active:
         await asyncio.sleep(0.3)
+
+
+def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):
+    """Compact job status should include health verification state when available."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    workspace_root = tmp_dir / "FreelanceAggregator"
+    workspace_root.mkdir()
+    job = SimpleNamespace(
+        workspace_root=workspace_root,
+        status="running",
+        action_key="start",
+        verification_command="python3 -c \"print('healthy')\"",
+        verification_status="running",
+        job_id="abcdef123456",
+    )
+
+    text = orchestrator._format_agentic_job_status(job, tmp_dir)
+
+    assert "running start" in text
+    assert "health checking" in text
+    assert "abcdef12" in text
 
 
 async def test_agentic_callback_switches_nested_workspace_and_keeps_markup(

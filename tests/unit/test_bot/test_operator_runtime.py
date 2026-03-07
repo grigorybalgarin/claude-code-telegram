@@ -42,6 +42,88 @@ async def test_launch_job_persists_completion_and_log_tail(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_launch_job_runs_after_exit_verification(tmp_path):
+    """Deploy-style jobs should persist successful post-action verification."""
+    runtime = WorkspaceOperatorRuntime(tmp_path / "operator_runtime")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    job = await runtime.launch_job(
+        workspace_root=workspace_root,
+        action_key="deploy",
+        command="python3 -c \"print('deploy ok')\"",
+        title="Deploy",
+        verification_command="python3 -c \"print('healthy')\"",
+        verification_mode="after_exit",
+        verification_retries=2,
+        verification_interval_seconds=0.05,
+    )
+    completed = await _wait_for_terminal_status(runtime, job.job_id)
+
+    assert completed.status == "succeeded"
+    assert completed.exit_code == 0
+    assert completed.verification_status == "passed"
+    assert completed.verification_exit_code == 0
+    assert "healthy" in runtime.read_log_tail(completed)
+
+
+@pytest.mark.asyncio
+async def test_launch_job_fails_when_after_exit_verification_fails(tmp_path):
+    """Failed post-action verification should fail the job even if command succeeds."""
+    runtime = WorkspaceOperatorRuntime(tmp_path / "operator_runtime")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    job = await runtime.launch_job(
+        workspace_root=workspace_root,
+        action_key="deploy",
+        command="python3 -c \"print('deploy ok')\"",
+        title="Deploy",
+        verification_command=(
+            "python3 -c \"import sys; print('unhealthy'); sys.exit(1)\""
+        ),
+        verification_mode="after_exit",
+        verification_retries=2,
+        verification_interval_seconds=0.05,
+    )
+    completed = await _wait_for_terminal_status(runtime, job.job_id)
+
+    assert completed.status == "failed"
+    assert completed.exit_code == 0
+    assert completed.verification_status == "failed"
+    assert completed.verification_exit_code == 1
+    assert completed.error == "post-action verification failed"
+    assert completed.verification_error is not None
+
+
+@pytest.mark.asyncio
+async def test_launch_job_runs_while_running_verification(tmp_path):
+    """Start/dev jobs should keep verification result alongside the running command."""
+    runtime = WorkspaceOperatorRuntime(tmp_path / "operator_runtime")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    job = await runtime.launch_job(
+        workspace_root=workspace_root,
+        action_key="start",
+        command="python3 -c \"import time; print('boot'); time.sleep(0.02)\"",
+        title="Start",
+        verification_command="python3 -c \"print('service ok')\"",
+        verification_mode="while_running",
+        verification_delay_seconds=0.05,
+        verification_retries=2,
+        verification_interval_seconds=0.05,
+    )
+    completed = await _wait_for_terminal_status(runtime, job.job_id)
+
+    assert completed.status == "succeeded"
+    assert completed.verification_status == "passed"
+    assert completed.verification_exit_code == 0
+    assert completed.verification_attempts >= 1
+    assert "service ok" in runtime.read_log_tail(completed)
+
+
+@pytest.mark.asyncio
 async def test_stop_job_marks_background_process_stopped(tmp_path):
     """Stopping a running job should persist the stopped state."""
     runtime = WorkspaceOperatorRuntime(tmp_path / "operator_runtime")

@@ -1159,18 +1159,30 @@ class MessageOrchestrator:
     def _format_agentic_job_status(self, job: Any, boundary_root: Path) -> str:
         """Build a compact one-line status for a persisted operator job."""
         workspace = self._format_agentic_relative_path(job.workspace_root, boundary_root)
-        status = job.status
-        if job.status == "running":
-            status = f"running {job.action_key}"
-        elif job.status == "stopping":
-            status = f"stopping {job.action_key}"
-        elif job.status == "succeeded":
-            status = f"succeeded {job.action_key}"
-        elif job.status == "failed":
-            status = f"failed {job.action_key}"
-        elif job.status == "stopped":
-            status = f"stopped {job.action_key}"
+        status = f"{job.status} {job.action_key}"
+        verification_label = self._format_agentic_job_verification(job)
+        if verification_label:
+            status += f" · {verification_label}"
         return f"{workspace} · {status} · {job.job_id[:8]}"
+
+    @staticmethod
+    def _format_agentic_job_verification(job: Any) -> Optional[str]:
+        """Return a compact verification label for background jobs."""
+        if not getattr(job, "verification_command", None):
+            return None
+
+        status = getattr(job, "verification_status", None) or "pending"
+        label = {
+            "pending": "health pending",
+            "running": "health checking",
+            "passed": "health ok",
+            "failed": "health failed",
+        }.get(status, f"health {status}")
+
+        attempts = getattr(job, "verification_attempts", 0) or 0
+        if attempts and status in {"running", "passed", "failed"}:
+            label += f" ({attempts}x)"
+        return label
 
     async def _build_agentic_jobs_text(
         self,
@@ -1211,6 +1223,28 @@ class MessageOrchestrator:
 
         latest_job = current_jobs[0] if current_jobs else None
         if latest_job:
+            lines.extend(
+                [
+                    "",
+                    "<b>Latest Job</b>",
+                    f"Action: <code>{escape_html(latest_job.action_key)}</code>",
+                    f"Status: <code>{escape_html(latest_job.status)}</code>",
+                ]
+            )
+            if latest_job.exit_code is not None:
+                lines.append(f"Exit code: <code>{latest_job.exit_code}</code>")
+            if latest_job.verification_command:
+                verify_status = self._format_agentic_job_verification(latest_job)
+                if verify_status:
+                    lines.append(f"Health: <code>{escape_html(verify_status)}</code>")
+                if latest_job.verification_exit_code is not None:
+                    lines.append(
+                        f"Health exit: <code>{latest_job.verification_exit_code}</code>"
+                    )
+                if latest_job.verification_error:
+                    lines.append(
+                        f"Health error: <code>{escape_html(latest_job.verification_error)}</code>"
+                    )
             log_tail = operator_runtime.read_log_tail(latest_job, limit=500)
             if log_tail:
                 lines.extend(
@@ -1644,6 +1678,23 @@ class MessageOrchestrator:
             await query.answer("Action is not available in this workspace.", show_alert=True)
             return
 
+        verification_command = profile.commands.get("health")
+        verification_mode = None
+        verification_delay_seconds = 0.0
+        verification_retries = 1
+        verification_interval_seconds = 0.0
+        if verification_command:
+            if action_key in {"start", "dev"}:
+                verification_mode = "while_running"
+                verification_delay_seconds = 3.0
+                verification_retries = 4
+                verification_interval_seconds = 3.0
+            elif action_key == "deploy":
+                verification_mode = "after_exit"
+                verification_delay_seconds = 0.0
+                verification_retries = 4
+                verification_interval_seconds = 3.0
+
         title = {
             "start": "Start",
             "dev": "Dev",
@@ -1656,6 +1707,11 @@ class MessageOrchestrator:
                 action_key=action_key,
                 command=command,
                 title=title,
+                verification_command=verification_command,
+                verification_mode=verification_mode,
+                verification_delay_seconds=verification_delay_seconds,
+                verification_retries=verification_retries,
+                verification_interval_seconds=verification_interval_seconds,
             )
         except RuntimeError as exc:
             await query.answer(str(exc), show_alert=True)
@@ -1674,6 +1730,11 @@ class MessageOrchestrator:
             f"Job: <code>{escape_html(job.job_id)}</code>\n"
             f"Command: <code>{escape_html(command)}</code>"
         )
+        if verification_command and verification_mode:
+            header += (
+                "\n"
+                f"Health verify: <code>{escape_html(verification_command)}</code>"
+            )
         text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
         await query.edit_message_text(
             text,
