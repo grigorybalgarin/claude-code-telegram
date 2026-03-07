@@ -23,8 +23,15 @@ from src.bot.agentic.context import (
     VerifyStep,
 )
 from src.bot.agentic.panel_builder import PanelBuilder
+from src.bot.agentic.monitoring import (
+    Incident,
+    IncidentState,
+    WorkspaceMonitor,
+    WorkspaceHealth,
+)
 from src.bot.agentic.problem_classifier import (
     ProblemType,
+    ProblemDiagnosis,
     classify_problem,
     format_resolve_summary,
     format_service_summary,
@@ -1247,3 +1254,420 @@ class TestProfileValidation:
             (root / "test_project").mkdir()
             warnings = pa.validate_profiles(root)
             assert any("deploy_rollback_safe" in w for w in warnings)
+
+
+# =============================================================================
+# Monitoring, Incident Flow, Notification Policy
+# =============================================================================
+
+
+class TestWorkspaceMonitor:
+    """Tests for proactive monitoring, incident lifecycle, and notification policy."""
+
+    def _make_monitor(self, workspace):
+        """Create a monitor with real shell and verify pipeline."""
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+
+        diag = DiagnosticsCollector(shell)
+        return WorkspaceMonitor(
+            shell=shell,
+            verify=verify,
+            diagnostics=diag,
+            check_interval_seconds=1.0,
+        )
+
+    async def test_healthy_workspace_no_incident(self, workspace):
+        """A passing workspace creates no incident."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_pass.sh'}",
+        })
+        profile.operations = None
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+
+        # Manual check (operations=None means _check_workspace skips)
+        # Set operations so it proceeds
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(monitoring_interval_seconds=60)
+
+        await monitor._check_workspace(profile)
+        health = monitor._health.get(str(workspace))
+        assert health is not None
+        assert health.healthy is True
+        assert health.active_incident is None
+
+    async def test_failing_workspace_creates_incident(self, workspace):
+        """A failing workspace creates a DETECTED incident."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_fail.sh'}",
+        })
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(monitoring_interval_seconds=60)
+
+        notifications = []
+
+        async def capture_notify(text):
+            notifications.append(text)
+
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+        monitor.set_notify_callback(capture_notify)
+
+        await monitor._check_workspace(profile)
+
+        health = monitor._health[str(workspace)]
+        assert health.healthy is False
+        assert health.active_incident is not None
+        assert health.active_incident.state in {
+            IncidentState.DETECTED, IncidentState.ESCALATED
+        }
+        # Should have notified
+        assert len(notifications) >= 1
+        assert "сбой обнаружен" in notifications[0]
+
+    async def test_recovery_clears_incident(self, workspace):
+        """When workspace recovers, incident transitions to HEALED."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_fail.sh'}",
+        })
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(monitoring_interval_seconds=60)
+
+        notifications = []
+
+        async def capture_notify(text):
+            notifications.append(text)
+
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+        monitor.set_notify_callback(capture_notify)
+
+        # First check: fails
+        await monitor._check_workspace(profile)
+        assert monitor._health[str(workspace)].healthy is False
+
+        # Fix the workspace
+        profile.commands["health"] = f"bash {workspace / 'check_pass.sh'}"
+
+        # Second check: passes → recovery
+        await monitor._check_workspace(profile)
+        health = monitor._health[str(workspace)]
+        assert health.healthy is True
+        assert health.active_incident is None
+        # Should have recovery notification
+        assert any("восстановлен" in n for n in notifications)
+
+    async def test_no_duplicate_notification_on_repeated_failure(self, workspace):
+        """Repeated failures don't re-notify (only first detection does)."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_fail.sh'}",
+        })
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(monitoring_interval_seconds=60)
+
+        notifications = []
+
+        async def capture_notify(text):
+            notifications.append(text)
+
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+        monitor.set_notify_callback(capture_notify)
+
+        # First failure
+        await monitor._check_workspace(profile)
+        count_after_first = len(notifications)
+
+        # Second failure — should NOT re-send "сбой обнаружен"
+        await monitor._check_workspace(profile)
+        detection_notifications = [
+            n for n in notifications if "сбой обнаружен" in n
+        ]
+        assert len(detection_notifications) == 1
+
+    async def test_auto_heal_attempted_when_policy_allows(self, workspace):
+        """Auto-heal is attempted if self_heal_restart is enabled."""
+        # Create a restart script that "works"
+        restart_script = workspace / "restart.sh"
+        restart_script.write_text("#!/bin/bash\nexit 0\n")
+        restart_script.chmod(0o755)
+
+        health_script = workspace / "health.sh"
+        health_script.write_text("#!/bin/bash\nexit 0\n")
+        health_script.chmod(0o755)
+
+        # Use check_svc.sh (service error) so it's classified as SERVICE, not CODE
+        profile = _make_profile(
+            workspace,
+            commands={"health": f"bash {workspace / 'check_svc.sh'}"},
+            services=[
+                SimpleNamespace(
+                    key="app",
+                    display_name="TestApp",
+                    service_type="command",
+                    restart_command=f"bash {restart_script}",
+                    health_command=f"bash {health_script}",
+                    status_command=None,
+                    start_command=None,
+                    stop_command=None,
+                    logs_command=None,
+                ),
+            ],
+        )
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(
+            monitoring_interval_seconds=60,
+            self_heal_restart=True,
+            self_heal_verify_after_restart=True,
+        )
+
+        notifications = []
+        saved_ops = []
+
+        async def capture_notify(text):
+            notifications.append(text)
+
+        async def capture_save(**kwargs):
+            saved_ops.append(kwargs)
+
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+        monitor.set_notify_callback(capture_notify)
+        monitor.set_save_callback(capture_save)
+
+        await monitor._check_workspace(profile)
+
+        # Should have created incident and attempted heal
+        health = monitor._health[str(workspace)]
+        assert health.active_incident is not None
+        assert health.active_incident.heal_attempts >= 1
+        # Should have saved incident events
+        assert len(saved_ops) >= 1
+
+    async def test_auto_heal_not_attempted_for_code_errors(self, workspace):
+        """Code errors should NOT trigger auto-heal even if policy allows."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_fail.sh'}",  # SyntaxError output
+        })
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(
+            monitoring_interval_seconds=60,
+            self_heal_restart=True,
+        )
+
+        monitor = self._make_monitor(workspace)
+        monitor.set_profiles([profile])
+
+        await monitor._check_workspace(profile)
+
+        health = monitor._health[str(workspace)]
+        assert health.active_incident is not None
+        # Code errors → escalated immediately, no heal attempt
+        assert health.active_incident.heal_attempts == 0
+
+    async def test_incident_serialization(self):
+        """Incident.to_dict() includes all fields."""
+        diagnosis = ProblemDiagnosis(
+            problem_type=ProblemType.SERVICE,
+            label="Проблема сервиса",
+            failed_step_label="health",
+            short_cause="Connection refused",
+            safe_to_autofix=False,
+        )
+        incident = Incident(
+            incident_id="abc123",
+            workspace_path="/tmp/test",
+            state=IncidentState.DETECTED,
+            diagnosis=diagnosis,
+            detected_at=1000.0,
+        )
+        d = incident.to_dict()
+        assert d["incident_id"] == "abc123"
+        assert d["state"] == "detected"
+        assert d["problem_type"] == "service"
+        assert d["short_cause"] == "Connection refused"
+
+
+class TestRunbookHints:
+    """Tests for runbook/knowledge layer integration."""
+
+    def test_runbook_hint_in_diagnosis(self):
+        """Runbook hints from operations config appear in diagnosis."""
+        from src.bot.features.project_automation import OperationConfig
+
+        ops = OperationConfig(
+            runbook_hints={
+                "service": "Check journalctl for details",
+                "health": "Run systemctl status first",
+            }
+        )
+
+        step = VerifyStep(label="health", command="check")
+        result = ShellActionResult(
+            command="check",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="Connection refused on port 8080",
+            stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)],
+            failed_step=step,
+            logs_result=None,
+        )
+
+        diagnosis = classify_problem(report, operations_config=ops)
+        # Should match "service" problem type and get the hint
+        assert diagnosis.runbook_hint in (
+            "Check journalctl for details",
+            "Run systemctl status first",
+        )
+
+    def test_runbook_hint_in_verify_summary(self):
+        """Runbook hints appear in formatted verify summary."""
+        diagnosis = ProblemDiagnosis(
+            problem_type=ProblemType.SERVICE,
+            label="Проблема сервиса",
+            failed_step_label="health",
+            short_cause="Connection refused",
+            safe_to_autofix=False,
+            runbook_hint="Проверь journalctl",
+        )
+        step = VerifyStep(label="health", command="check")
+        result = ShellActionResult(
+            command="check", returncode=1,
+            success=False, timed_out=False,
+            stdout_text="", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)],
+            failed_step=step,
+            logs_result=None,
+        )
+
+        text = format_verify_summary(report, diagnosis, "/test")
+        assert "Подсказка" in text
+        assert "Проверь journalctl" in text
+
+    def test_runbook_hint_in_to_dict(self):
+        """to_dict() includes runbook hint."""
+        diagnosis = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка",
+            failed_step_label="lint",
+            short_cause="SyntaxError",
+            safe_to_autofix=True,
+            runbook_hint="Run make lint locally",
+        )
+        d = diagnosis.to_dict()
+        assert d["runbook_hint"] == "Run make lint locally"
+
+    def test_operations_config_new_fields(self):
+        """OperationConfig parses monitoring_interval and runbook_hints."""
+        from src.bot.features.project_automation import OperationConfig
+
+        ops = OperationConfig(
+            monitoring_interval_seconds=120,
+            runbook_hints={"code": "test locally first"},
+        )
+        assert ops.monitoring_interval_seconds == 120
+        assert ops.runbook_hints == {"code": "test locally first"}
+
+    def test_yaml_parsing_runbook_hints(self):
+        """YAML parsing includes runbook_hints and monitoring_interval."""
+        from src.bot.features.project_automation import ProjectAutomationManager
+
+        raw = {
+            "self_heal_restart": True,
+            "monitoring_interval_seconds": 600,
+            "runbook_hints": {
+                "service": "check logs",
+                "code": "run tests",
+            },
+        }
+        ops = ProjectAutomationManager._parse_operations_override(raw)
+        assert ops.monitoring_interval_seconds == 600
+        assert ops.runbook_hints == {"service": "check logs", "code": "run tests"}
+        assert ops.self_heal_restart is True
+
+
+class TestMonitoringIncidentLifecycle:
+    """Tests for the full incident lifecycle: DETECTED → HEALING → HEALED/ESCALATED."""
+
+    async def test_escalation_after_max_heal_attempts(self, workspace):
+        """Incident escalates after exhausting heal attempts."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_svc.sh'}",
+        }, services=[
+            SimpleNamespace(
+                key="app",
+                display_name="TestApp",
+                service_type="command",
+                restart_command="exit 1",  # restart always fails
+                health_command=f"bash {workspace / 'check_svc.sh'}",
+                status_command=None,
+                start_command=None,
+                stop_command=None,
+                logs_command=None,
+            ),
+        ])
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(
+            monitoring_interval_seconds=60,
+            self_heal_restart=True,
+        )
+
+        notifications = []
+
+        async def capture_notify(text):
+            notifications.append(text)
+
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+        monitor = WorkspaceMonitor(
+            shell=shell,
+            verify=verify,
+            diagnostics=DiagnosticsCollector(shell),
+            check_interval_seconds=1.0,
+            max_heal_attempts=1,
+        )
+        monitor.set_profiles([profile])
+        monitor.set_notify_callback(capture_notify)
+
+        # First check: detect + attempt heal + fail → escalate
+        await monitor._check_workspace(profile)
+
+        health = monitor._health[str(workspace)]
+        assert health.active_incident is not None
+        assert health.active_incident.state == IncidentState.ESCALATED
+
+    async def test_get_active_incidents(self, workspace):
+        """get_active_incidents returns only unresolved incidents."""
+        profile = _make_profile(workspace, commands={
+            "health": f"bash {workspace / 'check_fail.sh'}",
+        })
+        from src.bot.features.project_automation import OperationConfig
+        profile.operations = OperationConfig(monitoring_interval_seconds=60)
+
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+        monitor = WorkspaceMonitor(
+            shell=shell,
+            verify=verify,
+            diagnostics=DiagnosticsCollector(shell),
+            check_interval_seconds=1.0,
+        )
+        monitor.set_profiles([profile])
+
+        await monitor._check_workspace(profile)
+        incidents = monitor.get_active_incidents()
+        # Code error → escalated (not active)
+        assert all(
+            i.state in {IncidentState.DETECTED, IncidentState.HEALING}
+            for i in incidents
+        )

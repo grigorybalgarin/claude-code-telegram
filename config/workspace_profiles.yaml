@@ -34,6 +34,12 @@ workspaces:
       self_heal_restart: true
       self_heal_verify_after_restart: true
       deploy_rollback_safe: true
+      monitoring_interval_seconds: 300
+      runbook_hints:
+        service: "Проверь journalctl -u claude-bot.service -n 50 и systemctl status"
+        dependency: "Запусти make install на сервере, проверь версию Python"
+        code: "Запусти make lint и make test локально перед деплоем"
+        config: "Проверь .env на сервере и workspace_profiles.yaml"
     services:
       - key: app
         name: ClaudeBot Service

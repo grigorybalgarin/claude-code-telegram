@@ -299,11 +299,17 @@ class ResolveRunner:
         if ctx.profile.has_git_repo:
             git_context = self._get_git_context(ctx.profile.root_path)
 
+        # Runbook hint from operations config
+        runbook_context = ""
+        if diagnosis and diagnosis.runbook_hint:
+            runbook_context = f"Подсказка из runbook: {diagnosis.runbook_hint}\n"
+
         if is_retry:
             user_request = (
                 "Предыдущая попытка исправления не помогла.\n"
                 f"{passing_context}"
                 f"{diagnosis_context}"
+                f"{runbook_context}"
                 f"Шаг проверки '{failed_step.label}' все еще не проходит.\n"
                 f"Команда: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
@@ -321,6 +327,7 @@ class ResolveRunner:
                 "Разберись с проблемой в проекте и исправь ее.\n"
                 f"{passing_context}"
                 f"{diagnosis_context}"
+                f"{runbook_context}"
                 f"Сейчас не проходит шаг проверки '{failed_step.label}'.\n"
                 f"Команда шага: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
@@ -328,10 +335,11 @@ class ResolveRunner:
                 f"{server_diag_context}"
                 f"{git_context}\n"
                 "Действуй автономно:\n"
-                "1. Определи точную причину сбоя.\n"
+                "1. Сначала составь краткий план исправления (2-3 шага).\n"
+                "2. Определи точную причину сбоя.\n"
                 f"{type_guidance}"
-                "2. После правок самостоятельно прогони релевантные проверки снова.\n"
-                "3. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
+                "3. После правок самостоятельно прогони релевантные проверки снова.\n"
+                "4. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
             )
 
         return ctx.project_automation.build_general_autopilot_prompt(

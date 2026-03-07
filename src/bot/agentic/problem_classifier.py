@@ -153,6 +153,7 @@ class ProblemDiagnosis:
     confidence: float = 0.5  # 0.0-1.0, how confident the classification is
     server_context: str = ""  # server diagnostics summary for prompts
     is_critical_step: bool = False  # step is marked critical in operations config
+    runbook_hint: str = ""  # per-problem-type hint from profile runbook
 
     @property
     def is_code_fixable(self) -> bool:
@@ -179,6 +180,7 @@ class ProblemDiagnosis:
             "safe_to_autofix": self.safe_to_autofix,
             "confidence": self.confidence,
             "is_critical": self.is_critical_step,
+            "runbook_hint": self.runbook_hint,
         }
 
 
@@ -222,6 +224,14 @@ def classify_problem(
         critical_steps = getattr(operations_config, "critical_steps", ()) or ()
         is_critical = failed_step.label in critical_steps
 
+    # Look up runbook hint for this problem type
+    runbook_hint = ""
+    if operations_config:
+        hints = getattr(operations_config, "runbook_hints", {}) or {}
+        runbook_hint = hints.get(problem_type.value, "")
+        if not runbook_hint:
+            runbook_hint = hints.get(failed_step.label, "")
+
     return ProblemDiagnosis(
         problem_type=problem_type,
         label=_LABELS[problem_type],
@@ -231,6 +241,7 @@ def classify_problem(
         confidence=confidence,
         server_context=server_context,
         is_critical_step=is_critical,
+        runbook_hint=runbook_hint,
     )
 
 
@@ -272,6 +283,9 @@ def format_verify_summary(
         lines.append(
             "\n<b>Следующий шаг:</b> проверь логи сервиса и его состояние"
         )
+
+    if diagnosis.runbook_hint:
+        lines.append(f"\n💡 <b>Подсказка:</b> {diagnosis.runbook_hint}")
 
     return "\n".join(lines)
 

@@ -285,6 +285,84 @@ def _kill_orphaned_claude_processes() -> None:
         pass  # Best-effort cleanup
 
 
+def _start_workspace_monitor(
+    bot: "ClaudeCodeBot",
+    config: Settings,
+    storage: "Storage",
+    notification_service: Optional[NotificationService],
+) -> Optional[Any]:
+    """Create workspace monitor if any profile has monitoring enabled."""
+    from src.bot.agentic.monitoring import WorkspaceMonitor
+    from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+    from src.bot.agentic.shell_executor import ShellExecutor
+    from src.bot.agentic.verify_pipeline import VerifyPipeline
+
+    log = structlog.get_logger()
+
+    features_reg = bot.deps.get("features")
+    pa = (
+        getattr(features_reg, "get_project_automation", lambda: None)()
+        if features_reg
+        else None
+    )
+    if not pa:
+        return None
+
+    boundary_root = Path(config.approved_directory).resolve()
+    summaries = pa.list_workspace_summaries(boundary_root)
+    profiles_to_monitor = []
+    for summary in summaries:
+        profile = pa.build_profile(summary.root_path, boundary_root)
+        ops = getattr(profile, "operations", None)
+        if ops and getattr(ops, "monitoring_interval_seconds", 0) > 0:
+            profiles_to_monitor.append(profile)
+
+    if not profiles_to_monitor:
+        return None
+
+    min_interval = min(
+        getattr(p.operations, "monitoring_interval_seconds", 300)
+        for p in profiles_to_monitor
+    )
+
+    shell = ShellExecutor()
+    verify = VerifyPipeline(shell)
+    diag = DiagnosticsCollector(shell)
+
+    monitor = WorkspaceMonitor(
+        shell=shell,
+        verify=verify,
+        diagnostics=diag,
+        check_interval_seconds=float(min_interval),
+    )
+    monitor.set_profiles(profiles_to_monitor)
+
+    # Wire notification callback
+    if notification_service:
+        async def _notify(text: str) -> None:
+            from src.events.types import AgentResponseEvent
+
+            await notification_service.handle_response(
+                AgentResponseEvent(chat_id=0, text=text)
+            )
+
+        monitor.set_notify_callback(_notify)
+
+    # Wire save callback
+    if storage and hasattr(storage, "operations"):
+        async def _save(**kwargs: Any) -> None:
+            await storage.operations.save(**kwargs)
+
+        monitor.set_save_callback(_save)
+
+    log.info(
+        "Workspace monitor configured",
+        profiles=len(profiles_to_monitor),
+        interval=min_interval,
+    )
+    return monitor
+
+
 async def run_application(app: Dict[str, Any]) -> None:
     """Run the application with graceful shutdown handling."""
     logger = structlog.get_logger()
@@ -300,6 +378,7 @@ async def run_application(app: Dict[str, Any]) -> None:
     notification_service: Optional[NotificationService] = None
     scheduler: Optional[JobScheduler] = None
     project_threads_manager: Optional[ProjectThreadManager] = None
+    workspace_monitor: Optional[Any] = None
 
     # Set up signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
@@ -404,6 +483,13 @@ async def run_application(app: Dict[str, Any]) -> None:
             await scheduler.start()
             logger.info("Job scheduler enabled")
 
+        # Proactive workspace monitor
+        workspace_monitor = _start_workspace_monitor(
+            bot, config, storage, notification_service
+        )
+        if workspace_monitor:
+            await workspace_monitor.start()
+
         # Shutdown task
         shutdown_task = asyncio.create_task(shutdown_event.wait())
         tasks.append(shutdown_task)
@@ -440,6 +526,8 @@ async def run_application(app: Dict[str, Any]) -> None:
         logger.info("Shutting down application")
 
         try:
+            if workspace_monitor:
+                await workspace_monitor.stop()
             if scheduler:
                 await scheduler.stop()
             if notification_service:

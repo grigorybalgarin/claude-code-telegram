@@ -32,7 +32,7 @@ class OperationConfig:
     """Explicit operation configuration for a workspace.
 
     Defines which verify steps are critical, what diagnose commands to run,
-    and what self-heal actions are safe for this project.
+    what self-heal actions are safe, and runbook hints for known problems.
     """
 
     critical_steps: tuple[str, ...] = ()
@@ -40,10 +40,14 @@ class OperationConfig:
     self_heal_restart: bool = False
     self_heal_verify_after_restart: bool = False
     deploy_rollback_safe: bool = False
+    monitoring_interval_seconds: int = 0
+    runbook_hints: Dict[str, str] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.diagnose_commands is None:
             object.__setattr__(self, "diagnose_commands", {})
+        if self.runbook_hints is None:
+            object.__setattr__(self, "runbook_hints", {})
 
 
 @dataclass(frozen=True)
@@ -1200,6 +1204,9 @@ class ProjectAutomationManager:
         critical = raw.get("critical_steps") or []
         if not isinstance(critical, list):
             critical = []
+        runbook_raw = raw.get("runbook_hints") or {}
+        if not isinstance(runbook_raw, dict):
+            runbook_raw = {}
         return OperationConfig(
             critical_steps=tuple(str(s).strip() for s in critical if s),
             diagnose_commands={
@@ -1212,6 +1219,14 @@ class ProjectAutomationManager:
                 raw.get("self_heal_verify_after_restart", False)
             ),
             deploy_rollback_safe=bool(raw.get("deploy_rollback_safe", False)),
+            monitoring_interval_seconds=int(
+                raw.get("monitoring_interval_seconds", 0) or 0
+            ),
+            runbook_hints={
+                str(k).strip(): str(v).strip()
+                for k, v in runbook_raw.items()
+                if str(k).strip() and str(v).strip()
+            },
         )
 
     def _apply_workspace_override(
