@@ -6,7 +6,6 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
-import json
 import re
 import time
 from dataclasses import dataclass
@@ -16,7 +15,6 @@ from typing import Any, Callable, Dict, List, Optional
 import structlog
 from telegram import (
     BotCommand,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
     ReplyKeyboardMarkup,
@@ -36,9 +34,7 @@ from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
 from .agentic.context import (
     AgenticWorkspaceContext,
-    ResolveResult,
     ShellActionResult,
-    VerifyReport,
     VerifyStep,
 )
 from .agentic.panel_builder import PanelBuilder
@@ -49,6 +45,7 @@ from .agentic.verify_pipeline import VerifyPipeline
 from .features.change_guard import ChangeGuardReport
 from ..utils.redaction import redact_sensitive_text
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
+from .utils.formatting import FormattedMessage, ResponseFormatter
 from .utils.html_format import escape_html
 from .utils.image_extractor import (
     ImageAttachment,
@@ -154,10 +151,6 @@ class _MessageActionProxy:
             reply_markup=reply_markup,
         )
 
-
-# Backwards-compatible aliases for internal usage within this file
-_ShellActionResult = ShellActionResult
-_VerifyStep = VerifyStep
 
 
 class MessageOrchestrator:
@@ -1167,8 +1160,6 @@ class MessageOrchestrator:
 
             await status_msg.delete()
 
-            from .utils.formatting import ResponseFormatter
-
             formatter = ResponseFormatter(self.settings)
             for message in formatter.format_claude_response(claude_response.content):
                 if message.text and message.text.strip():
@@ -1367,8 +1358,8 @@ class MessageOrchestrator:
             timeout_seconds=120,
         )
 
-        checks: List[tuple[str, _ShellActionResult]] = []
-        logs_result: Optional[_ShellActionResult] = None
+        checks: List[tuple[str, ShellActionResult]] = []
+        logs_result: Optional[ShellActionResult] = None
         checks_ok = True
         if action_key in {"start", "restart", "stop"} and main_result.success:
             await status_msg.edit_text(
@@ -1594,8 +1585,6 @@ class MessageOrchestrator:
             await status_msg.delete()
 
             if result.claude_response:
-                from .utils.formatting import ResponseFormatter
-
                 formatter = ResponseFormatter(self.settings)
                 for message in formatter.format_claude_response(result.claude_response.content):
                     if message.text and message.text.strip():
@@ -2321,8 +2310,6 @@ class MessageOrchestrator:
                 await change_guard.cleanup_checkpoint(checkpoint)
 
             # Format response (no reply_markup — strip keyboards)
-            from .utils.formatting import ResponseFormatter
-
             formatter = ResponseFormatter(self.settings)
             formatted_messages = formatter.format_claude_response(
                 claude_response.content
@@ -2344,7 +2331,6 @@ class MessageOrchestrator:
             success = False
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
             from .handlers.message import _format_error_message
-            from .utils.formatting import FormattedMessage
 
             if checkpoint and change_guard:
                 guard_report = await change_guard.rollback(
@@ -2696,8 +2682,6 @@ class MessageOrchestrator:
                 claude_response, context, self.settings, user_id
             )
 
-            from .utils.formatting import ResponseFormatter
-
             formatter = ResponseFormatter(self.settings)
             formatted_messages = formatter.format_claude_response(
                 claude_response.content
@@ -2979,8 +2963,6 @@ class MessageOrchestrator:
         _update_working_directory_from_claude_response(
             claude_response, context, self.settings, user_id
         )
-
-        from .utils.formatting import ResponseFormatter
 
         formatter = ResponseFormatter(self.settings)
         formatted_messages = formatter.format_claude_response(claude_response.content)
