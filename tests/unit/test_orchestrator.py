@@ -252,6 +252,7 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
     assert "🎛️ Panel" in labels
     assert "📁 Projects" in labels
     assert "🧵 Jobs" in labels
+    assert "📡 Running" in labels
     assert "🩺 Doctor" in labels
     assert "Alice" in call_kwargs.args[0]
 
@@ -1092,6 +1093,82 @@ workspaces:
     assert "service healthy" in result_text
     assert "tests passed" in result_text
     assert "build passed" in result_text
+
+
+async def test_agentic_running_services_view(agentic_settings, tmp_dir):
+    """Running services screen should show live managed status and server units."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: command
+        health: python3 -c "print('service healthy')"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    query = MagicMock()
+    query.data = "act:running"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "audit_logger": None,
+    }
+
+    orchestrator._list_agentic_running_systemd_units = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            stdout_text=(
+                "claude-bot.service loaded active running Claude Bot\n"
+                "ssh.service loaded active running OpenSSH\n"
+            ),
+            stderr_text="",
+            timed_out=False,
+            error=None,
+        )
+    )
+    orchestrator._list_agentic_failed_systemd_units = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            stdout_text="",
+            stderr_text="",
+            timed_out=False,
+            error=None,
+        )
+    )
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    text = query.edit_message_text.call_args.args[0]
+    assert "Running Services" in text
+    assert "ClaudeBot Service" in text
+    assert "service healthy" in text
+    assert "claude-bot.service" in text
+    assert "ssh.service" in text
 
 
 def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):

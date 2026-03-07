@@ -842,6 +842,7 @@ class MessageOrchestrator:
                     InlineKeyboardButton("📂 Status", callback_data="act:status"),
                 ],
                 [
+                    InlineKeyboardButton("📡 Running", callback_data="act:running"),
                     InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
                     InlineKeyboardButton("🆕 New Session", callback_data="act:new"),
                 ],
@@ -905,9 +906,12 @@ class MessageOrchestrator:
             [
                 InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
                 InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
+                InlineKeyboardButton("📡 Running", callback_data="act:running"),
             ],
-            [InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor")],
+            [
+                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
+                InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor"),
+            ],
         ]
 
         if profile:
@@ -1442,6 +1446,89 @@ class MessageOrchestrator:
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
+    async def _build_agentic_running_services_text(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        header: Optional[str] = None,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        """Render a live view of managed and system-level running services."""
+        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+
+        lines = [
+            "<b>Running Services</b>",
+            "",
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+        ]
+        if header:
+            lines.extend(["", header])
+
+        if profile and profile.services:
+            lines.extend(["", "<b>Managed Services</b>"])
+            for service in profile.services:
+                command = service.health_command or service.status_command
+                if not command:
+                    lines.append(
+                        f"• <code>{escape_html(service.display_name)}</code>: <code>no live check</code>"
+                    )
+                    continue
+                result = await self._execute_agentic_shell_action(
+                    workspace_root=profile.root_path,
+                    command=command,
+                    timeout_seconds=45,
+                )
+                state = "ok" if result.success else "failed"
+                if result.timed_out:
+                    state = "timeout"
+                lines.append(
+                    f"• <code>{escape_html(service.display_name)}</code>: <code>{escape_html(state)}</code>"
+                )
+                summary = self._summarize_agentic_shell_result(result)
+                if summary and summary != "no output":
+                    lines.append(f"  <code>{escape_html(summary)}</code>")
+        else:
+            lines.extend(["", "No managed services configured for this workspace."])
+
+        running_units_result = await self._list_agentic_running_systemd_units(
+            current_workspace
+        )
+        running_units = self._parse_agentic_systemd_units(running_units_result)
+        lines.extend(["", "<b>Server running services</b>"])
+        if running_units:
+            for unit in running_units:
+                lines.append(f"• <code>{escape_html(unit)}</code>")
+        else:
+            summary = self._summarize_agentic_shell_result(running_units_result)
+            label = "systemd view unavailable"
+            if running_units_result.success:
+                label = "no running services reported"
+            lines.append(f"<code>{escape_html(label)}</code>")
+            if summary and summary not in {"no output", label}:
+                lines.append(f"<code>{escape_html(summary)}</code>")
+
+        failed_units_result = await self._list_agentic_failed_systemd_units(
+            current_workspace
+        )
+        failed_units = self._parse_agentic_systemd_units(failed_units_result, limit=6)
+        if failed_units:
+            lines.extend(["", "<b>Failed services</b>"])
+            for unit in failed_units:
+                lines.append(f"• <code>{escape_html(unit)}</code>")
+
+        keyboard_rows = [
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="act:running"),
+                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+            ],
+            [
+                InlineKeyboardButton("🧩 Services", callback_data="act:services"),
+                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+            ],
+        ]
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
     @staticmethod
     def _resolve_agentic_service(profile: Any, service_key: str) -> Optional[Any]:
         """Resolve a managed service from the current project profile."""
@@ -1939,6 +2026,49 @@ class MessageOrchestrator:
             checks.append(("status", status_result))
 
         return checks, logs_result, all_required_checks_passed
+
+    async def _list_agentic_running_systemd_units(
+        self, workspace_root: Path
+    ) -> _ShellActionResult:
+        """Return the currently running systemd services."""
+        return await self._execute_agentic_shell_action(
+            workspace_root=workspace_root,
+            command=(
+                "systemctl list-units --type=service --state=running "
+                "--no-pager --plain --no-legend"
+            ),
+            timeout_seconds=30,
+        )
+
+    async def _list_agentic_failed_systemd_units(
+        self, workspace_root: Path
+    ) -> _ShellActionResult:
+        """Return currently failed systemd services."""
+        return await self._execute_agentic_shell_action(
+            workspace_root=workspace_root,
+            command=(
+                "systemctl list-units --type=service --state=failed "
+                "--no-pager --plain --no-legend"
+            ),
+            timeout_seconds=30,
+        )
+
+    @staticmethod
+    def _parse_agentic_systemd_units(result: _ShellActionResult, limit: int = 12) -> List[str]:
+        """Extract systemd unit names from list-units output."""
+        if not result.success or not result.stdout_text:
+            return []
+        units: List[str] = []
+        for line in result.stdout_text.splitlines():
+            compact = line.strip()
+            if not compact:
+                continue
+            unit = compact.split()[0]
+            if unit.endswith(".service"):
+                units.append(unit)
+            if len(units) >= limit:
+                break
+        return units
 
     async def _run_agentic_shell_action(
         self,
@@ -3718,6 +3848,14 @@ class MessageOrchestrator:
 
         elif action == "jobs":
             text, reply_markup = await self._build_agentic_jobs_text(context)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+
+        elif action == "running":
+            text, reply_markup = await self._build_agentic_running_services_text(context)
             await query.edit_message_text(
                 text,
                 parse_mode="HTML",
