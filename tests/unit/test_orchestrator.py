@@ -223,8 +223,8 @@ async def test_restart_command_sends_sigterm(deps):
     assert "Restarting" in msg
 
 
-async def test_agentic_start_no_keyboard(agentic_settings, deps):
-    """Agentic /start sends the autopilot message with control buttons."""
+async def test_agentic_start_shows_persistent_reply_keyboard(agentic_settings, deps):
+    """Agentic /start should pin a persistent bottom keyboard immediately."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     update = MagicMock()
@@ -245,8 +245,8 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
     markup = call_kwargs.kwargs["reply_markup"]
     assert markup is not None
     labels = [
-        button.text
-        for row in markup.inline_keyboard
+        getattr(button, "text", button)
+        for row in markup.keyboard
         for button in row
     ]
     assert "🎛️ Panel" in labels
@@ -254,7 +254,9 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
     assert "🧵 Jobs" in labels
     assert "📡 Running" in labels
     assert "🩺 Doctor" in labels
+    assert "✅ Verify" in labels
     assert "Alice" in call_kwargs.args[0]
+    assert context.user_data["agentic_reply_keyboard_ready"] is True
 
 
 async def test_agentic_new_resets_session(agentic_settings, deps):
@@ -297,7 +299,7 @@ async def test_agentic_status_compact(agentic_settings, deps):
 
 
 async def test_agentic_text_calls_claude(agentic_settings, deps):
-    """Agentic text handler calls Claude and keeps control buttons on the final reply."""
+    """Agentic text handler calls Claude and pins the reply keyboard when needed."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     # Mock Claude response
@@ -349,6 +351,56 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
     ]
     assert response_calls
     assert response_calls[-1].kwargs.get("reply_markup") is not None
+    assert "Quick buttons" in response_calls[-1].args[0]
+
+
+async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps):
+    """Reply-keyboard button text should run a local action instead of Claude."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    query_running_result = SimpleNamespace(
+        success=True,
+        stdout_text="claude-bot.service loaded active running Claude Bot\n",
+        stderr_text="",
+        timed_out=False,
+        error=None,
+    )
+    query_failed_result = SimpleNamespace(
+        success=True,
+        stdout_text="",
+        stderr_text="",
+        timed_out=False,
+        error=None,
+    )
+    orchestrator._list_agentic_running_systemd_units = AsyncMock(
+        return_value=query_running_result
+    )
+    orchestrator._list_agentic_failed_systemd_units = AsyncMock(
+        return_value=query_failed_result
+    )
+
+    claude_integration = AsyncMock()
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.text = "📡 Running"
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {}
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    claude_integration.run_command.assert_not_called()
+    update.message.reply_text.assert_called_once()
+    assert "Running Services" in update.message.reply_text.call_args.args[0]
 
 
 async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):

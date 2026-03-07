@@ -19,6 +19,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    ReplyKeyboardMarkup,
     Update,
 )
 from telegram.ext import (
@@ -100,6 +101,46 @@ class _PendingMessage:
 
     update: Update
     context: Any
+
+
+@dataclass(frozen=True)
+class _MessageActionProxy:
+    """Adapter that lets reply-keyboard presses reuse quick-action handlers."""
+
+    update: Update
+
+    @property
+    def from_user(self) -> Any:
+        """Expose the user like telegram CallbackQuery does."""
+        return self.update.effective_user
+
+    @property
+    def message(self) -> Any:
+        """Expose the original message to shared action runners."""
+        return self.update.message
+
+    async def answer(
+        self,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> None:
+        """Fallback answer implementation for non-callback interactions."""
+        del show_alert
+        if text:
+            await self.update.message.reply_text(text)
+
+    async def edit_message_text(
+        self,
+        text: str,
+        parse_mode: Optional[str] = None,
+        reply_markup: Optional[Any] = None,
+    ) -> None:
+        """Send a fresh message when there is no callback message to edit."""
+        await self.update.message.reply_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
 
 
 @dataclass(frozen=True)
@@ -515,7 +556,7 @@ class MessageOrchestrator:
     async def agentic_start(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Brief welcome, no buttons."""
+        """Brief welcome with a persistent bottom keyboard."""
         user = update.effective_user
         sync_line = ""
         if (
@@ -557,18 +598,20 @@ class MessageOrchestrator:
         dir_display = f"<code>{current_dir}/</code>"
 
         safe_name = escape_html(user.first_name)
-        keyboard = self._build_agentic_start_keyboard()
+        keyboard = self._build_agentic_reply_keyboard(context)
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — commands are optional.\n"
             "Mention a project name when needed and I will route the request automatically.\n"
             "Autopilot is on: I will detect the workspace, checkpoint risky edits, "
-            "run final verification, and roll back automatically if verification fails.\n\n"
+            "run final verification, and roll back automatically if verification fails.\n"
+            "The main navigation buttons are pinned below.\n\n"
             f"Working in: {dir_display}"
             f"{sync_line}",
             parse_mode="HTML",
             reply_markup=keyboard,
         )
+        self._mark_agentic_reply_keyboard_ready(context)
 
     async def agentic_new(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -580,8 +623,9 @@ class MessageOrchestrator:
 
         await update.message.reply_text(
             "Session reset. What's next?",
-            reply_markup=self._build_agentic_start_keyboard(),
+            reply_markup=self._build_agentic_reply_keyboard(context),
         )
+        self._mark_agentic_reply_keyboard_ready(context)
 
     async def agentic_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -853,6 +897,95 @@ class MessageOrchestrator:
                 ],
             ]
         )
+
+    def _build_agentic_reply_keyboard(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> ReplyKeyboardMarkup:
+        """Return a persistent bottom keyboard for the most common actions."""
+        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        rows: List[List[str]] = [
+            ["🎛️ Panel", "📂 Status", "📡 Running"],
+            ["📁 Projects", "🧵 Jobs", "🕘 Recent"],
+            ["✅ Verify", "🩺 Doctor", "🆕 New"],
+        ]
+
+        primary_service = self._select_agentic_primary_service(profile)
+        if primary_service:
+            service_row: List[str] = []
+            if primary_service.command_for("status"):
+                service_row.append("📟 Service")
+            if primary_service.command_for("logs"):
+                service_row.append("📜 Logs")
+            if primary_service.command_for("restart"):
+                service_row.append("🔄 Restart")
+            if service_row:
+                rows.append(service_row)
+
+        if profile:
+            operator_row: List[str] = []
+            if "start" in profile.commands:
+                operator_row.append("▶️ Start")
+            if "dev" in profile.commands:
+                operator_row.append("🛠️ Dev")
+            if "deploy" in profile.commands:
+                operator_row.append("🚀 Deploy")
+            if operator_row:
+                rows.append(operator_row)
+
+        return ReplyKeyboardMarkup(
+            rows,
+            resize_keyboard=True,
+            is_persistent=True,
+            input_field_placeholder="Напиши задачу или нажми кнопку ниже",
+        )
+
+    @staticmethod
+    def _mark_agentic_reply_keyboard_ready(context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remember that the persistent reply keyboard has already been shown."""
+        context.user_data["agentic_reply_keyboard_ready"] = True
+
+    def _build_agentic_reply_action(
+        self,
+        message_text: str,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> Optional[str]:
+        """Map reply-keyboard button text to an internal action."""
+        normalized = message_text.strip()
+        action = {
+            "🎛️ Panel": "panel",
+            "📂 Status": "status",
+            "📡 Running": "running",
+            "📁 Projects": "projects",
+            "🧵 Jobs": "jobs",
+            "🕘 Recent": "recent",
+            "✅ Verify": "verify",
+            "🩺 Doctor": "doctor",
+            "🆕 New": "new",
+            "▶️ Start": "start",
+            "🛠️ Dev": "dev",
+            "🚀 Deploy": "deploy",
+        }.get(normalized)
+        if action:
+            return action
+
+        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        primary_service = self._select_agentic_primary_service(profile)
+        if not primary_service:
+            return None
+
+        service_actions = {
+            "📟 Service": "status",
+            "📜 Logs": "logs",
+            "🔄 Restart": "restart",
+        }
+        service_action = service_actions.get(normalized)
+        if service_action and primary_service.command_for(service_action):
+            return f"svc:{primary_service.key}:{service_action}"
+        return None
 
     def _get_agentic_workspace_profile(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -2813,6 +2946,16 @@ class MessageOrchestrator:
         """Direct Claude passthrough. Simple progress. No suggestions."""
         user_id = update.effective_user.id
         message_text = update.message.text
+        reply_action = self._build_agentic_reply_action(message_text, context)
+
+        if reply_action:
+            await self._dispatch_agentic_action(
+                reply_action,
+                _MessageActionProxy(update),
+                context,
+            )
+            self._mark_agentic_reply_keyboard_ready(context)
+            return
 
         logger.info(
             "Agentic text message",
@@ -3193,6 +3336,14 @@ class MessageOrchestrator:
                 reply_markup=panel_markup,
                 reply_to_message_id=update.message.message_id,
             )
+
+        if not context.user_data.get("agentic_reply_keyboard_ready"):
+            await update.message.reply_text(
+                "⌨️ Quick buttons are now pinned below.",
+                reply_markup=self._build_agentic_reply_keyboard(context),
+                reply_to_message_id=update.message.message_id,
+            )
+            self._mark_agentic_reply_keyboard_ready(context)
 
         # Audit log
         audit_logger = context.bot_data.get("audit_logger")
@@ -3845,13 +3996,13 @@ class MessageOrchestrator:
         )
         return
 
-    async def _agentic_quick_action(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    async def _dispatch_agentic_action(
+        self,
+        action: str,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
-        """Handle quick action button presses."""
-        query = update.callback_query
-        await query.answer()
-        action = query.data.removeprefix("act:")
+        """Handle a quick action triggered from inline or reply keyboards."""
         _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
             self._get_agentic_workspace_profile(context)
         )
@@ -3976,6 +4127,15 @@ class MessageOrchestrator:
                 parse_mode="HTML",
                 reply_markup=self._build_agentic_control_panel_markup(profile),
             )
+
+    async def _agentic_quick_action(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle quick action button presses."""
+        query = update.callback_query
+        await query.answer()
+        action = query.data.removeprefix("act:")
+        await self._dispatch_agentic_action(action, query, context)
 
     async def _agentic_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
