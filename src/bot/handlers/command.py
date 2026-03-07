@@ -121,6 +121,73 @@ def _get_workspace_profile(
     return current_dir, boundary_root, project_automation, profile
 
 
+def _get_workspace_catalog(
+    settings: Settings, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[Path, Path, Optional[Any], list[Any], Path]:
+    """Resolve discovered workspaces for the current conversation."""
+    current_dir = _get_current_directory(settings, context)
+    project_root = _get_thread_project_root(settings, context)
+    boundary_root = project_root or settings.approved_directory
+    project_automation = _get_project_automation(context)
+
+    if not project_automation:
+        return current_dir, boundary_root, None, [], current_dir
+
+    current_workspace = project_automation.detect_workspace_root(
+        current_dir, boundary_root
+    )
+    summaries = project_automation.list_workspace_summaries(boundary_root)
+    return current_dir, boundary_root, project_automation, summaries, current_workspace
+
+
+def _render_workspace_catalog_text(
+    title: str,
+    project_automation: Any,
+    summaries: list[Any],
+    current_workspace: Path,
+) -> str:
+    """Render a compact workspace catalog for Telegram."""
+    lines = [title, ""]
+    for summary in summaries:
+        lines.extend(
+            project_automation.describe_workspace_summary_lines(
+                summary, current_workspace=current_workspace
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "🧠 Autopilot can route by project name or relative path.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_workspace_catalog_keyboard(summaries: list[Any]) -> InlineKeyboardMarkup:
+    """Create inline buttons for discovered workspaces."""
+    keyboard = []
+    for i in range(0, len(summaries), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(summaries):
+                summary = summaries[i + j]
+                row.append(
+                    InlineKeyboardButton(
+                        summary.button_label,
+                        callback_data=f"cd:{summary.relative_path}",
+                    )
+                )
+        keyboard.append(row)
+
+    keyboard.append(
+        [
+            InlineKeyboardButton("🏠 Root", callback_data="cd:/"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="action:show_projects"),
+        ]
+    )
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     user = update.effective_user
@@ -892,54 +959,26 @@ async def show_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        # Get directories in approved directory (these are "projects")
-        projects = []
-        for item in sorted(settings.approved_directory.iterdir()):
-            if item.is_dir() and not item.name.startswith("."):
-                projects.append(item.name)
-
-        if not projects:
+        _current_dir, _boundary_root, project_automation, summaries, current_workspace = (
+            _get_workspace_catalog(settings, context)
+        )
+        if not project_automation or not summaries:
             await update.message.reply_text(
                 "📁 <b>No Projects Found</b>\n\n"
-                "No subdirectories found in your approved directory.\n"
-                "Create some directories to organize your projects!"
+                "No discovered workspaces found in your approved directory.",
+                parse_mode="HTML",
             )
             return
 
-        # Create inline keyboard with project buttons
-        keyboard = []
-        for i in range(0, len(projects), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(projects):
-                    project = projects[i + j]
-                    row.append(
-                        InlineKeyboardButton(
-                            f"📁 {project}", callback_data=f"cd:{project}"
-                        )
-                    )
-            keyboard.append(row)
-
-        # Add navigation buttons
-        keyboard.append(
-            [
-                InlineKeyboardButton("🏠 Go to Root", callback_data="cd:/"),
-                InlineKeyboardButton(
-                    "🔄 Refresh", callback_data="action:show_projects"
-                ),
-            ]
-        )
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        project_list = "\n".join([f"• <code>{project}/</code>" for project in projects])
-
         await update.message.reply_text(
-            f"📁 <b>Available Projects</b>\n\n"
-            f"{project_list}\n\n"
-            f"Click a project below to navigate to it:",
+            _render_workspace_catalog_text(
+                "📁 <b>Workspace Profiles</b>",
+                project_automation,
+                summaries,
+                current_workspace,
+            ),
             parse_mode="HTML",
-            reply_markup=reply_markup,
+            reply_markup=_build_workspace_catalog_keyboard(summaries),
         )
 
     except Exception as e:

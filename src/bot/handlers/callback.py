@@ -11,6 +11,11 @@ from ...claude.facade import ClaudeIntegration
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
+from .command import (
+    _build_workspace_catalog_keyboard,
+    _get_workspace_catalog,
+    _render_workspace_catalog_text,
+)
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -361,56 +366,26 @@ async def _handle_show_projects_action(
             )
             return
 
-        # Get directories in approved directory
-        projects = []
-        for item in sorted(settings.approved_directory.iterdir()):
-            if item.is_dir() and not item.name.startswith("."):
-                projects.append(item.name)
-
-        if not projects:
+        _current_dir, _boundary_root, project_automation, summaries, current_workspace = (
+            _get_workspace_catalog(settings, context)
+        )
+        if not project_automation or not summaries:
             await query.edit_message_text(
                 "📁 <b>No Projects Found</b>\n\n"
-                "No subdirectories found in your approved directory.\n"
-                "Create some directories to organize your projects!",
+                "No discovered workspaces found in your approved directory.",
                 parse_mode="HTML",
             )
             return
 
-        # Create project buttons
-        keyboard = []
-        for i in range(0, len(projects), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(projects):
-                    project = projects[i + j]
-                    row.append(
-                        InlineKeyboardButton(
-                            f"📁 {project}", callback_data=f"cd:{project}"
-                        )
-                    )
-            keyboard.append(row)
-
-        # Add navigation buttons
-        keyboard.append(
-            [
-                InlineKeyboardButton("🏠 Root", callback_data="cd:/"),
-                InlineKeyboardButton(
-                    "🔄 Refresh", callback_data="action:show_projects"
-                ),
-            ]
-        )
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        project_list = "\n".join(
-            [f"• <code>{escape_html(project)}/</code>" for project in projects]
-        )
-
         await query.edit_message_text(
-            f"📁 <b>Available Projects</b>\n\n"
-            f"{project_list}\n\n"
-            f"Click a project to navigate to it:",
+            _render_workspace_catalog_text(
+                "📁 <b>Workspace Profiles</b>",
+                project_automation,
+                summaries,
+                current_workspace,
+            ),
             parse_mode="HTML",
-            reply_markup=reply_markup,
+            reply_markup=_build_workspace_catalog_keyboard(summaries),
         )
 
     except Exception as e:

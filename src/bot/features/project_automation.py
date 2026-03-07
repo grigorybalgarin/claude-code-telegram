@@ -57,6 +57,24 @@ class AutomationPlan:
     read_only: bool
 
 
+@dataclass(frozen=True)
+class WorkspaceSummary:
+    """Compact metadata for a discovered workspace under the approved root."""
+
+    root_path: Path
+    relative_path: str
+    display_name: str
+    stacks: tuple[str, ...]
+    playbooks: tuple[str, ...]
+    has_git_repo: bool
+    has_docker_compose: bool
+
+    @property
+    def button_label(self) -> str:
+        """Return a compact label suitable for inline buttons."""
+        return self.relative_path
+
+
 class ProjectAutomationManager:
     """Detect workspace capabilities and generate deterministic playbooks."""
 
@@ -331,6 +349,110 @@ class ProjectAutomationManager:
             available.append(self._PLAYBOOKS["review"])
 
         return available
+
+    def list_workspace_summaries(self, boundary_root: Path) -> List[WorkspaceSummary]:
+        """Return discovered workspaces with compact profile metadata."""
+        boundary = boundary_root.resolve()
+        discovered = []
+        if self._looks_like_workspace_root(boundary):
+            discovered.append(boundary)
+        discovered.extend(self.discover_workspace_roots(boundary))
+
+        unique_roots: dict[Path, WorkspaceSummary] = {}
+        for candidate in discovered:
+            profile = self.build_profile(candidate, boundary)
+            root = profile.root_path
+            if root in unique_roots:
+                continue
+            relative_path = profile.relative_root(boundary)
+            unique_roots[root] = WorkspaceSummary(
+                root_path=root,
+                relative_path=relative_path,
+                display_name=profile.display_name,
+                stacks=profile.stacks,
+                playbooks=tuple(
+                    playbook.slug for playbook in self.list_playbooks(profile)
+                ),
+                has_git_repo=profile.has_git_repo,
+                has_docker_compose=profile.has_docker_compose,
+            )
+
+        summaries = sorted(
+            unique_roots.values(),
+            key=lambda summary: (summary.relative_path != "/", summary.relative_path.casefold()),
+        )
+        return [
+            summary
+            for summary in summaries
+            if not self._is_container_workspace(summary, summaries)
+        ]
+
+    def resolve_workspace_reference(
+        self, reference: str, boundary_root: Path
+    ) -> Optional[WorkspaceSummary]:
+        """Resolve a manual workspace reference by path or display name."""
+        normalized = reference.strip().strip("/")
+        if not normalized:
+            return None
+
+        boundary = boundary_root.resolve()
+        direct_candidate = (boundary / normalized).resolve()
+        try:
+            direct_candidate.relative_to(boundary)
+        except ValueError:
+            direct_candidate = boundary / "__outside__"
+
+        if direct_candidate.exists() and direct_candidate.is_dir():
+            target_root = self.detect_workspace_root(direct_candidate, boundary)
+            for summary in self.list_workspace_summaries(boundary):
+                if summary.root_path == target_root:
+                    return summary
+
+        normalized_raw = normalized.casefold()
+        normalized_compact = self._normalize_match_text(normalized)
+        matches: List[WorkspaceSummary] = []
+
+        for summary in self.list_workspace_summaries(boundary):
+            candidates = {
+                summary.relative_path.casefold(),
+                summary.display_name.casefold(),
+                summary.root_path.name.casefold(),
+                self._normalize_match_text(summary.relative_path),
+                self._normalize_match_text(summary.display_name),
+                self._normalize_match_text(summary.root_path.name),
+            }
+            if normalized_raw in candidates or normalized_compact in candidates:
+                matches.append(summary)
+
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def describe_workspace_summary_lines(
+        self,
+        summary: WorkspaceSummary,
+        current_workspace: Optional[Path] = None,
+    ) -> List[str]:
+        """Build compact Telegram lines for a workspace summary."""
+        marker = " ◀" if current_workspace and summary.root_path == current_workspace else ""
+        stacks = ", ".join(summary.stacks)
+        badges = []
+        if summary.has_git_repo:
+            badges.append("git")
+        if summary.has_docker_compose:
+            badges.append("compose")
+        badges_text = f" · {' · '.join(badges)}" if badges else ""
+        playbooks_text = ", ".join(summary.playbooks)
+        return [
+            (
+                f"• <b>{escape_html(summary.display_name)}</b>{marker} "
+                f"→ <code>{escape_html(summary.relative_path)}</code>"
+            ),
+            (
+                f"  <code>{escape_html(stacks)}</code>{badges_text}"
+                f" · playbooks: <code>{escape_html(playbooks_text)}</code>"
+            ),
+        ]
 
     def get_playbook(self, slug: str, profile: ProjectProfile) -> Optional[ProjectPlaybook]:
         """Return a playbook only if it is available for the profile."""
@@ -719,3 +841,16 @@ class ProjectAutomationManager:
 
     def _normalize_match_text(self, value: str) -> str:
         return re.sub(r"[^0-9a-zа-яё]+", "", value.casefold())
+
+    def _is_container_workspace(
+        self, summary: WorkspaceSummary, summaries: List[WorkspaceSummary]
+    ) -> bool:
+        if summary.relative_path == "/" or self._looks_like_workspace_root(summary.root_path):
+            return False
+
+        prefix = f"{summary.relative_path.rstrip('/')}/"
+        return any(
+            other.relative_path != summary.relative_path
+            and other.relative_path.startswith(prefix)
+            for other in summaries
+        )

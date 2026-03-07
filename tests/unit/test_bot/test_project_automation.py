@@ -13,6 +13,7 @@ from src.bot.handlers.command import (
     playbooks_command,
     recent_activity_command,
     run_playbook_command,
+    show_projects,
 )
 from src.config import create_test_config
 
@@ -228,6 +229,62 @@ def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(t
     assert plan.workspace_changed is False
 
 
+def test_list_workspace_summaries_skips_container_directories(tmp_path):
+    """Workspace catalog should show real workspaces, not generic containers."""
+    claude_root = tmp_path / "ClaudeBot"
+    claude_root.mkdir()
+    (claude_root / ".git").mkdir()
+    (claude_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    nested_root = tmp_path / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    summaries = manager.list_workspace_summaries(tmp_path)
+
+    assert [summary.relative_path for summary in summaries] == [
+        "ClaudeBot",
+        "MacProjects/Poolych",
+    ]
+
+
+def test_resolve_workspace_reference_matches_name_and_path(tmp_path):
+    """Manual workspace switches should accept both names and relative paths."""
+    claude_root = tmp_path / "ClaudeBot"
+    claude_root.mkdir()
+    (claude_root / ".git").mkdir()
+    (claude_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    nested_root = tmp_path / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+
+    by_name = manager.resolve_workspace_reference("Poolych", tmp_path)
+    by_path = manager.resolve_workspace_reference("MacProjects/Poolych", tmp_path)
+
+    assert by_name is not None
+    assert by_name.root_path == nested_root
+    assert by_path is not None
+    assert by_path.root_path == nested_root
+
+
 @pytest.mark.asyncio
 async def test_playbooks_command_lists_available_playbooks(tmp_path):
     """The Telegram command should render detected playbooks."""
@@ -257,6 +314,48 @@ async def test_playbooks_command_lists_available_playbooks(tmp_path):
     assert "Workspace Playbooks" in message
     assert "doctor" in message
     assert "test" in message
+
+
+@pytest.mark.asyncio
+async def test_show_projects_renders_workspace_profiles(tmp_path):
+    """Projects command should render discovered workspace profiles."""
+    claude_root = tmp_path / "ClaudeBot"
+    claude_root.mkdir()
+    (claude_root / ".git").mkdir()
+    (claude_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    nested_root = tmp_path / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    settings = create_test_config(approved_directory=str(tmp_path), agentic_mode=False)
+    manager = ProjectAutomationManager()
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {"current_directory": claude_root}
+    context.bot_data = {
+        "settings": settings,
+        "audit_logger": None,
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+    }
+
+    await show_projects(update, context)
+
+    message = update.message.reply_text.call_args[0][0]
+    assert "Workspace Profiles" in message
+    assert "ClaudeBot" in message
+    assert "MacProjects/Poolych" in message
 
 
 @pytest.mark.asyncio

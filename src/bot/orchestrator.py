@@ -2046,19 +2046,40 @@ class MessageOrchestrator:
     async def agentic_repo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """List repos in workspace or switch to one.
+        """List workspaces or switch to one.
 
-        /repo          — list subdirectories with git indicators
-        /repo <name>   — switch to that directory, resume session if available
+        /repo               — list discovered workspaces
+        /repo <name|path>   — switch to that workspace and resume its session
         """
         args = update.message.text.split()[1:] if update.message.text else []
         base = self.settings.approved_directory
         current_dir = context.user_data.get("current_directory", base)
+        features = context.bot_data.get("features")
+        project_automation = (
+            getattr(features, "get_project_automation", lambda: None)()
+            if features
+            else None
+        )
+        current_workspace = (
+            project_automation.detect_workspace_root(current_dir, base)
+            if project_automation
+            else current_dir
+        )
+        workspace_summaries = (
+            project_automation.list_workspace_summaries(base)
+            if project_automation
+            else []
+        )
 
         if args:
             # Switch to named repo
             target_name = args[0]
-            target_path = base / target_name
+            summary = (
+                project_automation.resolve_workspace_reference(target_name, base)
+                if project_automation
+                else None
+            )
+            target_path = summary.root_path if summary else base / target_name
             if not target_path.is_dir():
                 await update.message.reply_text(
                     f"Directory not found: <code>{escape_html(target_name)}</code>",
@@ -2082,15 +2103,58 @@ class MessageOrchestrator:
             is_git = (target_path / ".git").is_dir()
             git_badge = " (git)" if is_git else ""
             session_badge = " · session resumed" if session_id else ""
+            relative_display = (
+                summary.relative_path
+                if summary
+                else (
+                    "/"
+                    if target_path == base
+                    else str(target_path.relative_to(base)).replace("\\", "/")
+                )
+            )
 
             await update.message.reply_text(
-                f"Switched to <code>{escape_html(target_name)}/</code>"
+                f"Switched to <code>{escape_html(relative_display)}</code>"
                 f"{git_badge}{session_badge}",
                 parse_mode="HTML",
             )
             return
 
-        # No args — list repos
+        if project_automation and workspace_summaries:
+            lines: List[str] = []
+            keyboard_rows: List[list] = []  # type: ignore[type-arg]
+
+            for summary in workspace_summaries:
+                lines.extend(
+                    project_automation.describe_workspace_summary_lines(
+                        summary, current_workspace=current_workspace
+                    )
+                )
+
+            for i in range(0, len(workspace_summaries), 2):
+                row = []
+                for j in range(2):
+                    if i + j < len(workspace_summaries):
+                        summary = workspace_summaries[i + j]
+                        row.append(
+                            InlineKeyboardButton(
+                                summary.button_label,
+                                callback_data=f"cd:{summary.relative_path}",
+                            )
+                        )
+                keyboard_rows.append(row)
+
+            reply_markup = InlineKeyboardMarkup(keyboard_rows)
+            await update.message.reply_text(
+                "<b>Workspaces</b>\n\n"
+                + "\n".join(lines)
+                + "\n\nAutopilot can route by project name or relative path.",
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+            return
+
+        # No args — fall back to top-level directories if workspace catalog is unavailable
         try:
             entries = sorted(
                 [

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.bot.features.project_automation import ProjectAutomationManager
 from src.bot.orchestrator import MessageOrchestrator, _redact_secrets
 from src.config import create_test_config
 
@@ -571,6 +572,85 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
     patterns = [h.pattern for h in cb_handlers if h.pattern]
     assert any(p.match("cd:my_project") for p in patterns)
     assert any(p.match("act:new") for p in patterns)
+
+
+async def test_agentic_repo_lists_workspace_catalog(agentic_settings, tmp_dir):
+    """Agentic /repo should render discovered workspaces, including nested ones."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    claude_root = tmp_dir / "ClaudeBot"
+    claude_root.mkdir()
+    (claude_root / ".git").mkdir()
+    (claude_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    nested_root = tmp_dir / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        '{"name":"poolych","scripts":{"test":"vitest run"}}',
+        encoding="utf-8",
+    )
+
+    update = MagicMock()
+    update.message.text = "/repo"
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {"current_directory": claude_root}
+    context.bot_data = {
+        "features": SimpleNamespace(
+            get_project_automation=lambda: ProjectAutomationManager()
+        )
+    }
+
+    await orchestrator.agentic_repo(update, context)
+
+    message = update.message.reply_text.call_args[0][0]
+    assert "Workspaces" in message
+    assert "ClaudeBot" in message
+    assert "MacProjects/Poolych" in message
+
+
+async def test_agentic_repo_switches_by_workspace_name(agentic_settings, tmp_dir):
+    """Agentic /repo <name> should resolve discovered workspaces by name."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    current_root = tmp_dir / "ClaudeBot"
+    current_root.mkdir()
+    target_root = tmp_dir / "MacProjects" / "Poolych"
+    target_root.mkdir(parents=True)
+    (target_root / ".git").mkdir()
+
+    claude_integration = AsyncMock()
+    claude_integration._find_resumable_session = AsyncMock(
+        return_value=SimpleNamespace(session_id="session-resumed")
+    )
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.text = "/repo Poolych"
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {"current_directory": current_root}
+    context.bot_data = {
+        "claude_integration": claude_integration,
+        "features": SimpleNamespace(
+            get_project_automation=lambda: ProjectAutomationManager()
+        ),
+    }
+
+    await orchestrator.agentic_repo(update, context)
+
+    resolved_target = target_root.resolve()
+    claude_integration._find_resumable_session.assert_awaited_once_with(
+        123, resolved_target
+    )
+    assert context.user_data["current_directory"] == resolved_target
+    assert context.user_data["claude_session_id"] == "session-resumed"
 
 
 async def test_agentic_document_rejects_large_files(agentic_settings, deps):
