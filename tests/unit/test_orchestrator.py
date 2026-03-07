@@ -358,6 +358,7 @@ async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings
     autopilot_plan = SimpleNamespace(
         prompt="AUTOPILOT PROMPT",
         workspace_root=workspace_root,
+        workspace_changed=False,
         profile=SimpleNamespace(),
         matched_playbook=None,
         should_checkpoint=False,
@@ -384,7 +385,10 @@ async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings
     update.message.reply_text.return_value = progress_msg
 
     context = MagicMock()
-    context.user_data = {"current_directory": nested_dir}
+    context.user_data = {
+        "current_directory": nested_dir,
+        "claude_session_id": "session-existing",
+    }
     context.bot_data = {
         "settings": agentic_settings,
         "claude_integration": claude_integration,
@@ -400,7 +404,150 @@ async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings
     kwargs = claude_integration.run_command.call_args.kwargs
     assert kwargs["prompt"] == "AUTOPILOT PROMPT"
     assert kwargs["working_directory"] == workspace_root
-    assert kwargs["session_id"] is None
+    assert kwargs["session_id"] == "session-existing"
+    assert context.user_data["current_directory"] == nested_dir
+
+
+async def test_agentic_text_switches_workspace_and_resumes_session(
+    agentic_settings, tmp_dir
+):
+    """Autopilot should persist the new workspace and resume its session."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    current_root = tmp_dir / "ClaudeBot"
+    current_root.mkdir()
+    target_root = tmp_dir / "FreelanceAggregator"
+    target_root.mkdir()
+
+    mock_response = MagicMock()
+    mock_response.session_id = "session-new"
+    mock_response.content = "Done."
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+    claude_integration._find_resumable_session = AsyncMock(
+        return_value=SimpleNamespace(session_id="session-resumed")
+    )
+
+    autopilot_plan = SimpleNamespace(
+        prompt="AUTOPILOT PROMPT",
+        workspace_root=target_root,
+        workspace_changed=True,
+        profile=SimpleNamespace(),
+        matched_playbook="test",
+        should_checkpoint=False,
+        should_verify=False,
+        read_only=False,
+    )
+    project_automation = MagicMock()
+    project_automation.build_automation_plan.return_value = autopilot_plan
+    change_guard = MagicMock()
+    features = SimpleNamespace(
+        get_project_automation=lambda: project_automation,
+        get_project_change_guard=lambda: change_guard,
+    )
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.text = "почини тесты в FreelanceAggregator"
+    update.message.message_id = 1
+    update.message.chat.type = "private"
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    context = MagicMock()
+    context.user_data = {
+        "current_directory": current_root,
+        "claude_session_id": "old-session",
+    }
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+        "features": features,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    claude_integration._find_resumable_session.assert_awaited_once_with(123, target_root)
+    kwargs = claude_integration.run_command.call_args.kwargs
+    assert kwargs["working_directory"] == target_root
+    assert kwargs["session_id"] == "session-resumed"
+    assert context.user_data["current_directory"] == target_root
+
+
+async def test_agentic_text_keeps_autopilot_prompt_when_custom_instructions_present(
+    agentic_settings, tmp_dir
+):
+    """Custom instructions should wrap the autopilot prompt instead of replacing it."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+
+    mock_response = MagicMock()
+    mock_response.session_id = "session-xyz"
+    mock_response.content = "Done."
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+
+    autopilot_plan = SimpleNamespace(
+        prompt="AUTOPILOT PROMPT",
+        workspace_root=workspace_root,
+        workspace_changed=False,
+        profile=SimpleNamespace(),
+        matched_playbook=None,
+        should_checkpoint=False,
+        should_verify=False,
+    )
+    project_automation = MagicMock()
+    project_automation.build_automation_plan.return_value = autopilot_plan
+    features = SimpleNamespace(
+        get_project_automation=lambda: project_automation,
+        get_project_change_guard=lambda: MagicMock(),
+    )
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.text = "Fix this bug"
+    update.message.message_id = 1
+    update.message.chat.type = "private"
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    context = MagicMock()
+    context.user_data = {
+        "current_directory": workspace_root,
+        "custom_instructions": ["Always explain the risk first"],
+    }
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+        "features": features,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    prompt = claude_integration.run_command.call_args.kwargs["prompt"]
+    assert "Always explain the risk first" in prompt
+    assert "AUTOPILOT PROMPT" in prompt
+    assert "Fix this bug" not in prompt.split("\n\n", 1)[1]
 
 
 async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):

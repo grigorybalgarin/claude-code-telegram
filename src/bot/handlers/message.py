@@ -394,8 +394,25 @@ async def handle_text_message(
             )
             prompt_text = autopilot_plan.prompt
             working_dir = autopilot_plan.workspace_root
-            if working_dir != current_dir:
+            if autopilot_plan.workspace_changed:
+                context.user_data["current_directory"] = working_dir
                 session_id = None
+                if not force_new:
+                    try:
+                        existing_session = await claude_integration._find_resumable_session(
+                            user_id, working_dir
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to resume session for autopilot workspace",
+                            error=str(e),
+                            user_id=user_id,
+                            working_dir=str(working_dir),
+                        )
+                    else:
+                        if existing_session:
+                            session_id = existing_session.session_id
+                context.user_data["claude_session_id"] = session_id
             if autopilot_plan.should_checkpoint and change_guard:
                 checkpoint = await change_guard.create_checkpoint(working_dir)
 
@@ -746,7 +763,7 @@ async def handle_text_message(
                     rollback_succeeded=bool(
                         guard_report and guard_report.rollback_succeeded
                     ),
-                    workspace_changed=working_dir != current_dir,
+                    workspace_changed=autopilot_plan.workspace_changed,
                 )
             await audit_logger.log_command(
                 user_id=user_id,

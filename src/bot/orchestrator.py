@@ -550,6 +550,7 @@ class MessageOrchestrator:
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — commands are optional.\n"
+            "Mention a project name when needed and I will route the request automatically.\n"
             "Autopilot is on: I will detect the workspace, checkpoint risky edits, "
             "run final verification, and roll back automatically if verification fails.\n\n"
             f"Working in: {dir_display}"
@@ -1245,8 +1246,25 @@ class MessageOrchestrator:
             )
             final_prompt = autopilot_plan.prompt
             working_dir = autopilot_plan.workspace_root
-            if working_dir != current_dir:
+            if autopilot_plan.workspace_changed:
+                context.user_data["current_directory"] = working_dir
                 session_id = None
+                if not force_new:
+                    try:
+                        existing_session = await claude_integration._find_resumable_session(
+                            user_id, working_dir
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to resume session for autopilot workspace",
+                            error=str(e),
+                            user_id=user_id,
+                            working_dir=str(working_dir),
+                        )
+                    else:
+                        if existing_session:
+                            session_id = existing_session.session_id
+                context.user_data["claude_session_id"] = session_id
             if autopilot_plan.should_checkpoint and change_guard:
                 checkpoint = await change_guard.create_checkpoint(working_dir)
         if custom_instructions:
@@ -1254,7 +1272,7 @@ class MessageOrchestrator:
                 f"- {inst}" for inst in custom_instructions
             )
             final_prompt = (
-                f"[User instructions: {instructions_block}]\n\n{message_text}"
+                f"[User instructions: {instructions_block}]\n\n{final_prompt}"
             )
 
         # Enrich prompt with mem0 semantic memory
@@ -1489,7 +1507,7 @@ class MessageOrchestrator:
                     rollback_succeeded=bool(
                         guard_report and guard_report.rollback_succeeded
                     ),
-                    workspace_changed=working_dir != current_dir,
+                    workspace_changed=autopilot_plan.workspace_changed,
                 )
             await audit_logger.log_command(
                 user_id=user_id,

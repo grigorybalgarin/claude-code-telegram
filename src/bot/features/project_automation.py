@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -48,6 +49,7 @@ class AutomationPlan:
 
     prompt: str
     workspace_root: Path
+    workspace_changed: bool
     profile: ProjectProfile
     matched_playbook: Optional[str]
     should_checkpoint: bool
@@ -161,6 +163,93 @@ class ProjectAutomationManager:
                 return fallback
             current = parent
 
+    def discover_workspace_roots(self, boundary_root: Path) -> List[Path]:
+        """Discover likely workspace roots under the approved boundary."""
+        boundary = boundary_root.resolve()
+        candidates: List[Path] = []
+        queue = deque([boundary])
+        seen = {boundary}
+        max_depth = 2
+        max_candidates = 128
+
+        while queue and len(candidates) < max_candidates:
+            current = queue.popleft()
+            try:
+                children = sorted(
+                    [
+                        path
+                        for path in current.iterdir()
+                        if path.is_dir() and not path.name.startswith(".")
+                    ],
+                    key=lambda path: path.name.casefold(),
+                )
+            except OSError:
+                continue
+
+            for child in children:
+                try:
+                    resolved = child.resolve()
+                except OSError:
+                    continue
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+
+                try:
+                    relative = resolved.relative_to(boundary)
+                except ValueError:
+                    continue
+
+                depth = len(relative.parts)
+                if depth > max_depth:
+                    continue
+
+                looks_like_workspace = self._looks_like_workspace_root(resolved)
+                if depth == 1 or looks_like_workspace:
+                    candidates.append(resolved)
+                    if len(candidates) >= max_candidates:
+                        break
+
+                if depth < max_depth and not looks_like_workspace:
+                    queue.append(resolved)
+
+        return candidates
+
+    def select_workspace_root(
+        self, user_request: str, current_dir: Path, boundary_root: Path
+    ) -> Path:
+        """Select the best workspace for the request, falling back to the current one."""
+        boundary = boundary_root.resolve()
+        current_workspace = self.detect_workspace_root(current_dir, boundary)
+        candidates = [current_workspace]
+        seen = {current_workspace}
+        for candidate in self.discover_workspace_roots(boundary):
+            if candidate not in seen:
+                candidates.append(candidate)
+                seen.add(candidate)
+
+        ranked = []
+        for candidate in candidates:
+            score = self._score_workspace_candidate(
+                user_request, candidate, boundary, current_workspace
+            )
+            try:
+                specificity = len(candidate.relative_to(boundary).parts)
+            except ValueError:
+                specificity = len(candidate.parts)
+            ranked.append((score, specificity, candidate))
+
+        ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        best_score, _, best_path = ranked[0]
+        second_best_score = ranked[1][0] if len(ranked) > 1 else 0
+        if (
+            best_path != current_workspace
+            and best_score >= 5
+            and best_score >= second_best_score + 2
+        ):
+            return best_path
+        return current_workspace
+
     def build_profile(self, current_dir: Path, boundary_root: Path) -> ProjectProfile:
         """Detect profile details for the current workspace."""
         root = self.detect_workspace_root(current_dir, boundary_root)
@@ -270,7 +359,12 @@ class ProjectAutomationManager:
         boundary_root: Path,
     ) -> AutomationPlan:
         """Build an always-on autopilot plan for a natural-language request."""
-        profile = self.build_profile(current_dir, boundary_root)
+        current_profile = self.build_profile(current_dir, boundary_root)
+        selected_workspace = self.select_workspace_root(
+            user_request, current_dir, boundary_root
+        )
+        profile = self.build_profile(selected_workspace, boundary_root)
+        workspace_changed = profile.root_path != current_profile.root_path
         playbook = self.classify_playbook(user_request, profile)
         read_only = playbook is not None and playbook.slug in {"doctor", "review"}
         if not read_only:
@@ -301,6 +395,7 @@ class ProjectAutomationManager:
         return AutomationPlan(
             prompt=prompt,
             workspace_root=profile.root_path,
+            workspace_changed=workspace_changed,
             profile=profile,
             matched_playbook=playbook.slug if playbook else None,
             should_checkpoint=mutating and profile.has_git_repo,
@@ -564,3 +659,63 @@ class ProjectAutomationManager:
             if candidate.exists():
                 return candidate
         return None
+
+    def _looks_like_workspace_root(self, path: Path) -> bool:
+        return any((path / marker).exists() for marker in self._ROOT_MARKERS)
+
+    def _score_workspace_candidate(
+        self,
+        user_request: str,
+        candidate: Path,
+        boundary_root: Path,
+        current_workspace: Path,
+    ) -> int:
+        request_text = user_request.casefold()
+        normalized_request = self._normalize_match_text(user_request)
+        candidate_name = candidate.name.casefold()
+        normalized_name = self._normalize_match_text(candidate.name)
+        relative_label = self._workspace_label(candidate, boundary_root).lstrip("/")
+        normalized_relative = self._normalize_match_text(relative_label)
+
+        score = 1 if candidate == current_workspace else 0
+
+        if relative_label and self._contains_path_reference(request_text, relative_label):
+            score = max(score, 9 + relative_label.count("/"))
+        if (
+            normalized_relative
+            and len(normalized_relative) >= 6
+            and normalized_relative in normalized_request
+        ):
+            score = max(score, 8 + relative_label.count("/"))
+        if len(candidate_name) >= 4 and self._contains_workspace_name(
+            request_text, candidate_name
+        ):
+            score = max(score, 7)
+        if len(normalized_name) >= 4 and normalized_name in normalized_request:
+            score = max(score, 6)
+
+        return score
+
+    def _workspace_label(self, path: Path, boundary_root: Path) -> str:
+        try:
+            relative = path.relative_to(boundary_root.resolve())
+            return "/" if str(relative) == "." else relative.as_posix()
+        except ValueError:
+            return str(path)
+
+    def _contains_workspace_name(self, request_text: str, name: str) -> bool:
+        pattern = re.compile(
+            rf"(?<![0-9a-zа-яё]){re.escape(name)}(?![0-9a-zа-яё])",
+            re.IGNORECASE,
+        )
+        return bool(pattern.search(request_text))
+
+    def _contains_path_reference(self, request_text: str, relative_label: str) -> bool:
+        pattern = re.compile(
+            rf"(?<![0-9a-zа-яё/]){re.escape(relative_label.casefold())}(?![0-9a-zа-яё/])",
+            re.IGNORECASE,
+        )
+        return bool(pattern.search(request_text))
+
+    def _normalize_match_text(self, value: str) -> str:
+        return re.sub(r"[^0-9a-zа-яё]+", "", value.casefold())

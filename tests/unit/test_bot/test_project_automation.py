@@ -142,6 +142,92 @@ def test_build_automation_plan_for_read_only_request_stays_read_only(tmp_path):
     assert plan.should_verify is False
 
 
+def test_build_automation_plan_routes_to_named_workspace(tmp_path):
+    """Autopilot should switch to the named workspace when the request is explicit."""
+    current_root = tmp_path / "ClaudeBot"
+    current_root.mkdir()
+    (current_root / ".git").mkdir()
+    (current_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    target_root = tmp_path / "FreelanceAggregator"
+    target_root.mkdir()
+    (target_root / ".git").mkdir()
+    (target_root / "package.json").write_text(
+        json.dumps({"name": "fa", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    plan = manager.build_automation_plan(
+        "почини тесты в FreelanceAggregator",
+        current_root,
+        tmp_path,
+    )
+
+    assert plan.workspace_root == target_root
+    assert plan.workspace_changed is True
+    assert plan.matched_playbook == "test"
+
+
+def test_build_automation_plan_routes_to_nested_workspace_from_relative_path(tmp_path):
+    """Relative path mentions should find nested workspaces under the approved root."""
+    current_root = tmp_path / "ClaudeBot"
+    current_root.mkdir()
+    (current_root / ".git").mkdir()
+    (current_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    nested_root = tmp_path / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    plan = manager.build_automation_plan(
+        "сделай аудит в MacProjects/Poolych",
+        current_root,
+        tmp_path,
+    )
+
+    assert plan.workspace_root == nested_root
+    assert plan.workspace_changed is True
+    assert plan.matched_playbook == "review"
+    assert plan.read_only is True
+
+
+def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(tmp_path):
+    """Generic requests should stay in the current workspace."""
+    current_root = tmp_path / "ClaudeBot"
+    current_root.mkdir()
+    (current_root / ".git").mkdir()
+    (current_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    other_root = tmp_path / "FreelanceAggregator"
+    other_root.mkdir()
+    (other_root / ".git").mkdir()
+    (other_root / "package.json").write_text(
+        json.dumps({"name": "fa", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    plan = manager.build_automation_plan("почини тесты", current_root, tmp_path)
+
+    assert plan.workspace_root == current_root
+    assert plan.workspace_changed is False
+
+
 @pytest.mark.asyncio
 async def test_playbooks_command_lists_available_playbooks(tmp_path):
     """The Telegram command should render detected playbooks."""
