@@ -41,6 +41,7 @@ from .agentic.context import (
     VerifyReport,
     VerifyStep,
 )
+from .agentic.shell_executor import ShellExecutor
 from .features.change_guard import ChangeGuardReport
 from ..utils.redaction import redact_sensitive_text
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
@@ -161,6 +162,7 @@ class MessageOrchestrator:
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
+        self.shell = ShellExecutor()
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -1482,7 +1484,7 @@ class MessageOrchestrator:
                         f"• <code>{escape_html(service.display_name)}</code>: <code>нет live-проверки</code>"
                     )
                     continue
-                result = await self._execute_agentic_shell_action(
+                result = await self.shell.execute(
                     workspace_root=profile.root_path,
                     command=command,
                     timeout_seconds=45,
@@ -1493,7 +1495,7 @@ class MessageOrchestrator:
                 lines.append(
                     f"• <code>{escape_html(service.display_name)}</code>: <code>{escape_html(state)}</code>"
                 )
-                summary = self._summarize_agentic_shell_result(result)
+                summary = self.shell.summarize(result)
                 if summary and summary != "нет вывода":
                     lines.append(f"  <code>{escape_html(summary)}</code>")
         else:
@@ -1508,7 +1510,7 @@ class MessageOrchestrator:
             for unit in running_units:
                 lines.append(f"• <code>{escape_html(unit)}</code>")
         else:
-            summary = self._summarize_agentic_shell_result(running_units_result)
+            summary = self.shell.summarize(running_units_result)
             label = "список systemd недоступен"
             if running_units_result.success:
                 label = "запущенные сервисы не найдены"
@@ -1823,112 +1825,6 @@ class MessageOrchestrator:
                     workspace_changed=current_workspace != profile.root_path,
                 )
 
-    @staticmethod
-    def _tail_command_output(text: str, limit: int = 900) -> str:
-        """Keep only the tail of command output for Telegram summaries."""
-        normalized = text.strip()
-        if len(normalized) <= limit:
-            return normalized
-        return normalized[-limit:]
-
-    async def _execute_agentic_shell_action(
-        self,
-        workspace_root: Path,
-        command: str,
-        timeout_seconds: int = 120,
-    ) -> _ShellActionResult:
-        """Execute a deterministic shell action and capture a redacted result."""
-        timed_out = False
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-lc",
-                command,
-                cwd=workspace_root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout_seconds
-                )
-            except asyncio.TimeoutError:
-                timed_out = True
-                process.kill()
-                stdout, stderr = await process.communicate()
-            returncode = process.returncode if process.returncode is not None else -1
-            stdout_text = self._tail_command_output(
-                _redact_secrets(stdout.decode("utf-8", errors="replace"))
-            )
-            stderr_text = self._tail_command_output(
-                _redact_secrets(stderr.decode("utf-8", errors="replace"))
-            )
-            return _ShellActionResult(
-                command=command,
-                returncode=returncode,
-                success=not timed_out and returncode == 0,
-                timed_out=timed_out,
-                stdout_text=stdout_text,
-                stderr_text=stderr_text,
-            )
-        except Exception as e:
-            return _ShellActionResult(
-                command=command,
-                returncode=-1,
-                success=False,
-                timed_out=False,
-                stdout_text="",
-                stderr_text="",
-                error=str(e),
-            )
-
-    def _build_agentic_shell_action_lines(
-        self,
-        title: str,
-        workspace_root: Path,
-        boundary_root: Path,
-        result: _ShellActionResult,
-    ) -> List[str]:
-        """Format a shell action result into Telegram-friendly lines."""
-        if result.error:
-            return [
-                "❌ <b>Ошибка команды</b>",
-                "",
-                f"Действие: <code>{escape_html(title)}</code>",
-                f"Ошибка: <code>{escape_html(result.error)}</code>",
-            ]
-
-        lines = [
-            f"✅ <b>{escape_html(title)}</b>"
-            if result.success
-            else f"❌ <b>{escape_html(title)}</b>",
-            "",
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
-            f"Команда: <code>{escape_html(result.command)}</code>",
-            f"Код выхода: <code>{result.returncode}</code>",
-        ]
-        if result.timed_out:
-            lines.append("Вышло время ожидания.")
-        if result.stdout_text:
-            lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(result.stdout_text)}</pre>"])
-        if result.stderr_text:
-            lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(result.stderr_text)}</pre>"])
-        return lines
-
-    @staticmethod
-    def _summarize_agentic_shell_result(result: _ShellActionResult, limit: int = 140) -> str:
-        """Build a compact one-line summary of a shell action result."""
-        if result.error:
-            summary = result.error
-        else:
-            summary = result.stdout_text or result.stderr_text or ""
-        compact = " ".join(summary.split())
-        if not compact:
-            compact = "нет вывода"
-        if len(compact) <= limit:
-            return compact
-        return compact[: limit - 3] + "..."
-
     async def _execute_agentic_verify_steps(
         self,
         profile: Any,
@@ -1954,7 +1850,7 @@ class MessageOrchestrator:
                     f"Команда: <code>{escape_html(step.command)}</code>",
                     parse_mode="HTML",
                 )
-            result = await self._execute_agentic_shell_action(
+            result = await self.shell.execute(
                 workspace_root=profile.root_path,
                 command=step.command,
                 timeout_seconds=180,
@@ -1963,7 +1859,7 @@ class MessageOrchestrator:
             if not result.success:
                 failed_step = step
                 if step.logs_command:
-                    logs_result = await self._execute_agentic_shell_action(
+                    logs_result = await self.shell.execute(
                         workspace_root=profile.root_path,
                         command=step.logs_command,
                         timeout_seconds=30,
@@ -2000,7 +1896,7 @@ class MessageOrchestrator:
                 f"• <code>{escape_html(step.label)}</code>: <code>{escape_html(state)}</code> "
                 f"(exit <code>{result.returncode}</code>)"
             )
-            summary = self._summarize_agentic_shell_result(result)
+            summary = self.shell.summarize(result)
             if summary and summary != "нет вывода":
                 lines.append(f"  <code>{escape_html(summary)}</code>")
 
@@ -2124,7 +2020,7 @@ class MessageOrchestrator:
             ):
                 if not command:
                     continue
-                result = await self._execute_agentic_shell_action(
+                result = await self.shell.execute(
                     workspace_root,
                     command,
                     timeout_seconds=45,
@@ -2133,14 +2029,14 @@ class MessageOrchestrator:
                 if not result.success:
                     all_required_checks_passed = False
             if not all_required_checks_passed and service.command_for("logs"):
-                logs_result = await self._execute_agentic_shell_action(
+                logs_result = await self.shell.execute(
                     workspace_root,
                     service.command_for("logs"),
                     timeout_seconds=30,
                 )
         elif action_key == "stop" and service.command_for("status"):
             await asyncio.sleep(1.0)
-            status_result = await self._execute_agentic_shell_action(
+            status_result = await self.shell.execute(
                 workspace_root,
                 service.command_for("status"),
                 timeout_seconds=30,
@@ -2153,7 +2049,7 @@ class MessageOrchestrator:
         self, workspace_root: Path
     ) -> _ShellActionResult:
         """Return the currently running systemd services."""
-        return await self._execute_agentic_shell_action(
+        return await self.shell.execute(
             workspace_root=workspace_root,
             command=(
                 "systemctl list-units --type=service --state=running "
@@ -2166,7 +2062,7 @@ class MessageOrchestrator:
         self, workspace_root: Path
     ) -> _ShellActionResult:
         """Return currently failed systemd services."""
-        return await self._execute_agentic_shell_action(
+        return await self.shell.execute(
             workspace_root=workspace_root,
             command=(
                 "systemctl list-units --type=service --state=failed "
@@ -2213,14 +2109,14 @@ class MessageOrchestrator:
             parse_mode="HTML",
         )
 
-        result = await self._execute_agentic_shell_action(
+        result = await self.shell.execute(
             workspace_root=workspace_root,
             command=command,
             timeout_seconds=timeout_seconds,
         )
         await status_msg.edit_text(
             "\n".join(
-                self._build_agentic_shell_action_lines(
+                self.shell.format_result_lines(
                     title=title,
                     workspace_root=workspace_root,
                     boundary_root=boundary_root,
@@ -2306,7 +2202,7 @@ class MessageOrchestrator:
             parse_mode="HTML",
         )
 
-        main_result = await self._execute_agentic_shell_action(
+        main_result = await self.shell.execute(
             workspace_root=profile.root_path,
             command=command,
             timeout_seconds=120,
@@ -2328,7 +2224,7 @@ class MessageOrchestrator:
                 action_key=action_key,
             )
         elif not main_result.success and action_key in {"start", "restart"} and service.command_for("logs"):
-            logs_result = await self._execute_agentic_shell_action(
+            logs_result = await self.shell.execute(
                 profile.root_path,
                 service.command_for("logs"),
                 timeout_seconds=30,
@@ -2365,7 +2261,7 @@ class MessageOrchestrator:
                     f"• <code>{escape_html(label)}</code>: <code>{escape_html(check_state)}</code> "
                     f"(exit <code>{result.returncode}</code>)"
                 )
-                summary = self._summarize_agentic_shell_result(result)
+                summary = self.shell.summarize(result)
                 if summary and summary != "нет вывода":
                     lines.append(f"  <code>{escape_html(summary)}</code>")
 
