@@ -1,7 +1,7 @@
 """Message orchestrator — single entry point for all Telegram updates.
 
 Routes messages based on agentic vs classic mode. In agentic mode, provides
-a minimal conversational interface (3 commands, no inline keyboards). In
+an autopilot-first conversational interface with inline control buttons. In
 classic mode, delegates to existing full-featured handlers.
 """
 
@@ -535,18 +535,7 @@ class MessageOrchestrator:
         dir_display = f"<code>{current_dir}/</code>"
 
         safe_name = escape_html(user.first_name)
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔄 New Session", callback_data="act:new"),
-                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
-            ],
-            [
-                InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
-                InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
-                InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
-            ],
-        ])
+        keyboard = self._build_agentic_start_keyboard()
         await update.message.reply_text(
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — commands are optional.\n"
@@ -567,45 +556,24 @@ class MessageOrchestrator:
         context.user_data["session_started"] = True
         context.user_data["force_new_session"] = True
 
-        await update.message.reply_text("Session reset. What's next?")
+        await update.message.reply_text(
+            "Session reset. What's next?",
+            reply_markup=self._build_agentic_start_keyboard(),
+        )
 
     async def agentic_status(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Compact status with task/queue info."""
         user_id = update.effective_user.id
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
+        text = await self._build_agentic_status_text(context, user_id)
+        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
         )
-        dir_display = str(current_dir)
-
-        session_id = context.user_data.get("claude_session_id")
-        session_status = "active" if session_id else "none"
-
-        # Cost info
-        cost_str = ""
-        rate_limiter = context.bot_data.get("rate_limiter")
-        if rate_limiter:
-            try:
-                user_status = rate_limiter.get_user_status(user_id)
-                cost_usage = user_status.get("cost_usage", {})
-                current_cost = cost_usage.get("current", 0.0)
-                cost_str = f" · Cost: ${current_cost:.2f}"
-            except Exception:
-                pass
-
-        # Active task info
-        task_str = ""
-        active = self._active_tasks.get(user_id)
-        if active and not active.task.done():
-            elapsed = int(time.time() - active.started_at)
-            task_str = f"\n⚙️ Task running ({elapsed}s)"
-            queue_size = len(self._pending_messages.get(user_id, []))
-            if queue_size:
-                task_str += f" · Queued: {queue_size}"
-
         await update.message.reply_text(
-            f"📂 {dir_display} · Session: {session_status}{cost_str}{task_str}"
+            text,
+            parse_mode="HTML",
+            reply_markup=self._build_agentic_control_panel_markup(profile),
         )
 
     def _get_verbose_level(self, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -698,7 +666,14 @@ class MessageOrchestrator:
                 f"<b>Last 7 days:</b>\n<pre>{cost_chart}</pre>\n\n"
                 f"<b>Top tools:</b>\n{tools_text}"
             )
-            await update.message.reply_text(text, parse_mode="HTML")
+            _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+                self._get_agentic_workspace_profile(context)
+            )
+            await update.message.reply_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(profile),
+            )
         except Exception as e:
             logger.error("Stats command failed", error=str(e))
             await update.message.reply_text(f"Error loading stats: {e}")
@@ -829,6 +804,553 @@ class MessageOrchestrator:
             await update.message.reply_text(
                 f"Instruction added ({len(instructions)} total)."
             )
+
+    def _build_agentic_start_keyboard(self) -> InlineKeyboardMarkup:
+        """Return the default control buttons shown in agentic mode."""
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                    InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+                ],
+                [
+                    InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor"),
+                    InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
+                ],
+                [
+                    InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                    InlineKeyboardButton("🆕 New Session", callback_data="act:new"),
+                ],
+                [
+                    InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
+                    InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
+                    InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
+                ],
+            ]
+        )
+
+    def _get_agentic_workspace_profile(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> tuple[Path, Path, Path, Optional[Any], Optional[Any]]:
+        """Resolve current directory, workspace root, and detected profile."""
+        current_dir = context.user_data.get(
+            "current_directory", self.settings.approved_directory
+        )
+        boundary_root = self._get_boundary_root(context)
+        features = context.bot_data.get("features")
+        project_automation = (
+            getattr(features, "get_project_automation", lambda: None)()
+            if features
+            else None
+        )
+        if not project_automation:
+            return current_dir, current_dir, boundary_root, None, None
+
+        profile = project_automation.build_profile(current_dir, boundary_root)
+        return current_dir, profile.root_path, boundary_root, project_automation, profile
+
+    def _format_agentic_relative_path(self, path: Path, boundary_root: Path) -> str:
+        """Format a workspace-relative path for Telegram output."""
+        try:
+            relative = path.relative_to(boundary_root)
+            return "/" if str(relative) == "." else relative.as_posix()
+        except ValueError:
+            return str(path)
+
+    def _build_agentic_control_panel_markup(
+        self, profile: Optional[Any]
+    ) -> InlineKeyboardMarkup:
+        """Build a persistent control panel for agentic mode."""
+        rows = [
+            [
+                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+                InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
+            ],
+            [
+                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("📊 Stats", callback_data="act:stats"),
+            ],
+            [InlineKeyboardButton("🩺 Doctor", callback_data="act:doctor")],
+        ]
+
+        if profile:
+            action_row = [InlineKeyboardButton("🆕 New", callback_data="act:new")]
+            if profile.has_git_repo:
+                action_row.insert(
+                    0, InlineKeyboardButton("🧾 Review", callback_data="act:review")
+                )
+            rows.append(action_row)
+
+            dynamic_row = []
+            if "install" in profile.commands:
+                dynamic_row.append(
+                    InlineKeyboardButton("📦 Setup", callback_data="act:setup")
+                )
+            if "test" in profile.commands:
+                dynamic_row.append(
+                    InlineKeyboardButton("🧪 Test", callback_data="act:test")
+                )
+            if "lint" in profile.commands or "format" in profile.commands:
+                dynamic_row.append(
+                    InlineKeyboardButton("🧹 Quality", callback_data="act:quality")
+                )
+            if dynamic_row:
+                rows.append(dynamic_row[:3])
+        else:
+            rows.append([InlineKeyboardButton("🆕 New", callback_data="act:new")])
+
+        rows.append(
+            [
+                InlineKeyboardButton("🔇 Quiet", callback_data="act:v0"),
+                InlineKeyboardButton("🔉 Normal", callback_data="act:v1"),
+                InlineKeyboardButton("🔊 Detail", callback_data="act:v2"),
+            ]
+        )
+        return InlineKeyboardMarkup(rows)
+
+    async def _build_agentic_status_text(
+        self, context: ContextTypes.DEFAULT_TYPE, user_id: int
+    ) -> str:
+        """Build compact agentic status text with workspace metadata."""
+        current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        session_id = context.user_data.get("claude_session_id")
+        session_status = "active" if session_id else "none"
+
+        claude_integration = context.bot_data.get("claude_integration")
+        if not session_id and claude_integration:
+            existing = await claude_integration._find_resumable_session(
+                user_id, current_workspace
+            )
+            if existing:
+                session_status = f"resumable {existing.session_id[:8]}..."
+
+        cost_str = ""
+        rate_limiter = context.bot_data.get("rate_limiter")
+        if rate_limiter:
+            try:
+                user_status = rate_limiter.get_user_status(user_id)
+                cost_usage = user_status.get("cost_usage", {})
+                current_cost = cost_usage.get("current", 0.0)
+                cost_str = f"${current_cost:.2f}"
+            except Exception:
+                cost_str = "n/a"
+
+        task_parts = []
+        active = self._active_tasks.get(user_id)
+        if active and not active.task.done():
+            elapsed = int(time.time() - active.started_at)
+            task_parts.append(f"task running {elapsed}s")
+            queue_size = len(self._pending_messages.get(user_id, []))
+            if queue_size:
+                task_parts.append(f"queued {queue_size}")
+
+        lines = [
+            "<b>Agentic Status</b>",
+            "",
+            f"📦 Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+            f"📂 Directory: <code>{escape_html(self._format_agentic_relative_path(current_dir, boundary_root))}</code>",
+            f"🤖 Session: <code>{escape_html(session_status)}</code>",
+            f"🔊 Verbosity: <code>{escape_html({0: 'quiet', 1: 'normal', 2: 'detailed'}[self._get_verbose_level(context)])}</code>",
+            f"💰 Cost: <code>{escape_html(cost_str or 'n/a')}</code>",
+        ]
+        if task_parts:
+            lines.append(f"⚙️ Runtime: <code>{escape_html(' · '.join(task_parts))}</code>")
+        if profile and project_automation:
+            playbooks = ", ".join(
+                playbook.slug for playbook in project_automation.list_playbooks(profile)
+            )
+            lines.append(
+                f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
+            )
+        return "\n".join(lines)
+
+    async def _build_agentic_panel_text(
+        self, context: ContextTypes.DEFAULT_TYPE, user_id: int
+    ) -> str:
+        """Build the main control panel text for agentic mode."""
+        _current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        lines = ["<b>Control Panel</b>", ""]
+        if profile:
+            lines.append(
+                f"📦 Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>"
+            )
+            lines.append(
+                f"🧱 Stack: <code>{escape_html(', '.join(profile.stacks))}</code>"
+            )
+        lines.append(f"🛡️ Autopilot: <code>on</code>")
+        lines.append(
+            f"🔊 Verbosity: <code>{escape_html({0: 'quiet', 1: 'normal', 2: 'detailed'}[self._get_verbose_level(context)])}</code>"
+        )
+
+        claude_integration = context.bot_data.get("claude_integration")
+        session_id = context.user_data.get("claude_session_id")
+        session_text = "none"
+        if session_id:
+            session_text = f"active {session_id[:8]}..."
+        elif claude_integration:
+            existing = await claude_integration._find_resumable_session(
+                user_id, current_workspace
+            )
+            if existing:
+                session_text = f"resumable {existing.session_id[:8]}..."
+        lines.append(f"🤖 Session: <code>{escape_html(session_text)}</code>")
+
+        if profile and project_automation:
+            playbooks = ", ".join(
+                playbook.slug for playbook in project_automation.list_playbooks(profile)
+            )
+            lines.append(
+                f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
+            )
+            if profile.operator_notes:
+                note_preview = profile.operator_notes[:160]
+                if len(profile.operator_notes) > 160:
+                    note_preview += "..."
+                lines.extend(
+                    [
+                        "",
+                        f"📝 Notes: {escape_html(note_preview)}",
+                    ]
+                )
+
+        lines.extend(
+            [
+                "",
+                "Use the buttons below to inspect the project, switch workspace, or run a deterministic playbook.",
+            ]
+        )
+        return "\n".join(lines)
+
+    async def _build_agentic_recent_text(
+        self, context: ContextTypes.DEFAULT_TYPE, user_id: int
+    ) -> str:
+        """Build a compact recent activity view for the control panel."""
+        storage = context.bot_data.get("storage")
+        if not storage:
+            return "Storage not available."
+
+        current_dir, _current_workspace, boundary_root, _project_automation, _profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        audit_entries = await storage.audit.get_user_audit_log(user_id, limit=10)
+        messages = await storage.messages.get_user_messages(user_id, limit=4)
+        command_entries = [
+            entry for entry in audit_entries if entry.event_type == "command"
+        ][:4]
+        automation_entries = [
+            entry for entry in audit_entries if entry.event_type == "automation_run"
+        ][:4]
+
+        lines = ["<b>Recent Activity</b>"]
+        if automation_entries:
+            lines.extend(["", "<b>Autopilot</b>"])
+            for entry in automation_entries:
+                details = (entry.event_data or {}).get("details", {})
+                playbook = escape_html(str(details.get("playbook", "general")))
+                workspace = escape_html(
+                    self._format_agentic_relative_path(
+                        Path(str(details.get("workspace_root", current_dir))),
+                        boundary_root,
+                    )
+                )
+                result = "✅" if entry.success else "⚠️"
+                lines.append(
+                    f"{result} <code>{playbook}</code> · <code>{workspace}</code>"
+                )
+
+        if command_entries:
+            lines.extend(["", "<b>Commands</b>"])
+            for entry in command_entries:
+                details = (entry.event_data or {}).get("details", {})
+                command_name = escape_html(str(details.get("command", "command")))
+                lines.append(f"• <code>{command_name}</code>")
+
+        if messages:
+            lines.extend(["", "<b>Prompts</b>"])
+            for message in messages:
+                preview = escape_html(" ".join(message.prompt.split())[:72])
+                lines.append(f"• {preview}")
+
+        if len(lines) == 1:
+            lines.extend(["", "No recent activity yet."])
+
+        lines.append("")
+        lines.append(
+            f"Current workspace: <code>{escape_html(self._format_agentic_relative_path(_current_workspace, boundary_root))}</code>"
+        )
+        return "\n".join(lines)
+
+    async def _build_agentic_workspace_catalog(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        """Build the workspace catalog view used by /repo and control buttons."""
+        current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        if project_automation:
+            summaries = project_automation.list_workspace_summaries(boundary_root)
+            if summaries:
+                lines: List[str] = ["<b>Workspaces</b>", ""]
+                for summary in summaries:
+                    lines.extend(
+                        project_automation.describe_workspace_summary_lines(
+                            summary, current_workspace=current_workspace
+                        )
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "Autopilot can route by project name, alias, or relative path.",
+                    ]
+                )
+
+                keyboard_rows: List[list] = []
+                for i in range(0, len(summaries), 2):
+                    row = []
+                    for j in range(2):
+                        if i + j < len(summaries):
+                            summary = summaries[i + j]
+                            row.append(
+                                InlineKeyboardButton(
+                                    summary.button_label,
+                                    callback_data=f"cd:{summary.relative_path}",
+                                )
+                            )
+                    keyboard_rows.append(row)
+
+                keyboard_rows.append(
+                    [
+                        InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                        InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                        InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
+                    ]
+                )
+                return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+        lines = ["<b>Workspaces</b>", ""]
+        try:
+            entries = sorted(
+                [
+                    d
+                    for d in boundary_root.iterdir()
+                    if d.is_dir() and not d.name.startswith(".")
+                ],
+                key=lambda d: d.name.casefold(),
+            )
+        except OSError as e:
+            return f"Error reading workspace: {escape_html(str(e))}", self._build_agentic_start_keyboard()
+
+        keyboard_rows: List[list] = []
+        for entry in entries:
+            marker = " ◀" if entry == current_workspace else ""
+            lines.append(f"• <code>{escape_html(entry.name)}</code>{marker}")
+        for i in range(0, len(entries), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(entries):
+                    row.append(
+                        InlineKeyboardButton(
+                            entries[i + j].name,
+                            callback_data=f"cd:{entries[i + j].name}",
+                        )
+                    )
+            keyboard_rows.append(row)
+        keyboard_rows.append([InlineKeyboardButton("🎛️ Panel", callback_data="act:panel")])
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+    async def _run_agentic_playbook_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        playbook_slug: str,
+    ) -> None:
+        """Run a deterministic playbook from an agentic control button."""
+        user_id = query.from_user.id
+        current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        claude_integration = context.bot_data.get("claude_integration")
+        if not claude_integration or not project_automation or not profile:
+            await query.edit_message_text("Project automation is not available.")
+            return
+
+        playbook = project_automation.get_playbook(playbook_slug, profile)
+        if playbook is None:
+            await query.answer("Playbook is not available in this workspace.", show_alert=True)
+            return
+
+        prompt = project_automation.build_playbook_prompt(playbook_slug, profile)
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Playbook</b>\n\n"
+            f"Playbook: <code>{escape_html(playbook.slug)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+            parse_mode="HTML",
+        )
+
+        features = context.bot_data.get("features")
+        change_guard = (
+            getattr(features, "get_project_change_guard", lambda: None)()
+            if features
+            else None
+        )
+        storage = context.bot_data.get("storage")
+        audit_logger = context.bot_data.get("audit_logger")
+
+        session_id = context.user_data.get("claude_session_id")
+        if current_workspace != profile.root_path:
+            session_id = None
+        context.user_data["current_directory"] = profile.root_path
+
+        mutating = playbook_slug in {"setup", "test", "quality"}
+        checkpoint = None
+        guard_report = None
+        success = False
+
+        try:
+            if mutating and change_guard and profile.has_git_repo:
+                checkpoint = await change_guard.create_checkpoint(profile.root_path)
+
+            claude_response = await claude_integration.run_command(
+                prompt=prompt,
+                working_directory=profile.root_path,
+                user_id=user_id,
+                session_id=session_id,
+                force_new=False,
+            )
+            success = True
+            context.user_data["claude_session_id"] = claude_response.session_id
+
+            if storage:
+                try:
+                    await storage.save_claude_interaction(
+                        user_id=user_id,
+                        session_id=claude_response.session_id,
+                        prompt=f"[button] run {playbook_slug}",
+                        response=claude_response,
+                        ip_address=None,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to log button playbook interaction", error=str(e))
+
+            if mutating and change_guard:
+                verification_results = await change_guard.run_verification_commands(
+                    profile.root_path,
+                    project_automation.get_verification_commands(profile),
+                )
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=checkpoint is not None,
+                    checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
+                    verification_results=verification_results,
+                )
+                failed_result = next(
+                    (result for result in verification_results if not result.success),
+                    None,
+                )
+                if failed_result and checkpoint:
+                    success = False
+                    rollback_report = await change_guard.rollback(
+                        checkpoint,
+                        reason=f"verification failed: {failed_result.command}",
+                    )
+                    guard_report.rollback_triggered = rollback_report.rollback_triggered
+                    guard_report.rollback_succeeded = rollback_report.rollback_succeeded
+                    guard_report.failure_reason = rollback_report.failure_reason
+                    guard_report.rollback_error = rollback_report.rollback_error
+                elif checkpoint:
+                    await change_guard.cleanup_checkpoint(checkpoint)
+            elif checkpoint and change_guard:
+                guard_report = ChangeGuardReport(
+                    checkpoint_created=True,
+                    checkpoint_id=checkpoint.checkpoint_id,
+                )
+                await change_guard.cleanup_checkpoint(checkpoint)
+
+            await status_msg.delete()
+
+            from .utils.formatting import ResponseFormatter
+
+            formatter = ResponseFormatter(self.settings)
+            for message in formatter.format_claude_response(claude_response.content):
+                if message.text and message.text.strip():
+                    await query.message.reply_text(
+                        message.text,
+                        parse_mode=message.parse_mode,
+                    )
+
+            if guard_report and change_guard:
+                await query.message.reply_text(
+                    change_guard.format_report_html(guard_report),
+                    parse_mode="HTML",
+                )
+
+            if audit_logger:
+                verification_results = []
+                if guard_report:
+                    verification_results = [
+                        {
+                            "command": result.command,
+                            "success": result.success,
+                            "returncode": result.returncode,
+                        }
+                        for result in guard_report.verification_results
+                    ]
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request=f"button:{playbook_slug}",
+                    workspace_root=str(profile.root_path),
+                    matched_playbook=playbook_slug,
+                    read_only=playbook_slug in {"doctor", "review"},
+                    success=success,
+                    mode="agentic_button",
+                    checkpoint_created=bool(
+                        checkpoint or (guard_report and guard_report.checkpoint_created)
+                    ),
+                    verification_results=verification_results,
+                    rollback_triggered=bool(
+                        guard_report and guard_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        guard_report and guard_report.rollback_succeeded
+                    ),
+                    workspace_changed=current_workspace != profile.root_path,
+                )
+        except Exception as e:
+            if checkpoint and change_guard:
+                guard_report = await change_guard.rollback(
+                    checkpoint,
+                    reason=f"button playbook error: {type(e).__name__}",
+                )
+            try:
+                await status_msg.edit_text(
+                    "❌ <b>Playbook Failed</b>\n\n"
+                    f"Playbook: <code>{escape_html(playbook_slug)}</code>\n"
+                    f"Error: <code>{escape_html(str(e))}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            if audit_logger:
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request=f"button:{playbook_slug}",
+                    workspace_root=str(profile.root_path),
+                    matched_playbook=playbook_slug,
+                    read_only=playbook_slug in {"doctor", "review"},
+                    success=False,
+                    mode="agentic_button",
+                    rollback_triggered=bool(
+                        guard_report and guard_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        guard_report and guard_report.rollback_succeeded
+                    ),
+                    workspace_changed=current_workspace != profile.root_path,
+                )
 
     def _format_verbose_progress(
         self,
@@ -2053,27 +2575,13 @@ class MessageOrchestrator:
         """
         args = update.message.text.split()[1:] if update.message.text else []
         base = self.settings.approved_directory
-        current_dir = context.user_data.get("current_directory", base)
-        features = context.bot_data.get("features")
-        project_automation = (
-            getattr(features, "get_project_automation", lambda: None)()
-            if features
-            else None
-        )
-        current_workspace = (
-            project_automation.detect_workspace_root(current_dir, base)
-            if project_automation
-            else current_dir
-        )
-        workspace_summaries = (
-            project_automation.list_workspace_summaries(base)
-            if project_automation
-            else []
+        _current_dir, current_workspace, _boundary_root, project_automation, _profile = (
+            self._get_agentic_workspace_profile(context)
         )
 
         if args:
             # Switch to named repo
-            target_name = args[0]
+            target_name = " ".join(args).strip()
             summary = (
                 project_automation.resolve_workspace_reference(target_name, base)
                 if project_automation
@@ -2087,6 +2595,8 @@ class MessageOrchestrator:
                 )
                 return
 
+            if project_automation:
+                target_path = project_automation.detect_workspace_root(target_path, base)
             context.user_data["current_directory"] = target_path
 
             # Try to find a resumable session
@@ -2112,96 +2622,29 @@ class MessageOrchestrator:
                     else str(target_path.relative_to(base)).replace("\\", "/")
                 )
             )
+            (
+                _current_dir,
+                _current_workspace,
+                _boundary_root,
+                _project_automation,
+                switched_profile,
+            ) = self._get_agentic_workspace_profile(context)
 
             await update.message.reply_text(
                 f"Switched to <code>{escape_html(relative_display)}</code>"
                 f"{git_badge}{session_badge}",
                 parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(switched_profile),
             )
             return
 
-        if project_automation and workspace_summaries:
-            lines: List[str] = []
-            keyboard_rows: List[list] = []  # type: ignore[type-arg]
-
-            for summary in workspace_summaries:
-                lines.extend(
-                    project_automation.describe_workspace_summary_lines(
-                        summary, current_workspace=current_workspace
-                    )
-                )
-
-            for i in range(0, len(workspace_summaries), 2):
-                row = []
-                for j in range(2):
-                    if i + j < len(workspace_summaries):
-                        summary = workspace_summaries[i + j]
-                        row.append(
-                            InlineKeyboardButton(
-                                summary.button_label,
-                                callback_data=f"cd:{summary.relative_path}",
-                            )
-                        )
-                keyboard_rows.append(row)
-
-            reply_markup = InlineKeyboardMarkup(keyboard_rows)
-            await update.message.reply_text(
-                "<b>Workspaces</b>\n\n"
-                + "\n".join(lines)
-                + "\n\nAutopilot can route by project name or relative path.",
-                parse_mode="HTML",
-                reply_markup=reply_markup,
-            )
-            return
-
-        # No args — fall back to top-level directories if workspace catalog is unavailable
-        try:
-            entries = sorted(
-                [
-                    d
-                    for d in base.iterdir()
-                    if d.is_dir() and not d.name.startswith(".")
-                ],
-                key=lambda d: d.name,
-            )
-        except OSError as e:
-            await update.message.reply_text(f"Error reading workspace: {e}")
-            return
-
-        if not entries:
-            await update.message.reply_text(
-                f"No repos in <code>{escape_html(str(base))}</code>.\n"
-                'Clone one by telling me, e.g. <i>"clone org/repo"</i>.',
-                parse_mode="HTML",
-            )
-            return
-
-        lines: List[str] = []
-        keyboard_rows: List[list] = []  # type: ignore[type-arg]
-        current_name = current_dir.name if current_dir != base else None
-
-        for d in entries:
-            is_git = (d / ".git").is_dir()
-            icon = "\U0001f4e6" if is_git else "\U0001f4c1"
-            marker = " \u25c0" if d.name == current_name else ""
-            lines.append(f"{icon} <code>{escape_html(d.name)}/</code>{marker}")
-
-        # Build inline keyboard (2 per row)
-        for i in range(0, len(entries), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(entries):
-                    name = entries[i + j].name
-                    row.append(InlineKeyboardButton(name, callback_data=f"cd:{name}"))
-            keyboard_rows.append(row)
-
-        reply_markup = InlineKeyboardMarkup(keyboard_rows)
-
+        text, reply_markup = await self._build_agentic_workspace_catalog(context)
         await update.message.reply_text(
-            "<b>Repos</b>\n\n" + "\n".join(lines),
+            text,
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
+        return
 
     async def _agentic_quick_action(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2210,31 +2653,49 @@ class MessageOrchestrator:
         query = update.callback_query
         await query.answer()
         action = query.data.removeprefix("act:")
+        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
 
         if action == "new":
             context.user_data["claude_session_id"] = None
             context.user_data["session_started"] = True
             context.user_data["force_new_session"] = True
-            await query.edit_message_text("Session reset. What's next?")
+            await query.edit_message_text(
+                "Session reset. What's next?",
+                reply_markup=self._build_agentic_start_keyboard(),
+            )
+
+        elif action == "panel":
+            text = await self._build_agentic_panel_text(context, query.from_user.id)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(profile),
+            )
+
+        elif action == "projects":
+            text, reply_markup = await self._build_agentic_workspace_catalog(context)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+
+        elif action == "recent":
+            text = await self._build_agentic_recent_text(context, query.from_user.id)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(profile),
+            )
 
         elif action == "status":
-            current_dir = context.user_data.get(
-                "current_directory", self.settings.approved_directory
-            )
-            session_id = context.user_data.get("claude_session_id")
-            session_status = "active" if session_id else "none"
-            cost_str = ""
-            rate_limiter = context.bot_data.get("rate_limiter")
-            if rate_limiter:
-                try:
-                    user_status = rate_limiter.get_user_status(query.from_user.id)
-                    cost_usage = user_status.get("cost_usage", {})
-                    current_cost = cost_usage.get("current", 0.0)
-                    cost_str = f" · Cost: ${current_cost:.2f}"
-                except Exception:
-                    pass
+            text = await self._build_agentic_status_text(context, query.from_user.id)
             await query.edit_message_text(
-                f"📂 {current_dir} · Session: {session_status}{cost_str}"
+                text,
+                parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(profile),
             )
 
         elif action == "stats":
@@ -2255,9 +2716,13 @@ class MessageOrchestrator:
                     f"{total_msgs} msgs | {total_sessions} sessions | "
                     f"avg {avg_s:.1f}s",
                     parse_mode="HTML",
+                    reply_markup=self._build_agentic_control_panel_markup(profile),
                 )
             except Exception:
                 await query.edit_message_text("Failed to load stats.")
+
+        elif action in {"doctor", "review", "setup", "test", "quality"}:
+            await self._run_agentic_playbook_action(query, context, action)
 
         elif action.startswith("v"):
             level = int(action[1])
@@ -2266,6 +2731,7 @@ class MessageOrchestrator:
             await query.edit_message_text(
                 f"Verbosity: <b>{level}</b> ({labels[level]})",
                 parse_mode="HTML",
+                reply_markup=self._build_agentic_control_panel_markup(profile),
             )
 
     async def _agentic_callback(
@@ -2279,7 +2745,19 @@ class MessageOrchestrator:
         _, project_name = data.split(":", 1)
 
         base = self.settings.approved_directory
-        new_path = base / project_name
+        _current_dir, _current_workspace, _boundary_root, project_automation, _profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+
+        if project_name == "/":
+            new_path = base
+        else:
+            summary = (
+                project_automation.resolve_workspace_reference(project_name, base)
+                if project_automation
+                else None
+            )
+            new_path = summary.root_path if summary else base / project_name
 
         if not new_path.is_dir():
             await query.edit_message_text(
@@ -2288,6 +2766,8 @@ class MessageOrchestrator:
             )
             return
 
+        if project_automation:
+            new_path = project_automation.detect_workspace_root(new_path, base)
         context.user_data["current_directory"] = new_path
 
         # Look for a resumable session instead of always clearing
@@ -2304,11 +2784,24 @@ class MessageOrchestrator:
         is_git = (new_path / ".git").is_dir()
         git_badge = " (git)" if is_git else ""
         session_badge = " · session resumed" if session_id else ""
+        relative_display = (
+            project_name
+            if project_name == "/"
+            else self._format_agentic_relative_path(new_path, base)
+        )
+        (
+            _current_dir,
+            _current_workspace,
+            _boundary_root,
+            _project_automation,
+            profile,
+        ) = self._get_agentic_workspace_profile(context)
 
         await query.edit_message_text(
-            f"Switched to <code>{escape_html(project_name)}/</code>"
+            f"Switched to <code>{escape_html(relative_display)}</code>"
             f"{git_badge}{session_badge}",
             parse_mode="HTML",
+            reply_markup=self._build_agentic_control_panel_markup(profile),
         )
 
         # Audit log

@@ -223,7 +223,7 @@ async def test_restart_command_sends_sigterm(deps):
 
 
 async def test_agentic_start_no_keyboard(agentic_settings, deps):
-    """Agentic /start sends brief message without inline keyboard."""
+    """Agentic /start sends the autopilot message with control buttons."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     update = MagicMock()
@@ -240,11 +240,17 @@ async def test_agentic_start_no_keyboard(agentic_settings, deps):
 
     update.message.reply_text.assert_called_once()
     call_kwargs = update.message.reply_text.call_args
-    # Has inline keyboard with quick action buttons
     assert "reply_markup" in call_kwargs.kwargs
     markup = call_kwargs.kwargs["reply_markup"]
     assert markup is not None
-    # Contains user name
+    labels = [
+        button.text
+        for row in markup.inline_keyboard
+        for button in row
+    ]
+    assert "🎛️ Panel" in labels
+    assert "📁 Projects" in labels
+    assert "🩺 Doctor" in labels
     assert "Alice" in call_kwargs.args[0]
 
 
@@ -261,11 +267,13 @@ async def test_agentic_new_resets_session(agentic_settings, deps):
     await orchestrator.agentic_new(update, context)
 
     assert context.user_data["claude_session_id"] is None
-    update.message.reply_text.assert_called_once_with("Session reset. What's next?")
+    update.message.reply_text.assert_called_once()
+    assert update.message.reply_text.call_args.args[0] == "Session reset. What's next?"
+    assert update.message.reply_text.call_args.kwargs["reply_markup"] is not None
 
 
 async def test_agentic_status_compact(agentic_settings, deps):
-    """Agentic /status returns compact one-line status."""
+    """Agentic /status returns rich status text with control buttons."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     update = MagicMock()
@@ -280,7 +288,9 @@ async def test_agentic_status_compact(agentic_settings, deps):
 
     call_args = update.message.reply_text.call_args
     text = call_args.args[0]
-    assert "Session: none" in text
+    assert "Agentic Status" in text
+    assert "Session" in text
+    assert call_args.kwargs["reply_markup"] is not None
 
 
 async def test_agentic_text_calls_claude(agentic_settings, deps):
@@ -651,6 +661,98 @@ async def test_agentic_repo_switches_by_workspace_name(agentic_settings, tmp_dir
     )
     assert context.user_data["current_directory"] == resolved_target
     assert context.user_data["claude_session_id"] == "session-resumed"
+    assert update.message.reply_text.call_args.kwargs["reply_markup"] is not None
+
+
+async def test_agentic_quick_action_panel_renders_control_panel(
+    agentic_settings, tmp_dir
+):
+    """The panel quick action should render the control panel with buttons."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    query = MagicMock()
+    query.data = "act:panel"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(
+            get_project_automation=lambda: ProjectAutomationManager()
+        ),
+        "claude_integration": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    query.edit_message_text.assert_awaited_once()
+    text = query.edit_message_text.call_args.args[0]
+    assert "Control Panel" in text
+    assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
+
+
+async def test_agentic_callback_switches_nested_workspace_and_keeps_markup(
+    agentic_settings, tmp_dir
+):
+    """Workspace callback should support nested paths and keep control buttons."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    current_root = tmp_dir / "ClaudeBot"
+    current_root.mkdir()
+    target_root = tmp_dir / "MacProjects" / "Poolych"
+    target_root.mkdir(parents=True)
+    (target_root / ".git").mkdir()
+    (target_root / "package.json").write_text(
+        '{"name":"poolych","scripts":{"test":"vitest run"}}',
+        encoding="utf-8",
+    )
+
+    claude_integration = AsyncMock()
+    claude_integration._find_resumable_session = AsyncMock(
+        return_value=SimpleNamespace(session_id="session-resumed")
+    )
+
+    query = MagicMock()
+    query.data = "cd:MacProjects/Poolych"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": current_root}
+    context.bot_data = {
+        "claude_integration": claude_integration,
+        "features": SimpleNamespace(
+            get_project_automation=lambda: ProjectAutomationManager()
+        ),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_callback(update, context)
+
+    resolved_target = target_root.resolve()
+    claude_integration._find_resumable_session.assert_awaited_once_with(
+        123, resolved_target
+    )
+    assert context.user_data["current_directory"] == resolved_target
+    assert context.user_data["claude_session_id"] == "session-resumed"
+    assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
 
 
 async def test_agentic_document_rejects_large_files(agentic_settings, deps):

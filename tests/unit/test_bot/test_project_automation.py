@@ -258,6 +258,86 @@ def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(t
     assert plan.workspace_changed is False
 
 
+def test_workspace_profile_overrides_apply_aliases_notes_and_priority(tmp_path):
+    """Explicit workspace profiles should enrich detected workspace metadata."""
+    claude_root = tmp_path / "ClaudeBot"
+    claude_root.mkdir()
+    (claude_root / ".git").mkdir()
+    (claude_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_path / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    aliases:
+      - telegram bot
+      - claude-bot
+    priority: 50
+    notes: Keep deploy workflow under ops/server unchanged.
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    profile = manager.build_profile(claude_root, tmp_path)
+    summaries = manager.list_workspace_summaries(tmp_path)
+
+    assert profile.display_name == "ClaudeBot"
+    assert "telegram bot" in profile.aliases
+    assert profile.operator_notes == "Keep deploy workflow under ops/server unchanged."
+    assert profile.sort_priority == 50
+    assert summaries[0].display_name == "ClaudeBot"
+    assert "telegram bot" in summaries[0].aliases
+
+
+def test_build_automation_plan_routes_to_workspace_alias(tmp_path):
+    """Workspace aliases from the profile config should influence routing."""
+    current_root = tmp_path / "ClaudeBot"
+    current_root.mkdir()
+    (current_root / ".git").mkdir()
+    (current_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    target_root = tmp_path / "MacProjects" / "Poolych"
+    target_root.mkdir(parents=True)
+    (target_root / ".git").mkdir()
+    (target_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_path / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: MacProjects/Poolych
+    name: Poolych
+    aliases:
+      - billiards
+      - pool game
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    plan = manager.build_automation_plan(
+        "почини тесты в billiards",
+        current_root,
+        tmp_path,
+    )
+
+    assert plan.workspace_root == target_root
+    assert plan.workspace_changed is True
+    assert plan.matched_playbook == "test"
+
+
 def test_verification_commands_include_typecheck(tmp_path):
     """Auto-verify should include typecheck between lint and tests when available."""
     (tmp_path / "package.json").write_text(
@@ -340,6 +420,40 @@ def test_resolve_workspace_reference_matches_name_and_path(tmp_path):
     assert by_name.root_path == nested_root
     assert by_path is not None
     assert by_path.root_path == nested_root
+
+
+def test_resolve_workspace_reference_matches_alias(tmp_path):
+    """Manual workspace switches should accept configured aliases."""
+    nested_root = tmp_path / "MacProjects" / "Poolych"
+    nested_root.mkdir(parents=True)
+    (nested_root / ".git").mkdir()
+    (nested_root / "package.json").write_text(
+        json.dumps({"name": "poolych", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_path / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: MacProjects/Poolych
+    name: Poolych
+    aliases:
+      - billiards
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    by_alias = manager.resolve_workspace_reference("billiards", tmp_path)
+    summary_lines = manager.describe_workspace_summary_lines(
+        manager.list_workspace_summaries(tmp_path)[0]
+    )
+
+    assert by_alias is not None
+    assert by_alias.root_path == nested_root
+    assert any("aliases:" in line for line in summary_lines)
 
 
 @pytest.mark.asyncio

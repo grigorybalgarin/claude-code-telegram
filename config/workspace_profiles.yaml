@@ -1,0 +1,40 @@
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    aliases:
+      - claude-bot
+      - claude bot
+      - telegram bot
+      - bot
+    priority: 100
+    notes: |
+      This is the Telegram bot itself.
+      Prefer small coherent changes, preserve the systemd deploy workflow under ops/server,
+      keep logs redacted, and avoid widening runtime permissions.
+
+  - path: FreelanceAggregator
+    name: FreelanceAggregator
+    aliases:
+      - freelance aggregator
+      - aggregator
+      - fa
+    priority: 90
+    notes: |
+      Treat this workspace as a product repository first:
+      inspect existing build and verification commands before editing.
+
+  - path: Gr_dev
+    name: Gr_dev
+    aliases:
+      - gr dev
+      - gr-dev
+      - grdev
+    priority: 80
+
+  - path: MacProjects/Poolych
+    name: Poolych
+    aliases:
+      - poolych
+      - billiards
+      - pool game
+    priority: 70

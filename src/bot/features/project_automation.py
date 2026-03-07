@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import tomllib
 from collections import deque
@@ -10,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import yaml
+
 from src.bot.utils.html_format import escape_html
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,17 +33,20 @@ class ProjectProfile:
 
     root_path: Path
     display_name: str
+    aliases: tuple[str, ...]
     stacks: tuple[str, ...]
     package_managers: tuple[str, ...]
     commands: Dict[str, str]
     has_git_repo: bool
     has_docker_compose: bool
+    operator_notes: str = ""
+    sort_priority: int = 0
 
     def relative_root(self, approved_directory: Path) -> str:
         """Return project root relative to approved directory when possible."""
         try:
             relative = self.root_path.relative_to(approved_directory)
-            return "/" if str(relative) == "." else str(relative)
+            return "/" if str(relative) == "." else relative.as_posix()
         except ValueError:
             return str(self.root_path)
 
@@ -64,10 +72,13 @@ class WorkspaceSummary:
     root_path: Path
     relative_path: str
     display_name: str
+    aliases: tuple[str, ...]
     stacks: tuple[str, ...]
     playbooks: tuple[str, ...]
     has_git_repo: bool
     has_docker_compose: bool
+    operator_notes: str
+    sort_priority: int
 
     @property
     def button_label(self) -> str:
@@ -162,6 +173,15 @@ class ProjectAutomationManager:
             re.IGNORECASE,
         )
     ]
+
+    def __init__(self, workspace_profiles_path: Optional[Path] = None) -> None:
+        """Initialize the manager with optional explicit workspace profiles."""
+        self.workspace_profiles_path = self._resolve_workspace_profiles_path(
+            workspace_profiles_path
+        )
+        self._workspace_overrides = self._load_workspace_overrides(
+            self.workspace_profiles_path
+        )
 
     def detect_workspace_root(self, current_dir: Path, boundary_root: Path) -> Path:
         """Find the most relevant workspace root inside the approved boundary."""
@@ -270,7 +290,8 @@ class ProjectAutomationManager:
 
     def build_profile(self, current_dir: Path, boundary_root: Path) -> ProjectProfile:
         """Detect profile details for the current workspace."""
-        root = self.detect_workspace_root(current_dir, boundary_root)
+        boundary = boundary_root.resolve()
+        root = self.detect_workspace_root(current_dir, boundary)
         stacks: List[str] = []
         package_managers: List[str] = []
         commands: Dict[str, str] = {}
@@ -325,15 +346,17 @@ class ProjectAutomationManager:
         if not stacks:
             stacks.append("generic")
 
-        return ProjectProfile(
+        profile = ProjectProfile(
             root_path=root,
             display_name=root.name or str(root),
+            aliases=tuple(),
             stacks=tuple(dict.fromkeys(stacks)),
             package_managers=tuple(dict.fromkeys(package_managers)),
             commands=commands,
             has_git_repo=has_git_repo,
             has_docker_compose=compose_file is not None,
         )
+        return self._apply_workspace_override(profile, boundary)
 
     def list_playbooks(self, profile: ProjectProfile) -> List[ProjectPlaybook]:
         """Return playbooks relevant to the detected profile."""
@@ -369,17 +392,24 @@ class ProjectAutomationManager:
                 root_path=root,
                 relative_path=relative_path,
                 display_name=profile.display_name,
+                aliases=profile.aliases,
                 stacks=profile.stacks,
                 playbooks=tuple(
                     playbook.slug for playbook in self.list_playbooks(profile)
                 ),
                 has_git_repo=profile.has_git_repo,
                 has_docker_compose=profile.has_docker_compose,
+                operator_notes=profile.operator_notes,
+                sort_priority=profile.sort_priority,
             )
 
         summaries = sorted(
             unique_roots.values(),
-            key=lambda summary: (summary.relative_path != "/", summary.relative_path.casefold()),
+            key=lambda summary: (
+                -summary.sort_priority,
+                summary.relative_path != "/",
+                summary.relative_path.casefold(),
+            ),
         )
         return [
             summary
@@ -420,6 +450,8 @@ class ProjectAutomationManager:
                 self._normalize_match_text(summary.relative_path),
                 self._normalize_match_text(summary.display_name),
                 self._normalize_match_text(summary.root_path.name),
+                *(alias.casefold() for alias in summary.aliases),
+                *(self._normalize_match_text(alias) for alias in summary.aliases),
             }
             if normalized_raw in candidates or normalized_compact in candidates:
                 matches.append(summary)
@@ -443,7 +475,7 @@ class ProjectAutomationManager:
             badges.append("compose")
         badges_text = f" · {' · '.join(badges)}" if badges else ""
         playbooks_text = ", ".join(summary.playbooks)
-        return [
+        lines = [
             (
                 f"• <b>{escape_html(summary.display_name)}</b>{marker} "
                 f"→ <code>{escape_html(summary.relative_path)}</code>"
@@ -453,6 +485,11 @@ class ProjectAutomationManager:
                 f" · playbooks: <code>{escape_html(playbooks_text)}</code>"
             ),
         ]
+        if summary.aliases:
+            lines.append(
+                f"  aliases: <code>{escape_html(', '.join(summary.aliases))}</code>"
+            )
+        return lines
 
     def get_playbook(self, slug: str, profile: ProjectProfile) -> Optional[ProjectPlaybook]:
         """Return a playbook only if it is available for the profile."""
@@ -542,12 +579,16 @@ class ProjectAutomationManager:
         detected_commands = "\n".join(command_lines) or "- none detected"
         stacks = ", ".join(profile.stacks)
         managers = ", ".join(profile.package_managers) or "none detected"
+        notes_block = ""
+        if profile.operator_notes:
+            notes_block = f"Project notes:\n{profile.operator_notes}\n\n"
 
         base_context = (
             f'You are running the "{playbook.slug}" project playbook.\n'
             f"Project root: {profile.root_path}\n"
             f"Detected stack: {stacks}\n"
             f"Detected package managers: {managers}\n"
+            f"{notes_block}"
             "Detected workspace commands:\n"
             f"{detected_commands}\n\n"
             "When a detected command exists, prefer it over guessing an alternative.\n"
@@ -644,11 +685,15 @@ class ProjectAutomationManager:
         detected_commands = "\n".join(command_lines) or "- none detected"
         stacks = ", ".join(profile.stacks)
         managers = ", ".join(profile.package_managers) or "none detected"
+        notes_block = ""
+        if profile.operator_notes:
+            notes_block = f"Project notes:\n{profile.operator_notes}\n\n"
         return (
             "You are operating in always-on autopilot mode for a personal coding assistant.\n"
             f"Project root: {profile.root_path}\n"
             f"Detected stack: {stacks}\n"
             f"Detected package managers: {managers}\n"
+            f"{notes_block}"
             "Detected workspace commands:\n"
             f"{detected_commands}\n\n"
             "Operating rules:\n"
@@ -842,6 +887,7 @@ class ProjectAutomationManager:
         normalized_name = self._normalize_match_text(candidate.name)
         relative_label = self._workspace_label(candidate, boundary_root).lstrip("/")
         normalized_relative = self._normalize_match_text(relative_label)
+        profile = self.build_profile(candidate, boundary_root)
 
         score = 1 if candidate == current_workspace else 0
 
@@ -859,6 +905,12 @@ class ProjectAutomationManager:
             score = max(score, 7)
         if len(normalized_name) >= 4 and normalized_name in normalized_request:
             score = max(score, 6)
+        for alias in profile.aliases:
+            normalized_alias = self._normalize_match_text(alias)
+            if len(normalized_alias) >= 3 and normalized_alias in normalized_request:
+                score = max(score, 8)
+            elif len(alias) >= 3 and self._contains_workspace_name(request_text, alias.casefold()):
+                score = max(score, 8)
 
         return score
 
@@ -885,6 +937,112 @@ class ProjectAutomationManager:
 
     def _normalize_match_text(self, value: str) -> str:
         return re.sub(r"[^0-9a-zа-яё]+", "", value.casefold())
+
+    def _resolve_workspace_profiles_path(
+        self, workspace_profiles_path: Optional[Path]
+    ) -> Optional[Path]:
+        if workspace_profiles_path is not None:
+            return workspace_profiles_path.resolve()
+        default_path = (
+            Path(__file__).resolve().parents[3] / "config" / "workspace_profiles.yaml"
+        )
+        return default_path if default_path.exists() else None
+
+    def _load_workspace_overrides(
+        self, workspace_profiles_path: Optional[Path]
+    ) -> dict[str, dict[str, object]]:
+        if workspace_profiles_path is None:
+            return {}
+
+        try:
+            raw = yaml.safe_load(workspace_profiles_path.read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            logger.warning(
+                "Failed to read workspace profiles %s: %s",
+                workspace_profiles_path,
+                exc,
+            )
+            return {}
+        except yaml.YAMLError as exc:
+            logger.warning(
+                "Failed to parse workspace profiles %s: %s",
+                workspace_profiles_path,
+                exc,
+            )
+            return {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        overrides: dict[str, dict[str, object]] = {}
+        entries = raw.get("workspaces", [])
+        if not isinstance(entries, list):
+            return overrides
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            raw_path = str(entry.get("path", "")).strip().strip("/")
+            if not raw_path:
+                continue
+            commands = entry.get("commands") or {}
+            if not isinstance(commands, dict):
+                commands = {}
+            aliases = entry.get("aliases") or []
+            if not isinstance(aliases, list):
+                aliases = []
+            overrides[raw_path] = {
+                "display_name": str(entry.get("name", "")).strip() or None,
+                "aliases": tuple(
+                    alias.strip()
+                    for alias in aliases
+                    if isinstance(alias, str) and alias.strip()
+                ),
+                "operator_notes": str(entry.get("notes", "")).strip(),
+                "commands": {
+                    str(key).strip(): (
+                        str(value).strip() if value is not None and str(value).strip() else None
+                    )
+                    for key, value in commands.items()
+                    if str(key).strip()
+                },
+                "sort_priority": int(entry.get("priority", 0) or 0),
+            }
+
+        return overrides
+
+    def _apply_workspace_override(
+        self, profile: ProjectProfile, boundary_root: Path
+    ) -> ProjectProfile:
+        override = self._workspace_overrides.get(profile.relative_root(boundary_root))
+        if not override:
+            return profile
+
+        commands = dict(profile.commands)
+        for key, value in (override.get("commands") or {}).items():
+            if value is None:
+                commands.pop(str(key), None)
+            else:
+                commands[str(key)] = str(value)
+
+        display_name = str(override.get("display_name") or profile.display_name)
+        aliases = tuple(
+            dict.fromkeys(
+                [*profile.aliases, *(override.get("aliases") or ())]
+            )
+        )
+        return ProjectProfile(
+            root_path=profile.root_path,
+            display_name=display_name,
+            aliases=aliases,
+            stacks=profile.stacks,
+            package_managers=profile.package_managers,
+            commands=commands,
+            has_git_repo=profile.has_git_repo,
+            has_docker_compose=profile.has_docker_compose,
+            operator_notes=str(override.get("operator_notes") or ""),
+            sort_priority=int(override.get("sort_priority") or 0),
+        )
 
     def _is_container_workspace(
         self, summary: WorkspaceSummary, summaries: List[WorkspaceSummary]
