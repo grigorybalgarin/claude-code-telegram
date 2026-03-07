@@ -354,6 +354,26 @@ class DatabaseManager:
                     ON user_instructions(user_id);
                 """,
             ),
+            (
+                6,
+                """
+                -- Persistent operational events per workspace
+                CREATE TABLE IF NOT EXISTS workspace_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_path TEXT NOT NULL,
+                    operation_type TEXT NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    correlation_id TEXT,
+                    details JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workspace_ops_path_type
+                    ON workspace_operations(workspace_path, operation_type, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_workspace_ops_correlation
+                    ON workspace_operations(correlation_id);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

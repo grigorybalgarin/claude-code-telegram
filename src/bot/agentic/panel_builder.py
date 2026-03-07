@@ -145,6 +145,7 @@ class PanelBuilder:
         queue_size: int = 0,
         last_verify: Optional[Dict[str, Any]] = None,
         last_resolve: Optional[Dict[str, Any]] = None,
+        last_deploy: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build a short human-readable status summary."""
         session_status = "активна" if session_id else "нет"
@@ -195,8 +196,8 @@ class PanelBuilder:
                     f"\U0001f9f5 Задача: <code>{escape_html(self.format_job_status(latest_job, ctx.boundary_root))}</code>"
                 )
 
-        # Last verify/resolve results
-        if last_verify or last_resolve:
+        # Last verify/resolve/deploy results
+        if last_verify or last_resolve or last_deploy:
             lines.append("")
         if last_verify:
             import time as _time
@@ -226,6 +227,22 @@ class PanelBuilder:
             if attempts > 1:
                 r_label += f" ({attempts}x)"
             lines.append(f"Разбор: <code>{r_label}</code> · {ago_text}")
+        if last_deploy:
+            import time as _time
+
+            ago = int(_time.time() - last_deploy.get("timestamp", 0))
+            ago_text = self._format_ago(ago)
+            if last_deploy.get("success"):
+                commit = last_deploy.get("commit", "")
+                d_label = f"✅ успешно"
+                if commit:
+                    d_label += f" ({commit[:8]})"
+            else:
+                failed_stage = escape_html(last_deploy.get("failed_stage", "?"))
+                d_label = f"❌ сбой на '{failed_stage}'"
+                if last_deploy.get("rollback"):
+                    d_label += " · откат"
+            lines.append(f"Деплой: <code>{d_label}</code> · {ago_text}")
 
         if ctx.project_automation and profile and ctx.current_workspace != ctx.boundary_root:
             lines.extend(

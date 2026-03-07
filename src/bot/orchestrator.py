@@ -890,10 +890,33 @@ class MessageOrchestrator:
         if active and not active.task.done():
             active_elapsed = int(time.time() - active.started_at)
             queue_size = len(self._pending_messages.get(user_id, []))
+        last_verify = context.user_data.get("last_verify")
+        last_resolve = context.user_data.get("last_resolve")
+        last_deploy = context.user_data.get("last_deploy")
+
+        # Fall back to persistent state if volatile state is empty
+        if not last_verify and not last_resolve and not last_deploy:
+            storage = context.bot_data.get("storage")
+            if storage and hasattr(storage, "operations"):
+                try:
+                    ws_state = await storage.operations.get_workspace_state(
+                        str(ctx.current_workspace)
+                    )
+                    for key in ("verify", "resolve", "deploy"):
+                        row = ws_state.get(key)
+                        if row and isinstance(row.get("details"), dict):
+                            ws_state[key] = row["details"]
+                    last_verify = ws_state.get("verify")
+                    last_resolve = ws_state.get("resolve")
+                    last_deploy = ws_state.get("deploy")
+                except Exception:
+                    pass
+
         return await self.panel.build_status_text(
             ctx, user_id, session_id, active_elapsed, queue_size,
-            last_verify=context.user_data.get("last_verify"),
-            last_resolve=context.user_data.get("last_resolve"),
+            last_verify=last_verify,
+            last_resolve=last_resolve,
+            last_deploy=last_deploy,
         )
 
     async def _build_agentic_panel_text(
@@ -1911,7 +1934,10 @@ class MessageOrchestrator:
         elif action in {"health", "build"}:
             await self.actions.run_command(query, context, action)
 
-        elif action in {"start", "dev", "deploy"}:
+        elif action == "deploy":
+            await self.actions.run_deploy(query, context)
+
+        elif action in {"start", "dev"}:
             await self.actions.run_background(query, context, action)
 
         elif action.startswith("svc:"):

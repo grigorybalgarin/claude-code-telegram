@@ -13,12 +13,42 @@ from .context import (
     VerifyReport,
     VerifyStep,
 )
+from .problem_classifier import ProblemDiagnosis, ProblemType, classify_problem
 from .shell_executor import ShellExecutor
 from .verify_pipeline import VerifyPipeline
 
 logger = structlog.get_logger()
 
 MAX_RESOLVE_ATTEMPTS = 2
+
+# Type-specific guidance for the resolve prompt
+_TYPE_GUIDANCE = {
+    ProblemType.CODE: (
+        "   Это проблема в коде. Внеси минимальные точечные правки — "
+        "не рефактори лишнего.\n"
+    ),
+    ProblemType.CONFIG: (
+        "   Это проблема конфигурации. Проверь конфиги, env-переменные, "
+        "пути — не трогай бизнес-логику.\n"
+    ),
+    ProblemType.DEPENDENCY: (
+        "   Это проблема зависимостей. Установи или обнови нужный пакет, "
+        "но не меняй версии без необходимости.\n"
+    ),
+    ProblemType.SERVICE: (
+        "   Это проблема сервиса. Проверь логи, статус, порты. "
+        "Не делай опасных инфраструктурных изменений.\n"
+    ),
+    ProblemType.DEPLOY: (
+        "   Это проблема сборки/деплоя. Проверь build-конфиг, "
+        "типы, импорты.\n"
+    ),
+    ProblemType.ENVIRONMENT: (
+        "   Это проблема серверного окружения. Объясни причину и "
+        "предложи безопасное исправление, не делай опасных изменений молча.\n"
+    ),
+    ProblemType.UNKNOWN: "",
+}
 
 
 class ResolveRunner:
@@ -91,6 +121,7 @@ class ResolveRunner:
 
             current_report = initial_report
             current_session_id = session_id
+            diagnosis = classify_problem(initial_report)
 
             for attempt in range(1, MAX_RESOLVE_ATTEMPTS + 1):
                 is_retry = attempt > 1
@@ -106,8 +137,11 @@ class ResolveRunner:
                             f"Исправляю '{current_report.failed_step.label}'"
                         )
 
+                if is_retry:
+                    diagnosis = classify_problem(current_report)
+
                 prompt = self._build_prompt(
-                    ctx, current_report, is_retry=is_retry
+                    ctx, current_report, diagnosis=diagnosis, is_retry=is_retry
                 )
 
                 claude_response = await ctx.claude_integration.run_command(
@@ -194,6 +228,7 @@ class ResolveRunner:
         self,
         ctx: AgenticWorkspaceContext,
         report: VerifyReport,
+        diagnosis: ProblemDiagnosis | None = None,
         is_retry: bool = False,
     ) -> str:
         """Build a rich diagnostic prompt from the verification report."""
@@ -221,6 +256,18 @@ class ResolveRunner:
             passed_labels = ", ".join(step.label for step, _ in passing_steps)
             passing_context = f"Уже проходят: {passed_labels}.\n"
 
+        # Diagnosis context
+        diagnosis_context = ""
+        if diagnosis and diagnosis.problem_type != ProblemType.UNKNOWN:
+            diagnosis_context = f"Предварительная классификация: {diagnosis.label}.\n"
+            if diagnosis.short_cause:
+                diagnosis_context += f"Возможная причина: {diagnosis.short_cause}\n"
+
+        # Type-specific guidance
+        type_guidance = _TYPE_GUIDANCE.get(
+            diagnosis.problem_type if diagnosis else ProblemType.UNKNOWN, ""
+        )
+
         # Logs from the failing step if available
         logs_context = ""
         if report.logs_result:
@@ -241,6 +288,7 @@ class ResolveRunner:
             user_request = (
                 "Предыдущая попытка исправления не помогла.\n"
                 f"{passing_context}"
+                f"{diagnosis_context}"
                 f"Шаг проверки '{failed_step.label}' все еще не проходит.\n"
                 f"Команда: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
@@ -256,6 +304,7 @@ class ResolveRunner:
             user_request = (
                 "Разберись с проблемой в проекте и исправь ее.\n"
                 f"{passing_context}"
+                f"{diagnosis_context}"
                 f"Сейчас не проходит шаг проверки '{failed_step.label}'.\n"
                 f"Команда шага: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
@@ -263,11 +312,9 @@ class ResolveRunner:
                 f"{git_context}\n"
                 "Действуй автономно:\n"
                 "1. Определи точную причину сбоя.\n"
-                "2. Если проблема в коде или конфигурации проекта, внеси минимальные правки.\n"
-                "3. Если проблема только в окружении сервера, не делай опасных инфраструктурных "
-                "изменений молча; объясни точную причину и предложи безопасное исправление.\n"
-                "4. После правок самостоятельно прогони релевантные проверки снова.\n"
-                "5. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
+                f"{type_guidance}"
+                "2. После правок самостоятельно прогони релевантные проверки снова.\n"
+                "3. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
             )
 
         return ctx.project_automation.build_general_autopilot_prompt(

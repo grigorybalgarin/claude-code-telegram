@@ -19,6 +19,7 @@ from ..features.change_guard import ChangeGuardReport
 from ..utils.formatting import FormattedMessage, ResponseFormatter
 from ..utils.html_format import escape_html
 from .context import AgenticWorkspaceContext, ShellActionResult, VerifyStep
+from .deploy_pipeline import DeployPipeline, DeployProfile
 from .panel_builder import PanelBuilder
 from .problem_classifier import (
     classify_problem,
@@ -56,6 +57,7 @@ class ActionRunner:
         self.services = services
         self.resolver = resolver
         self.panel = panel
+        self.deploy = DeployPipeline(shell)
 
     # ------------------------------------------------------------------
     # Context resolution helpers (shared with orchestrator)
@@ -133,6 +135,34 @@ class ActionRunner:
             audit_logger=context.bot_data.get("audit_logger"),
             change_guard=change_guard,
         )
+
+    # ------------------------------------------------------------------
+    # Persistent operational state
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _save_operation(
+        context: Any,
+        workspace_path: str,
+        operation_type: str,
+        success: bool,
+        details: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None,
+    ) -> None:
+        """Persist an operational event to DB (best-effort)."""
+        storage = context.bot_data.get("storage")
+        if not storage or not hasattr(storage, "operations"):
+            return
+        try:
+            await storage.operations.save(
+                workspace_path=workspace_path,
+                operation_type=operation_type,
+                success=success,
+                details=details,
+                correlation_id=correlation_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to persist operation", error=str(e))
 
     # ------------------------------------------------------------------
     # Action methods
@@ -596,8 +626,10 @@ class ActionRunner:
 
         # Persist last verify result for status display
         import time as _time
+        import uuid as _uuid
 
-        context.user_data["last_verify"] = {
+        correlation_id = str(_uuid.uuid4())[:8]
+        verify_data = {
             "success": report.success,
             "failed_step": report.failed_step.label if report.failed_step else None,
             "steps_total": len(report.results),
@@ -605,7 +637,17 @@ class ActionRunner:
             "problem_type": diagnosis.problem_type.value,
             "short_cause": diagnosis.short_cause,
             "timestamp": _time.time(),
+            "correlation_id": correlation_id,
         }
+        context.user_data["last_verify"] = verify_data
+        await self._save_operation(
+            context,
+            str(profile.root_path),
+            "verify",
+            report.success,
+            verify_data,
+            correlation_id=correlation_id,
+        )
 
         audit_logger = context.bot_data.get("audit_logger")
         if audit_logger:
@@ -764,9 +806,11 @@ class ActionRunner:
 
         # Persist last resolve result for status display
         import time as _time
+        import uuid as _uuid
 
         resolve_diagnosis = classify_problem(initial_report)
-        context.user_data["last_resolve"] = {
+        correlation_id = str(_uuid.uuid4())[:8]
+        resolve_data = {
             "success": result.success,
             "attempts": result.attempts,
             "error": result.error,
@@ -776,7 +820,17 @@ class ActionRunner:
             ),
             "problem_type": resolve_diagnosis.problem_type.value,
             "timestamp": _time.time(),
+            "correlation_id": correlation_id,
         }
+        context.user_data["last_resolve"] = resolve_data
+        await self._save_operation(
+            context,
+            str(profile.root_path),
+            "resolve",
+            result.success,
+            resolve_data,
+            correlation_id=correlation_id,
+        )
 
         audit_logger = context.bot_data.get("audit_logger")
         if audit_logger:
@@ -932,4 +986,82 @@ class ActionRunner:
                 command="workspace_job_stop",
                 args=[job_id],
                 success=True,
+            )
+
+    async def run_deploy(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Run staged deploy pipeline for the current workspace."""
+        user_id = query.from_user.id
+        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
+            self._get_workspace_profile(context)
+        )
+        if not project_automation or not profile:
+            await query.edit_message_text("Автоматизация проекта недоступна.")
+            return
+
+        deploy_profile = DeployProfile.from_workspace_profile(
+            profile, boundary_root
+        )
+        if not deploy_profile.restart_command and not deploy_profile.update_command:
+            await query.answer(
+                "Deploy не настроен для этого проекта.", show_alert=True
+            )
+            return
+
+        rel_path = self.panel.format_relative_path(profile.root_path, boundary_root)
+        status_msg = await query.message.reply_text(
+            "🚀 <b>Запуск deploy</b>\n\n"
+            f"Проект: <code>{escape_html(rel_path)}</code>",
+            parse_mode="HTML",
+        )
+
+        async def _on_stage(stage: Any, label: str) -> None:
+            try:
+                await status_msg.edit_text(
+                    f"🚀 <b>Deploy</b>\n\n"
+                    f"Проект: <code>{escape_html(rel_path)}</code>\n"
+                    f"Стадия: <code>{escape_html(label)}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        result = await self.deploy.execute(deploy_profile, on_stage=_on_stage)
+
+        await status_msg.edit_text(
+            result.format_summary(),
+            parse_mode="HTML",
+        )
+
+        # Persist to DB
+        await self._save_operation(
+            context,
+            str(profile.root_path),
+            "deploy",
+            result.overall_success,
+            result.to_dict(),
+            correlation_id=result.correlation_id,
+        )
+
+        # Update user_data for status display
+        import time as _time
+
+        context.user_data["last_deploy"] = {
+            "success": result.overall_success,
+            "failed_stage": result.failed_stage.value if result.failed_stage else None,
+            "rollback": result.rollback_performed,
+            "commit": result.post_deploy_commit,
+            "timestamp": _time.time(),
+        }
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command="workspace_deploy",
+                args=[str(profile.root_path)],
+                success=result.overall_success,
             )

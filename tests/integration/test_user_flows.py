@@ -722,3 +722,281 @@ class TestResponseSender:
 
         # Two calls: response + guard report
         assert update.message.reply_text.await_count == 2
+
+
+# ── Deploy Pipeline Tests ──────────────────────────────────────────────
+
+
+class TestDeployPipeline:
+    """Tests for the staged deploy pipeline."""
+
+    async def test_successful_deploy_all_stages(self, workspace):
+        """All stages pass -> overall_success is True."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+            DeployStage,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            update_command=f"bash {workspace / 'check_pass.sh'}",
+            compile_command=f"bash {workspace / 'check_pass.sh'}",
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+            health_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        assert result.overall_success is True
+        assert result.failed_stage is None
+        assert result.rollback_performed is False
+        non_skipped = [s for s in result.stages if not s.skipped]
+        assert len(non_skipped) == 4
+        assert all(s.success for s in non_skipped)
+
+    async def test_deploy_fails_on_compile(self, workspace):
+        """Deploy stops at failing stage and records it."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+            DeployStage,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            update_command=f"bash {workspace / 'check_pass.sh'}",
+            compile_command=f"bash {workspace / 'check_fail.sh'}",
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        assert result.overall_success is False
+        assert result.failed_stage == DeployStage.COMPILE
+
+    async def test_deploy_skips_missing_stages(self, workspace):
+        """Stages with no command are marked as skipped."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        assert result.overall_success is True
+        skipped = [s for s in result.stages if s.skipped]
+        assert len(skipped) == 5  # all except restart
+
+    async def test_deploy_format_summary_success(self, workspace):
+        """Successful deploy summary includes commit and time."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        summary = result.format_summary()
+        assert "успешно" in summary
+
+    async def test_deploy_format_summary_failure(self, workspace):
+        """Failed deploy summary includes failed stage."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            compile_command=f"bash {workspace / 'check_fail.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        summary = result.format_summary()
+        assert "не удалось" in summary
+        assert "Компиляция" in summary
+
+    async def test_deploy_on_stage_callback(self, workspace):
+        """on_stage callback is invoked for non-skipped stages."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+            health_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        stages_seen = []
+
+        async def on_stage(stage, label):
+            stages_seen.append(label)
+
+        await pipeline.execute(profile, on_stage=on_stage)
+        assert len(stages_seen) == 2
+
+    async def test_deploy_to_dict(self, workspace):
+        """DeployResult.to_dict() produces serializable output."""
+        from src.bot.agentic.deploy_pipeline import (
+            DeployPipeline,
+            DeployProfile,
+        )
+
+        profile = DeployProfile(
+            workspace_root=workspace,
+            restart_command=f"bash {workspace / 'check_pass.sh'}",
+        )
+        pipeline = DeployPipeline(ShellExecutor())
+        result = await pipeline.execute(profile)
+
+        d = result.to_dict()
+        assert isinstance(d, dict)
+        assert d["overall_success"] is True
+        assert isinstance(d["stages"], list)
+        assert d["correlation_id"]
+
+
+# ── Classifier Confidence Tests ────────────────────────────────────────
+
+
+class TestClassifierConfidence:
+    """Tests for problem classifier confidence scoring."""
+
+    async def test_high_confidence_for_clear_code_error(self):
+        """Clear code error with matching step label gives high confidence."""
+        result = ShellActionResult(
+            command="flake8 src",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="SyntaxError: invalid syntax\nTraceback: ...\nError: compilation failed",
+        )
+        step = VerifyStep(label="lint", command="flake8 src")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report)
+        assert diagnosis.problem_type == ProblemType.CODE
+        assert diagnosis.confidence >= 0.6
+
+    async def test_low_confidence_for_ambiguous_error(self):
+        """Ambiguous output gives lower confidence."""
+        result = ShellActionResult(
+            command="./check.sh",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="something went wrong",
+            stderr_text="",
+        )
+        step = VerifyStep(label="check", command="./check.sh")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report)
+        # Should be UNKNOWN or low confidence
+        assert diagnosis.confidence <= 0.5 or diagnosis.problem_type == ProblemType.UNKNOWN
+
+    async def test_confidence_is_in_diagnosis(self):
+        """Confidence field exists and is a float between 0 and 1."""
+        result = ShellActionResult(
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="ModuleNotFoundError: No module named flask",
+            stderr_text="",
+        )
+        step = VerifyStep(label="test", command="pytest")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report)
+        assert 0.0 <= diagnosis.confidence <= 1.0
+
+
+# ── Persistent Status Fallback Tests ───────────────────────────────────
+
+
+class TestPersistentStatusFallback:
+    """Tests for status text with persistent DB fallback."""
+
+    async def test_status_shows_deploy_info(self, workspace):
+        """Status text includes deploy info when last_deploy is provided."""
+        panel = PanelBuilder(MagicMock(), MagicMock(), MagicMock())
+        ctx = MagicMock()
+        ctx.current_workspace = workspace
+        ctx.boundary_root = workspace.parent
+        ctx.profile = _make_profile(workspace)
+        ctx.claude_integration = None
+        ctx.operator_runtime = None
+        ctx.project_automation = None
+
+        text = await panel.build_status_text(
+            ctx, user_id=123, session_id=None,
+            last_deploy={
+                "success": True,
+                "commit": "abc12345",
+                "timestamp": time.time() - 60,
+            },
+        )
+        assert "Деплой" in text
+        assert "успешно" in text
+        assert "abc12345" in text
+
+    async def test_status_shows_failed_deploy(self, workspace):
+        """Status text shows failed deploy with stage info."""
+        panel = PanelBuilder(MagicMock(), MagicMock(), MagicMock())
+        ctx = MagicMock()
+        ctx.current_workspace = workspace
+        ctx.boundary_root = workspace.parent
+        ctx.profile = _make_profile(workspace)
+        ctx.claude_integration = None
+        ctx.operator_runtime = None
+        ctx.project_automation = None
+
+        text = await panel.build_status_text(
+            ctx, user_id=123, session_id=None,
+            last_deploy={
+                "success": False,
+                "failed_stage": "compile",
+                "rollback": True,
+                "timestamp": time.time() - 120,
+            },
+        )
+        assert "Деплой" in text
+        assert "сбой" in text
+        assert "compile" in text
+        assert "откат" in text
+
+    async def test_status_without_deploy_no_crash(self, workspace):
+        """Status text works fine without deploy data."""
+        panel = PanelBuilder(MagicMock(), MagicMock(), MagicMock())
+        ctx = MagicMock()
+        ctx.current_workspace = workspace
+        ctx.boundary_root = workspace.parent
+        ctx.profile = _make_profile(workspace)
+        ctx.claude_integration = None
+        ctx.operator_runtime = None
+        ctx.project_automation = None
+
+        text = await panel.build_status_text(
+            ctx, user_id=123, session_id=None,
+        )
+        assert "Деплой" not in text
+        assert "Статус" in text

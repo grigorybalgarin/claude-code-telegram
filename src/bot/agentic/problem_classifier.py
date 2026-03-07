@@ -145,6 +145,7 @@ class ProblemDiagnosis:
     failed_step_label: str
     short_cause: str
     safe_to_autofix: bool
+    confidence: float = 0.5  # 0.0-1.0, how confident the classification is
 
     @property
     def is_code_fixable(self) -> bool:
@@ -170,7 +171,7 @@ def classify_problem(report: VerifyReport) -> ProblemDiagnosis:
     last_result = report.results[-1][1] if report.results else None
     output = _collect_output(last_result, report.logs_result)
 
-    problem_type = _detect_type(output, failed_step)
+    problem_type, confidence = _detect_type(output, failed_step)
     short_cause = _extract_short_cause(output, problem_type)
     safe_to_autofix = problem_type in {
         ProblemType.CODE,
@@ -185,6 +186,7 @@ def classify_problem(report: VerifyReport) -> ProblemDiagnosis:
         failed_step_label=failed_step.label,
         short_cause=short_cause,
         safe_to_autofix=safe_to_autofix,
+        confidence=confidence,
     )
 
 
@@ -333,11 +335,14 @@ def _collect_output(
     return "\n".join(parts)
 
 
-def _detect_type(output: str, failed_step: VerifyStep) -> ProblemType:
-    """Detect problem type from output patterns and step label."""
+def _detect_type(output: str, failed_step: VerifyStep) -> tuple:
+    """Detect problem type from output patterns and step label.
+
+    Returns (ProblemType, confidence: float).
+    """
     scores: dict[ProblemType, int] = {t: 0 for t in ProblemType}
 
-    # Step label hints
+    # Step label hints (strong signal)
     label = failed_step.label.lower()
     if any(w in label for w in ("health", "статус", "проверка")):
         scores[ProblemType.SERVICE] += 2
@@ -347,6 +352,8 @@ def _detect_type(output: str, failed_step: VerifyStep) -> ProblemType:
         scores[ProblemType.CODE] += 3
     if any(w in label for w in ("сборка", "build")):
         scores[ProblemType.DEPLOY] += 2
+    if any(w in label for w in ("зависимост", "dep")):
+        scores[ProblemType.DEPENDENCY] += 2
 
     # Pattern matching on output
     for problem_type, patterns in _PATTERNS.items():
@@ -357,8 +364,13 @@ def _detect_type(output: str, failed_step: VerifyStep) -> ProblemType:
     # Pick highest score
     best = max(scores, key=lambda t: scores[t])
     if scores[best] == 0:
-        return ProblemType.UNKNOWN
-    return best
+        return ProblemType.UNKNOWN, 0.0
+
+    # Confidence: based on score magnitude and gap to second-best
+    sorted_scores = sorted(scores.values(), reverse=True)
+    gap = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else sorted_scores[0]
+    confidence = min(1.0, 0.3 + gap * 0.15 + min(scores[best], 5) * 0.1)
+    return best, round(confidence, 2)
 
 
 def _extract_short_cause(output: str, problem_type: ProblemType) -> str:

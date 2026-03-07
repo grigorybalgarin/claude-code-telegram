@@ -838,3 +838,106 @@ class AnalyticsRepository:
                 "tool_stats": tool_stats,
                 "daily_activity": daily_activity,
             }
+
+
+class OperationsRepository:
+    """Persistent operational events per workspace."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+
+    async def save(
+        self,
+        workspace_path: str,
+        operation_type: str,
+        success: bool,
+        details: Optional[Dict] = None,
+        correlation_id: Optional[str] = None,
+    ) -> None:
+        """Save an operational event."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO workspace_operations
+                (workspace_path, operation_type, success, correlation_id, details)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    workspace_path,
+                    operation_type,
+                    success,
+                    correlation_id,
+                    json.dumps(details) if details else None,
+                ),
+            )
+            await conn.commit()
+
+    async def get_last(
+        self,
+        workspace_path: str,
+        operation_type: str,
+    ) -> Optional[Dict]:
+        """Get the most recent operation of a type for a workspace."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, workspace_path, operation_type, success,
+                       correlation_id, details, created_at
+                FROM workspace_operations
+                WHERE workspace_path = ? AND operation_type = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (workspace_path, operation_type),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            if result.get("details"):
+                try:
+                    result["details"] = json.loads(result["details"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return result
+
+    async def get_recent(
+        self,
+        workspace_path: str,
+        limit: int = 10,
+    ) -> List[Dict]:
+        """Get recent operations for a workspace."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, workspace_path, operation_type, success,
+                       correlation_id, details, created_at
+                FROM workspace_operations
+                WHERE workspace_path = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (workspace_path, limit),
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                r = dict(row)
+                if r.get("details"):
+                    try:
+                        r["details"] = json.loads(r["details"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(r)
+            return results
+
+    async def get_workspace_state(
+        self,
+        workspace_path: str,
+    ) -> Dict[str, Optional[Dict]]:
+        """Get latest operation of each type for a workspace — the operational state."""
+        op_types = ["verify", "resolve", "deploy", "service", "restart"]
+        state: Dict[str, Optional[Dict]] = {}
+        for op_type in op_types:
+            state[op_type] = await self.get_last(workspace_path, op_type)
+        return state
