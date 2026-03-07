@@ -115,6 +115,15 @@ class _ShellActionResult:
     error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _VerifyStep:
+    """One deterministic verification step for the current workspace."""
+
+    label: str
+    command: str
+    logs_command: Optional[str] = None
+
+
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
@@ -924,6 +933,8 @@ class MessageOrchestrator:
                 )
             if dynamic_row:
                 rows.append(dynamic_row[:3])
+            if self._build_agentic_verify_steps(profile):
+                rows.append([InlineKeyboardButton("✅ Verify", callback_data="act:verify")])
             operator_row = []
             if "health" in profile.commands:
                 operator_row.append(
@@ -935,6 +946,23 @@ class MessageOrchestrator:
                 )
             if operator_row:
                 rows.append(operator_row[:3])
+            primary_service = self._select_agentic_primary_service(profile)
+            if primary_service:
+                service_row = []
+                for action_key, label in (
+                    ("status", "📟 Service"),
+                    ("logs", "📜 Logs"),
+                    ("restart", "🔄 Restart"),
+                ):
+                    if primary_service.command_for(action_key):
+                        service_row.append(
+                            InlineKeyboardButton(
+                                label,
+                                callback_data=f"act:svc:{primary_service.key}:{action_key}",
+                            )
+                        )
+                if service_row:
+                    rows.append(service_row[:3])
             if profile.services:
                 rows.append(
                     [InlineKeyboardButton("🧩 Services", callback_data="act:services")]
@@ -1313,10 +1341,13 @@ class MessageOrchestrator:
 
         keyboard_rows.append(
             [
+                InlineKeyboardButton("🔄 Refresh", callback_data="act:jobs"),
                 InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
                 InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
             ]
+        )
+        keyboard_rows.append(
+            [InlineKeyboardButton("📁 Projects", callback_data="act:projects")]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1401,10 +1432,13 @@ class MessageOrchestrator:
 
         keyboard_rows.append(
             [
+                InlineKeyboardButton("🔄 Refresh", callback_data="act:services"),
                 InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
                 InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
             ]
+        )
+        keyboard_rows.append(
+            [InlineKeyboardButton("📁 Projects", callback_data="act:projects")]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1458,10 +1492,13 @@ class MessageOrchestrator:
 
                 keyboard_rows.append(
                     [
+                        InlineKeyboardButton("🔄 Refresh", callback_data="act:projects"),
                         InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
                         InlineKeyboardButton("📂 Status", callback_data="act:status"),
-                        InlineKeyboardButton("🕘 Recent", callback_data="act:recent"),
                     ]
+                )
+                keyboard_rows.append(
+                    [InlineKeyboardButton("🕘 Recent", callback_data="act:recent")]
                 )
                 return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1493,7 +1530,12 @@ class MessageOrchestrator:
                         )
                     )
             keyboard_rows.append(row)
-        keyboard_rows.append([InlineKeyboardButton("🎛️ Panel", callback_data="act:panel")])
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="act:projects"),
+                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+            ]
+        )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
     async def _run_agentic_playbook_action(
@@ -1806,6 +1848,54 @@ class MessageOrchestrator:
                 return service.status_command
         return None
 
+    @staticmethod
+    def _select_agentic_primary_service(profile: Any) -> Optional[Any]:
+        """Choose the most useful managed service for one-tap shortcuts."""
+        services = list(getattr(profile, "services", ()))
+        if not services:
+            return None
+        for key in ("app", "api", "web"):
+            for service in services:
+                if service.key == key:
+                    return service
+        return services[0] if len(services) == 1 else None
+
+    def _build_agentic_verify_steps(self, profile: Any) -> List[_VerifyStep]:
+        """Build the deterministic verification sequence for the workspace."""
+        steps: List[_VerifyStep] = []
+        seen_commands: set[str] = set()
+
+        health_command = profile.commands.get("health")
+        if health_command:
+            steps.append(_VerifyStep(label="health", command=health_command))
+            seen_commands.add(health_command)
+        else:
+            for service in getattr(profile, "services", ()):
+                service_command = service.health_command or service.status_command
+                if not service_command or service_command in seen_commands:
+                    continue
+                label = (
+                    f"{service.display_name} health"
+                    if service.health_command
+                    else f"{service.display_name} status"
+                )
+                steps.append(
+                    _VerifyStep(
+                        label=label,
+                        command=service_command,
+                        logs_command=service.logs_command,
+                    )
+                )
+                seen_commands.add(service_command)
+
+        for label in ("lint", "typecheck", "test", "build"):
+            command = profile.commands.get(label)
+            if command and command not in seen_commands:
+                steps.append(_VerifyStep(label=label, command=command))
+                seen_commands.add(command)
+
+        return steps
+
     async def _run_agentic_service_follow_up_checks(
         self,
         service: Any,
@@ -2048,6 +2138,118 @@ class MessageOrchestrator:
                 command=f"service_{service.key}_{action_key}",
                 args=[command, str(profile.root_path)],
                 success=final_success,
+            )
+
+    async def _run_agentic_verify_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Run the deterministic verification suite for the current workspace."""
+        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        if not project_automation or not profile:
+            await query.edit_message_text("Project automation is not available.")
+            return
+
+        steps = self._build_agentic_verify_steps(profile)
+        if not steps:
+            await query.answer("No verification steps detected for this workspace.", show_alert=True)
+            return
+
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Verify</b>\n\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Steps: <code>{escape_html(', '.join(step.label for step in steps))}</code>",
+            parse_mode="HTML",
+        )
+
+        results: List[tuple[_VerifyStep, _ShellActionResult]] = []
+        logs_result: Optional[_ShellActionResult] = None
+        failed_step: Optional[_VerifyStep] = None
+
+        for index, step in enumerate(steps, start=1):
+            await status_msg.edit_text(
+                "⏳ <b>Running Verify</b>\n\n"
+                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                f"Step <code>{index}/{len(steps)}</code>: <code>{escape_html(step.label)}</code>\n"
+                f"Command: <code>{escape_html(step.command)}</code>",
+                parse_mode="HTML",
+            )
+            result = await self._execute_agentic_shell_action(
+                workspace_root=profile.root_path,
+                command=step.command,
+                timeout_seconds=180,
+            )
+            results.append((step, result))
+            if not result.success:
+                failed_step = step
+                if step.logs_command:
+                    logs_result = await self._execute_agentic_shell_action(
+                        workspace_root=profile.root_path,
+                        command=step.logs_command,
+                        timeout_seconds=30,
+                    )
+                break
+
+        success = failed_step is None
+        lines = [
+            "✅ <b>Verification Complete</b>"
+            if success
+            else "❌ <b>Verification Failed</b>",
+            "",
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+        ]
+        if failed_step:
+            lines.append(f"Failed at: <code>{escape_html(failed_step.label)}</code>")
+        lines.extend(["", "<b>Steps</b>"])
+        for step, result in results:
+            state = "ok" if result.success else "failed"
+            if result.timed_out:
+                state = "timeout"
+            lines.append(
+                f"• <code>{escape_html(step.label)}</code>: <code>{escape_html(state)}</code> "
+                f"(exit <code>{result.returncode}</code>)"
+            )
+            summary = self._summarize_agentic_shell_result(result)
+            if summary and summary != "no output":
+                lines.append(f"  <code>{escape_html(summary)}</code>")
+
+        if results:
+            last_step, last_result = results[-1]
+            if (
+                not last_result.success
+                and (last_result.stdout_text or last_result.stderr_text or last_result.error)
+            ):
+                detail_text = last_result.stdout_text or last_result.stderr_text or last_result.error or ""
+                lines.extend(
+                    [
+                        "",
+                        f"<b>Failure output: {escape_html(last_step.label)}</b>",
+                        f"<pre>{escape_html(detail_text)}</pre>",
+                    ]
+                )
+
+        if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
+            log_body = logs_result.stdout_text or logs_result.stderr_text or logs_result.error or ""
+            lines.extend(
+                [
+                    "",
+                    "<b>Service logs</b>",
+                    f"<pre>{escape_html(log_body)}</pre>",
+                ]
+            )
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=query.from_user.id,
+                command="workspace_verify",
+                args=[step.command for step in steps],
+                success=success,
             )
 
     async def _run_agentic_background_action(
@@ -3571,6 +3773,9 @@ class MessageOrchestrator:
 
         elif action in {"doctor", "review", "setup", "test", "quality"}:
             await self._run_agentic_playbook_action(query, context, action)
+
+        elif action == "verify":
+            await self._run_agentic_verify_action(query, context)
 
         elif action in {"health", "build"}:
             await self._run_agentic_command_action(query, context, action)

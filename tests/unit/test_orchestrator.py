@@ -862,6 +862,10 @@ workspaces:
 
     markup = orchestrator._build_agentic_control_panel_markup(profile)
     labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert "✅ Verify" in labels
+    assert "📟 Service" in labels
+    assert "📜 Logs" in labels
+    assert "🔄 Restart" in labels
     assert "🧩 Services" in labels
 
     query = MagicMock()
@@ -1025,6 +1029,69 @@ workspaces:
     stopped = await operator_runtime.stop_job(job.job_id)
     if stopped.is_active:
         await asyncio.sleep(0.3)
+
+
+async def test_agentic_verify_action_runs_service_and_project_checks(
+    agentic_settings, tmp_dir
+):
+    """Verify action should combine service health with project verification commands."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    commands:
+      test: python3 -c "print('tests passed')"
+      build: python3 -c "print('build passed')"
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: command
+        health: python3 -c "print('service healthy')"
+        logs: python3 -c "print('recent service log')"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    query = MagicMock()
+    query.data = "act:verify"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    status_msg = AsyncMock()
+    status_msg.edit_text = AsyncMock()
+    query.message.reply_text = AsyncMock(return_value=status_msg)
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    result_text = status_msg.edit_text.call_args.args[0]
+    assert "Verification Complete" in result_text
+    assert "ClaudeBot Service health" in result_text
+    assert "service healthy" in result_text
+    assert "tests passed" in result_text
+    assert "build passed" in result_text
 
 
 def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):
