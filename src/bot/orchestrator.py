@@ -933,7 +933,7 @@ class MessageOrchestrator:
         current_dir = context.user_data.get(
             "current_directory", self.settings.approved_directory
         )
-        boundary_root = self._get_boundary_root(context)
+        boundary_root = self._get_boundary_root(context).resolve()
         features = context.bot_data.get("features")
         project_automation = (
             getattr(features, "get_project_automation", lambda: None)()
@@ -942,6 +942,17 @@ class MessageOrchestrator:
         )
         if not project_automation:
             return current_dir, current_dir, boundary_root, None, None
+
+        current_dir = Path(current_dir).resolve()
+        if current_dir == boundary_root:
+            summaries = project_automation.list_workspace_summaries(boundary_root)
+            preferred = next(
+                (summary for summary in summaries if summary.relative_path != "/"),
+                summaries[0] if summaries else None,
+            )
+            if preferred is not None:
+                current_dir = preferred.root_path
+                context.user_data["current_directory"] = current_dir
 
         profile = project_automation.build_profile(current_dir, boundary_root)
         return current_dir, profile.root_path, boundary_root, project_automation, profile
@@ -991,7 +1002,7 @@ class MessageOrchestrator:
     async def _build_agentic_status_text(
         self, context: ContextTypes.DEFAULT_TYPE, user_id: int
     ) -> str:
-        """Build compact agentic status text with workspace metadata."""
+        """Build a short human-readable status summary."""
         current_dir, current_workspace, boundary_root, project_automation, profile = (
             self._get_agentic_workspace_profile(context)
         )
@@ -1006,17 +1017,6 @@ class MessageOrchestrator:
             if existing:
                 session_status = f"можно восстановить {existing.session_id[:8]}..."
 
-        cost_str = ""
-        rate_limiter = context.bot_data.get("rate_limiter")
-        if rate_limiter:
-            try:
-                user_status = rate_limiter.get_user_status(user_id)
-                cost_usage = user_status.get("cost_usage", {})
-                current_cost = cost_usage.get("current", 0.0)
-                cost_str = f"${current_cost:.2f}"
-            except Exception:
-                cost_str = "н/д"
-
         task_parts = []
         active = self._active_tasks.get(user_id)
         if active and not active.task.done():
@@ -1026,38 +1026,30 @@ class MessageOrchestrator:
             if queue_size:
                 task_parts.append(f"в очереди {queue_size}")
 
+        project_label = (
+            profile.display_name
+            if profile and profile.display_name
+            else self._format_agentic_relative_path(current_workspace, boundary_root)
+        )
+        project_path = self._format_agentic_relative_path(current_workspace, boundary_root)
+        verify_steps = self._build_agentic_verify_steps(profile) if profile else []
+        verify_status = "доступна" if verify_steps else "не настроена"
+        primary_service = self._select_agentic_primary_service(profile)
+
         lines = [
             "<b>Статус</b>",
             "",
-            f"📦 Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
-            f"📂 Папка: <code>{escape_html(self._format_agentic_relative_path(current_dir, boundary_root))}</code>",
+            f"📦 Активный проект: <code>{escape_html(project_label)}</code>",
+            f"📂 Путь: <code>{escape_html(project_path)}</code>",
             f"🤖 Сессия: <code>{escape_html(session_status)}</code>",
-            f"🔊 Режим ответа: <code>{escape_html({0: 'коротко', 1: 'нормально', 2: 'подробно'}[self._get_verbose_level(context)])}</code>",
-            f"💰 Стоимость: <code>{escape_html(cost_str or 'н/д')}</code>",
+            f"✅ Полная проверка: <code>{escape_html(verify_status)}</code>",
         ]
+        if primary_service:
+            lines.append(
+                f"🧩 Основной сервис: <code>{escape_html(primary_service.display_name)}</code>"
+            )
         if task_parts:
             lines.append(f"⚙️ Выполнение: <code>{escape_html(' · '.join(task_parts))}</code>")
-        if profile and project_automation:
-            playbooks = ", ".join(
-                playbook.slug for playbook in project_automation.list_playbooks(profile)
-            )
-            lines.append(
-                f"🧭 Сценарии: <code>{escape_html(playbooks or 'нет')}</code>"
-            )
-            operator_commands = ", ".join(
-                key for key, _command in project_automation.list_operator_commands(profile)
-            )
-            if operator_commands:
-                lines.append(
-                    f"🧰 Операции: <code>{escape_html(operator_commands)}</code>"
-                )
-            if profile.services:
-                service_names = ", ".join(
-                    service.display_name for service in profile.services
-                )
-                lines.append(
-                    f"🧩 Сервисы: <code>{escape_html(service_names)}</code>"
-                )
         operator_runtime = self._get_agentic_operator_runtime(context)
         if operator_runtime:
             latest_job = operator_runtime.get_latest_job(current_workspace)
@@ -1065,6 +1057,13 @@ class MessageOrchestrator:
                 lines.append(
                     f"🧵 Задача: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>"
                 )
+        if project_automation and profile and current_workspace != boundary_root:
+            lines.extend(
+                [
+                    "",
+                    "Можешь просто написать задачу обычным текстом. Бот выполнит ее в этом проекте.",
+                ]
+            )
         return "\n".join(lines)
 
     async def _build_agentic_panel_text(
@@ -2281,7 +2280,11 @@ class MessageOrchestrator:
 
         steps = self._build_agentic_verify_steps(profile)
         if not steps:
-            await query.answer("Для этого проекта шаги проверки не найдены.", show_alert=True)
+            project_name = profile.display_name if profile else "этого проекта"
+            await query.answer(
+                f"Для {project_name} полная проверка пока не настроена.",
+                show_alert=True,
+            )
             return
 
         status_msg = await query.message.reply_text(

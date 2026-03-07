@@ -293,6 +293,55 @@ async def test_agentic_status_compact(agentic_settings, deps):
     assert call_args.kwargs["reply_markup"] is not None
 
 
+async def test_agentic_status_auto_selects_preferred_workspace(agentic_settings, tmp_dir):
+    """Status should auto-select the preferred workspace when user is still at root."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    priority: 100
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: systemd
+        unit: claude-bot.service
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {"current_directory": tmp_dir}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "claude_integration": None,
+        "rate_limiter": None,
+    }
+
+    await orchestrator.agentic_status(update, context)
+
+    text = update.message.reply_text.call_args.args[0]
+    assert "Активный проект: <code>ClaudeBot</code>" in text
+    assert "Полная проверка: <code>доступна</code>" in text
+    assert context.user_data["current_directory"] == workspace_root.resolve()
+
+
 async def test_agentic_text_calls_claude(agentic_settings, deps):
     """Agentic text handler calls Claude and pins the reply keyboard when needed."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
