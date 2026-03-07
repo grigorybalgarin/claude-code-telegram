@@ -42,6 +42,7 @@ from .agentic.context import (
     VerifyStep,
 )
 from .agentic.shell_executor import ShellExecutor
+from .agentic.service_controller import ServiceController
 from .agentic.verify_pipeline import VerifyPipeline
 from .features.change_guard import ChangeGuardReport
 from ..utils.redaction import redact_sensitive_text
@@ -165,6 +166,7 @@ class MessageOrchestrator:
         self.deps = deps
         self.shell = ShellExecutor()
         self.verify = VerifyPipeline(self.shell)
+        self.services = ServiceController(self.shell)
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -1368,22 +1370,6 @@ class MessageOrchestrator:
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
-    @staticmethod
-    def _format_agentic_service_action_label(service: Any, action_key: str) -> str:
-        """Build a compact button label for a managed service action."""
-        short = service.display_name.strip() or service.key
-        if len(short) > 12:
-            short = short.split()[0]
-        labels = {
-            "status": f"📟 {short}",
-            "health": f"🩺 {short}",
-            "logs": f"📜 {short}",
-            "restart": f"🔄 {short}",
-            "start": f"▶️ {short}",
-            "stop": f"🛑 {short}",
-        }
-        return labels.get(action_key, f"{short} {action_key}")
-
     async def _build_agentic_services_text(
         self,
         context: ContextTypes.DEFAULT_TYPE,
@@ -1426,7 +1412,7 @@ class MessageOrchestrator:
                 if service.command_for(action_key):
                     inspect_row.append(
                         InlineKeyboardButton(
-                            self._format_agentic_service_action_label(
+                            self.services.format_action_label(
                                 service, action_key
                             ),
                             callback_data=f"act:svc:{service.key}:{action_key}",
@@ -1436,7 +1422,7 @@ class MessageOrchestrator:
                 if service.command_for(action_key):
                     lifecycle_row.append(
                         InlineKeyboardButton(
-                            self._format_agentic_service_action_label(
+                            self.services.format_action_label(
                                 service, action_key
                             ),
                             callback_data=f"act:svc:{service.key}:{action_key}",
@@ -1503,10 +1489,10 @@ class MessageOrchestrator:
         else:
             lines.extend(["", "Для этого проекта управляемые сервисы не настроены."])
 
-        running_units_result = await self._list_agentic_running_systemd_units(
+        running_units_result = await self.services.list_running_units(
             current_workspace
         )
-        running_units = self._parse_agentic_systemd_units(running_units_result)
+        running_units = self.services.parse_systemd_units(running_units_result)
         lines.extend(["", "<b>Системные сервисы сервера</b>"])
         if running_units:
             for unit in running_units:
@@ -1520,10 +1506,10 @@ class MessageOrchestrator:
             if summary and summary not in {"нет вывода", label}:
                 lines.append(f"<code>{escape_html(summary)}</code>")
 
-        failed_units_result = await self._list_agentic_failed_systemd_units(
+        failed_units_result = await self.services.list_failed_units(
             current_workspace
         )
-        failed_units = self._parse_agentic_systemd_units(failed_units_result, limit=6)
+        failed_units = self.services.parse_systemd_units(failed_units_result, limit=6)
         if failed_units:
             lines.extend(["", "<b>Сервисы с ошибками</b>"])
             for unit in failed_units:
@@ -1541,16 +1527,6 @@ class MessageOrchestrator:
             ],
         ]
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
-
-    @staticmethod
-    def _resolve_agentic_service(profile: Any, service_key: str) -> Optional[Any]:
-        """Resolve a managed service from the current project profile."""
-        if not profile:
-            return None
-        for service in getattr(profile, "services", ()):
-            if service.key == service_key:
-                return service
-        return None
 
     async def _build_agentic_workspace_catalog(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -1827,93 +1803,6 @@ class MessageOrchestrator:
                     workspace_changed=current_workspace != profile.root_path,
                 )
 
-    async def _run_agentic_service_follow_up_checks(
-        self,
-        service: Any,
-        workspace_root: Path,
-        action_key: str,
-    ) -> tuple[List[tuple[str, _ShellActionResult]], Optional[_ShellActionResult], bool]:
-        """Run post-action checks for managed service lifecycle operations."""
-        checks: List[tuple[str, _ShellActionResult]] = []
-        logs_result: Optional[_ShellActionResult] = None
-        all_required_checks_passed = True
-
-        if action_key in {"start", "restart"}:
-            await asyncio.sleep(2.0)
-            for label, command in (
-                ("status", service.command_for("status")),
-                ("health", service.command_for("health")),
-            ):
-                if not command:
-                    continue
-                result = await self.shell.execute(
-                    workspace_root,
-                    command,
-                    timeout_seconds=45,
-                )
-                checks.append((label, result))
-                if not result.success:
-                    all_required_checks_passed = False
-            if not all_required_checks_passed and service.command_for("logs"):
-                logs_result = await self.shell.execute(
-                    workspace_root,
-                    service.command_for("logs"),
-                    timeout_seconds=30,
-                )
-        elif action_key == "stop" and service.command_for("status"):
-            await asyncio.sleep(1.0)
-            status_result = await self.shell.execute(
-                workspace_root,
-                service.command_for("status"),
-                timeout_seconds=30,
-            )
-            checks.append(("status", status_result))
-
-        return checks, logs_result, all_required_checks_passed
-
-    async def _list_agentic_running_systemd_units(
-        self, workspace_root: Path
-    ) -> _ShellActionResult:
-        """Return the currently running systemd services."""
-        return await self.shell.execute(
-            workspace_root=workspace_root,
-            command=(
-                "systemctl list-units --type=service --state=running "
-                "--no-pager --plain --no-legend"
-            ),
-            timeout_seconds=30,
-        )
-
-    async def _list_agentic_failed_systemd_units(
-        self, workspace_root: Path
-    ) -> _ShellActionResult:
-        """Return currently failed systemd services."""
-        return await self.shell.execute(
-            workspace_root=workspace_root,
-            command=(
-                "systemctl list-units --type=service --state=failed "
-                "--no-pager --plain --no-legend"
-            ),
-            timeout_seconds=30,
-        )
-
-    @staticmethod
-    def _parse_agentic_systemd_units(result: _ShellActionResult, limit: int = 12) -> List[str]:
-        """Extract systemd unit names from list-units output."""
-        if not result.success or not result.stdout_text:
-            return []
-        units: List[str] = []
-        for line in result.stdout_text.splitlines():
-            compact = line.strip()
-            if not compact:
-                continue
-            unit = compact.split()[0]
-            if unit.endswith(".service"):
-                units.append(unit)
-            if len(units) >= limit:
-                break
-        return units
-
     async def _run_agentic_shell_action(
         self,
         query: Any,
@@ -2007,7 +1896,7 @@ class MessageOrchestrator:
         _current_dir, _current_workspace, boundary_root, _project_automation, profile = (
             self._get_agentic_workspace_profile(context)
         )
-        service = self._resolve_agentic_service(profile, service_key)
+        service = self.services.resolve_service(profile, service_key)
         if not profile or not service:
             await query.answer("Сервис не настроен для этого проекта.", show_alert=True)
             return
@@ -2044,11 +1933,12 @@ class MessageOrchestrator:
                 f"Действие: <code>{escape_html(action_key)}</code>",
                 parse_mode="HTML",
             )
-            checks, logs_result, checks_ok = await self._run_agentic_service_follow_up_checks(
+            follow_up = await self.services.run_follow_up_checks(
                 service=service,
                 workspace_root=profile.root_path,
                 action_key=action_key,
             )
+            checks, logs_result, checks_ok = follow_up.checks, follow_up.logs_result, follow_up.all_passed
         elif not main_result.success and action_key in {"start", "restart"} and service.command_for("logs"):
             logs_result = await self.shell.execute(
                 profile.root_path,

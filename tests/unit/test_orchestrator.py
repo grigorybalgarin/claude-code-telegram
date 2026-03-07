@@ -1209,7 +1209,7 @@ workspaces:
         "audit_logger": None,
     }
 
-    orchestrator._list_agentic_running_systemd_units = AsyncMock(
+    orchestrator.services.list_running_units = AsyncMock(
         return_value=SimpleNamespace(
             success=True,
             stdout_text=(
@@ -1221,7 +1221,7 @@ workspaces:
             error=None,
         )
     )
-    orchestrator._list_agentic_failed_systemd_units = AsyncMock(
+    orchestrator.services.list_failed_units = AsyncMock(
         return_value=SimpleNamespace(
             success=True,
             stdout_text="",
