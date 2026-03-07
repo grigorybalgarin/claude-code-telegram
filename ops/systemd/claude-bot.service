@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=claude-bot
 Group=claude-bot
-SupplementaryGroups=staff dialout
+SupplementaryGroups=staff dialout systemd-journal
 WorkingDirectory=/srv/claude-bot/app
 Environment=HOME=/home/claude-bot
 Environment=PATH=/srv/claude-bot/app/.venv/bin:/usr/local/bin:/usr/bin:/bin

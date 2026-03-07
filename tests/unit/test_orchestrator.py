@@ -829,6 +829,77 @@ workspaces:
         await asyncio.sleep(0.3)
 
 
+async def test_agentic_services_view_and_service_action(agentic_settings, tmp_dir):
+    """Managed services should appear in the panel and execute deterministic actions."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: command
+        status: python3 -c "print('service ok')"
+        logs: python3 -c "print('log line')"
+        restart: python3 -c "print('restarted')"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    profile = manager.build_profile(workspace_root, tmp_dir)
+
+    markup = orchestrator._build_agentic_control_panel_markup(profile)
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert "🧩 Services" in labels
+
+    query = MagicMock()
+    query.data = "act:services"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    query.message.reply_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    services_text = query.edit_message_text.call_args.args[0]
+    assert "Managed Services" in services_text
+    assert "ClaudeBot Service" in services_text
+
+    status_msg = AsyncMock()
+    status_msg.edit_text = AsyncMock()
+    query.data = "act:svc:app:status"
+    query.message.reply_text = AsyncMock(return_value=status_msg)
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    query.message.reply_text.assert_awaited_once()
+    result_text = status_msg.edit_text.call_args.args[0]
+    assert "ClaudeBot Service: status" in result_text
+    assert "service ok" in result_text
+
+
 def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):
     """Compact job status should include health verification state when available."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)

@@ -922,6 +922,10 @@ class MessageOrchestrator:
                 )
             if operator_row:
                 rows.append(operator_row[:3])
+            if profile.services:
+                rows.append(
+                    [InlineKeyboardButton("🧩 Services", callback_data="act:services")]
+                )
             background_row = []
             if "start" in profile.commands:
                 background_row.append(
@@ -1012,6 +1016,13 @@ class MessageOrchestrator:
                 lines.append(
                     f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
                 )
+            if profile.services:
+                service_names = ", ".join(
+                    service.display_name for service in profile.services
+                )
+                lines.append(
+                    f"🧩 Services: <code>{escape_html(service_names)}</code>"
+                )
         operator_runtime = self._get_agentic_operator_runtime(context)
         if operator_runtime:
             latest_job = operator_runtime.get_latest_job(current_workspace)
@@ -1067,6 +1078,13 @@ class MessageOrchestrator:
             if operator_commands:
                 lines.append(
                     f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
+                )
+            if profile.services:
+                service_names = ", ".join(
+                    service.display_name for service in profile.services
+                )
+                lines.append(
+                    f"🧩 Services: <code>{escape_html(service_names)}</code>"
                 )
             if profile.operator_notes:
                 note_preview = profile.operator_notes[:160]
@@ -1288,6 +1306,103 @@ class MessageOrchestrator:
             ]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+    @staticmethod
+    def _format_agentic_service_action_label(service: Any, action_key: str) -> str:
+        """Build a compact button label for a managed service action."""
+        short = service.display_name.strip() or service.key
+        if len(short) > 12:
+            short = short.split()[0]
+        labels = {
+            "status": f"📟 {short}",
+            "health": f"🩺 {short}",
+            "logs": f"📜 {short}",
+            "restart": f"🔄 {short}",
+            "start": f"▶️ {short}",
+            "stop": f"🛑 {short}",
+        }
+        return labels.get(action_key, f"{short} {action_key}")
+
+    async def _build_agentic_services_text(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        header: Optional[str] = None,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        """Render managed service definitions for the current workspace."""
+        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        if not profile or not profile.services:
+            return (
+                "Managed services are not configured for this workspace.",
+                self._build_agentic_control_panel_markup(profile),
+            )
+
+        lines = [
+            "<b>Managed Services</b>",
+            "",
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+        ]
+        if header:
+            lines.extend(["", header])
+
+        for service in profile.services:
+            actions = ", ".join(service.available_actions) or "none"
+            lines.extend(
+                [
+                    "",
+                    f"• <b>{escape_html(service.display_name)}</b> · <code>{escape_html(service.service_type)}</code>",
+                    f"  actions: <code>{escape_html(actions)}</code>",
+                ]
+            )
+
+        keyboard_rows: List[list] = []
+        for service in profile.services:
+            inspect_row = []
+            lifecycle_row = []
+            for action_key in ("status", "health", "logs"):
+                if service.command_for(action_key):
+                    inspect_row.append(
+                        InlineKeyboardButton(
+                            self._format_agentic_service_action_label(
+                                service, action_key
+                            ),
+                            callback_data=f"act:svc:{service.key}:{action_key}",
+                        )
+                    )
+            for action_key in ("restart", "start", "stop"):
+                if service.command_for(action_key):
+                    lifecycle_row.append(
+                        InlineKeyboardButton(
+                            self._format_agentic_service_action_label(
+                                service, action_key
+                            ),
+                            callback_data=f"act:svc:{service.key}:{action_key}",
+                        )
+                    )
+            if inspect_row:
+                keyboard_rows.append(inspect_row[:3])
+            if lifecycle_row:
+                keyboard_rows.append(lifecycle_row[:3])
+
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton("🎛️ Panel", callback_data="act:panel"),
+                InlineKeyboardButton("📂 Status", callback_data="act:status"),
+                InlineKeyboardButton("📁 Projects", callback_data="act:projects"),
+            ]
+        )
+        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+    @staticmethod
+    def _resolve_agentic_service(profile: Any, service_key: str) -> Optional[Any]:
+        """Resolve a managed service from the current project profile."""
+        if not profile:
+            return None
+        for service in getattr(profile, "services", ()):
+            if service.key == service_key:
+                return service
+        return None
 
     async def _build_agentic_workspace_catalog(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -1564,6 +1679,90 @@ class MessageOrchestrator:
             return normalized
         return normalized[-limit:]
 
+    async def _run_agentic_shell_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        workspace_root: Path,
+        boundary_root: Path,
+        title: str,
+        command: str,
+        audit_command: str,
+        timeout_seconds: int = 120,
+    ) -> None:
+        """Run a deterministic shell action and report the result in Telegram."""
+        user_id = query.from_user.id
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Command</b>\n\n"
+            f"Action: <code>{escape_html(title)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
+            f"Command: <code>{escape_html(command)}</code>",
+            parse_mode="HTML",
+        )
+
+        success = False
+        timed_out = False
+        stdout_text = ""
+        stderr_text = ""
+        returncode = -1
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "/bin/sh",
+                "-lc",
+                command,
+                cwd=workspace_root,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                stdout, stderr = await process.communicate()
+            returncode = process.returncode if process.returncode is not None else -1
+            stdout_text = self._tail_command_output(
+                _redact_secrets(stdout.decode("utf-8", errors="replace"))
+            )
+            stderr_text = self._tail_command_output(
+                _redact_secrets(stderr.decode("utf-8", errors="replace"))
+            )
+            success = not timed_out and returncode == 0
+
+            lines = [
+                f"✅ <b>{escape_html(title)}</b>" if success else f"❌ <b>{escape_html(title)}</b>",
+                "",
+                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
+                f"Command: <code>{escape_html(command)}</code>",
+                f"Exit code: <code>{returncode}</code>",
+            ]
+            if timed_out:
+                lines.append(f"Timed out after <code>{timeout_seconds}s</code>.")
+            if stdout_text:
+                lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(stdout_text)}</pre>"])
+            if stderr_text:
+                lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(stderr_text)}</pre>"])
+            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await status_msg.edit_text(
+                "❌ <b>Command Failed</b>\n\n"
+                f"Action: <code>{escape_html(title)}</code>\n"
+                f"Error: <code>{escape_html(str(e))}</code>",
+                parse_mode="HTML",
+            )
+        finally:
+            audit_logger = context.bot_data.get("audit_logger")
+            if audit_logger:
+                await audit_logger.log_command(
+                    user_id=user_id,
+                    command=audit_command,
+                    args=[command, str(workspace_root)],
+                    success=success,
+                )
+
     async def _run_agentic_command_action(
         self,
         query: Any,
@@ -1588,74 +1787,47 @@ class MessageOrchestrator:
             "health": "Health Check",
             "build": "Build",
         }.get(command_key, command_key.title())
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Running Command</b>\n\n"
-            f"Action: <code>{escape_html(title)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Command: <code>{escape_html(command)}</code>",
-            parse_mode="HTML",
+        await self._run_agentic_shell_action(
+            query=query,
+            context=context,
+            workspace_root=profile.root_path,
+            boundary_root=boundary_root,
+            title=title,
+            command=command,
+            audit_command=f"workspace_{command_key}",
         )
 
-        success = False
-        timed_out = False
-        stdout_text = ""
-        stderr_text = ""
-        returncode = -1
+    async def _run_agentic_service_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        service_key: str,
+        action_key: str,
+    ) -> None:
+        """Run a managed service action from the explicit service catalog."""
+        _current_dir, _current_workspace, boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        service = self._resolve_agentic_service(profile, service_key)
+        if not profile or not service:
+            await query.answer("Service is not configured for this workspace.", show_alert=True)
+            return
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-lc",
-                command,
-                cwd=profile.root_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-            except asyncio.TimeoutError:
-                timed_out = True
-                process.kill()
-                stdout, stderr = await process.communicate()
-            returncode = process.returncode if process.returncode is not None else -1
-            stdout_text = self._tail_command_output(
-                _redact_secrets(stdout.decode("utf-8", errors="replace"))
-            )
-            stderr_text = self._tail_command_output(
-                _redact_secrets(stderr.decode("utf-8", errors="replace"))
-            )
-            success = not timed_out and returncode == 0
+        command = service.command_for(action_key)
+        if not command:
+            await query.answer("Action is not available for this service.", show_alert=True)
+            return
 
-            lines = [
-                f"✅ <b>{escape_html(title)}</b>" if success else f"❌ <b>{escape_html(title)}</b>",
-                "",
-                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
-                f"Command: <code>{escape_html(command)}</code>",
-                f"Exit code: <code>{returncode}</code>",
-            ]
-            if timed_out:
-                lines.append("Timed out after <code>120s</code>.")
-            if stdout_text:
-                lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(stdout_text)}</pre>"])
-            if stderr_text:
-                lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(stderr_text)}</pre>"])
-            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
-        except Exception as e:
-            await status_msg.edit_text(
-                "❌ <b>Command Failed</b>\n\n"
-                f"Action: <code>{escape_html(title)}</code>\n"
-                f"Error: <code>{escape_html(str(e))}</code>",
-                parse_mode="HTML",
-            )
-        finally:
-            audit_logger = context.bot_data.get("audit_logger")
-            if audit_logger:
-                await audit_logger.log_command(
-                    user_id=user_id,
-                    command=f"workspace_{command_key}",
-                    args=[command],
-                    success=success,
-                )
+        title = f"{service.display_name}: {action_key}"
+        await self._run_agentic_shell_action(
+            query=query,
+            context=context,
+            workspace_root=profile.root_path,
+            boundary_root=boundary_root,
+            title=title,
+            command=command,
+            audit_command=f"service_{service.key}_{action_key}",
+        )
 
     async def _run_agentic_background_action(
         self,
@@ -3129,6 +3301,14 @@ class MessageOrchestrator:
                 reply_markup=reply_markup,
             )
 
+        elif action == "services":
+            text, reply_markup = await self._build_agentic_services_text(context)
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+
         elif action == "recent":
             text = await self._build_agentic_recent_text(context, query.from_user.id)
             await query.edit_message_text(
@@ -3176,6 +3356,12 @@ class MessageOrchestrator:
 
         elif action in {"start", "dev", "deploy"}:
             await self._run_agentic_background_action(query, context, action)
+
+        elif action.startswith("svc:"):
+            _svc, service_key, service_action = action.split(":", 2)
+            await self._run_agentic_service_action(
+                query, context, service_key, service_action
+            )
 
         elif action.startswith("stop:"):
             await self._stop_agentic_background_action(

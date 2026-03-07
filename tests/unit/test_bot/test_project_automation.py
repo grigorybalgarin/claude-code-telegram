@@ -354,6 +354,55 @@ workspaces:
     ]
 
 
+def test_workspace_profile_parses_managed_systemd_service(tmp_path):
+    """Workspace profiles should parse deterministic managed services."""
+    workspace_root = tmp_path / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_path / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: systemd
+        unit: claude-bot.service
+        logs_tail: 50
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    profile = manager.build_profile(workspace_root, tmp_path)
+    summaries = manager.list_workspace_summaries(tmp_path)
+
+    assert len(profile.services) == 1
+    service = profile.services[0]
+    assert service.key == "app"
+    assert service.display_name == "ClaudeBot Service"
+    assert service.status_command == "systemctl status claude-bot.service --no-pager"
+    assert service.health_command == "systemctl is-active claude-bot.service"
+    assert service.restart_command == "systemctl restart claude-bot.service"
+    assert service.logs_command == "journalctl -u claude-bot.service -n 50 --no-pager"
+    assert service.available_actions == (
+        "status",
+        "health",
+        "logs",
+        "restart",
+        "start",
+        "stop",
+    )
+    assert summaries[0].services_count == 1
+
+
 def test_build_automation_plan_routes_to_workspace_alias(tmp_path):
     """Workspace aliases from the profile config should influence routing."""
     current_root = tmp_path / "ClaudeBot"

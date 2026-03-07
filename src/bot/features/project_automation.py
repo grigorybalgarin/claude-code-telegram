@@ -39,6 +39,7 @@ class ProjectProfile:
     commands: Dict[str, str]
     has_git_repo: bool
     has_docker_compose: bool
+    services: tuple["ManagedService", ...] = ()
     operator_notes: str = ""
     sort_priority: int = 0
 
@@ -77,6 +78,7 @@ class WorkspaceSummary:
     playbooks: tuple[str, ...]
     has_git_repo: bool
     has_docker_compose: bool
+    services_count: int
     operator_notes: str
     sort_priority: int
 
@@ -84,6 +86,41 @@ class WorkspaceSummary:
     def button_label(self) -> str:
         """Return a compact label suitable for inline buttons."""
         return self.relative_path
+
+
+@dataclass(frozen=True)
+class ManagedService:
+    """Explicit service definition for deterministic operator actions."""
+
+    key: str
+    display_name: str
+    service_type: str
+    status_command: Optional[str] = None
+    health_command: Optional[str] = None
+    start_command: Optional[str] = None
+    stop_command: Optional[str] = None
+    restart_command: Optional[str] = None
+    logs_command: Optional[str] = None
+
+    def command_for(self, action_key: str) -> Optional[str]:
+        """Return the shell command for a supported service action."""
+        return {
+            "status": self.status_command,
+            "health": self.health_command,
+            "start": self.start_command,
+            "stop": self.stop_command,
+            "restart": self.restart_command,
+            "logs": self.logs_command,
+        }.get(action_key)
+
+    @property
+    def available_actions(self) -> tuple[str, ...]:
+        """Return service actions that are explicitly configured."""
+        actions = []
+        for action_key in ("status", "health", "logs", "restart", "start", "stop"):
+            if self.command_for(action_key):
+                actions.append(action_key)
+        return tuple(actions)
 
 
 class ProjectAutomationManager:
@@ -356,6 +393,7 @@ class ProjectAutomationManager:
             commands=commands,
             has_git_repo=has_git_repo,
             has_docker_compose=compose_file is not None,
+            services=tuple(),
         )
         return self._apply_workspace_override(profile, boundary)
 
@@ -383,6 +421,10 @@ class ProjectAutomationManager:
                 commands.append((key, command))
         return commands
 
+    def list_managed_services(self, profile: ProjectProfile) -> List[ManagedService]:
+        """Return explicitly configured managed services for the workspace."""
+        return list(profile.services)
+
     def list_workspace_summaries(self, boundary_root: Path) -> List[WorkspaceSummary]:
         """Return discovered workspaces with compact profile metadata."""
         boundary = boundary_root.resolve()
@@ -409,6 +451,7 @@ class ProjectAutomationManager:
                 ),
                 has_git_repo=profile.has_git_repo,
                 has_docker_compose=profile.has_docker_compose,
+                services_count=len(profile.services),
                 operator_notes=profile.operator_notes,
                 sort_priority=profile.sort_priority,
             )
@@ -483,6 +526,8 @@ class ProjectAutomationManager:
             badges.append("git")
         if summary.has_docker_compose:
             badges.append("compose")
+        if summary.services_count:
+            badges.append(f"svc:{summary.services_count}")
         badges_text = f" · {' · '.join(badges)}" if badges else ""
         playbooks_text = ", ".join(summary.playbooks)
         lines = [
@@ -740,6 +785,7 @@ class ProjectAutomationManager:
             f"🛠️ Package managers: <code>{escape_html(', '.join(profile.package_managers) or 'none')}</code>",
             f"🔗 Git: {'yes' if profile.has_git_repo else 'no'}",
             f"🐳 Compose: {'yes' if profile.has_docker_compose else 'no'}",
+            f"🧩 Services: <code>{escape_html(', '.join(service.display_name for service in profile.services) or 'none')}</code>",
             "⚙️ Detected commands:" if command_lines else "⚙️ Detected commands: none",
             *command_lines,
         ]
@@ -1001,6 +1047,19 @@ class ProjectAutomationManager:
             aliases = entry.get("aliases") or []
             if not isinstance(aliases, list):
                 aliases = []
+            raw_services = entry.get("services")
+            services = None
+            if isinstance(raw_services, list):
+                parsed_services = [
+                    service
+                    for service in (
+                        self._parse_service_override(item)
+                        for item in raw_services
+                        if isinstance(item, dict)
+                    )
+                    if service is not None
+                ]
+                services = tuple(parsed_services)
             overrides[raw_path] = {
                 "display_name": str(entry.get("name", "")).strip() or None,
                 "aliases": tuple(
@@ -1016,6 +1075,7 @@ class ProjectAutomationManager:
                     for key, value in commands.items()
                     if str(key).strip()
                 },
+                "services": services,
                 "sort_priority": int(entry.get("priority", 0) or 0),
             }
 
@@ -1041,6 +1101,9 @@ class ProjectAutomationManager:
                 [*profile.aliases, *(override.get("aliases") or ())]
             )
         )
+        services = profile.services
+        if override.get("services") is not None:
+            services = tuple(override.get("services") or ())
         return ProjectProfile(
             root_path=profile.root_path,
             display_name=display_name,
@@ -1050,9 +1113,76 @@ class ProjectAutomationManager:
             commands=commands,
             has_git_repo=profile.has_git_repo,
             has_docker_compose=profile.has_docker_compose,
+            services=services,
             operator_notes=str(override.get("operator_notes") or ""),
             sort_priority=int(override.get("sort_priority") or 0),
         )
+
+    def _parse_service_override(
+        self, payload: dict[str, object]
+    ) -> Optional[ManagedService]:
+        """Parse one explicit managed service definition from YAML."""
+        service_type = str(payload.get("type", "command")).strip().lower() or "command"
+        raw_name = str(payload.get("name", "")).strip()
+        raw_key = str(payload.get("key", "")).strip()
+
+        if service_type == "systemd":
+            unit = str(payload.get("unit", "")).strip()
+            if not unit:
+                return None
+            key = raw_key or self._normalize_match_text(unit) or "systemd"
+            display_name = raw_name or unit
+            logs_tail = max(1, int(payload.get("logs_tail", 80) or 80))
+            return ManagedService(
+                key=key,
+                display_name=display_name,
+                service_type="systemd",
+                status_command=f"systemctl status {unit} --no-pager",
+                health_command=f"systemctl is-active {unit}",
+                start_command=f"systemctl start {unit}",
+                stop_command=f"systemctl stop {unit}",
+                restart_command=f"systemctl restart {unit}",
+                logs_command=f"journalctl -u {unit} -n {logs_tail} --no-pager",
+            )
+
+        if service_type == "compose":
+            service_name = str(payload.get("service", "")).strip()
+            selector = f" {service_name}" if service_name else ""
+            key = raw_key or self._normalize_match_text(service_name or raw_name) or "compose"
+            display_name = raw_name or service_name or "compose"
+            logs_tail = max(1, int(payload.get("logs_tail", 80) or 80))
+            return ManagedService(
+                key=key,
+                display_name=display_name,
+                service_type="compose",
+                status_command=f"docker compose ps{selector}",
+                start_command=f"docker compose up -d{selector}",
+                stop_command=f"docker compose stop{selector}",
+                restart_command=f"docker compose restart{selector}",
+                logs_command=f"docker compose logs --tail {logs_tail}{selector}",
+            )
+
+        key = raw_key or self._normalize_match_text(raw_name) or "service"
+        display_name = raw_name or key
+        service = ManagedService(
+            key=key,
+            display_name=display_name,
+            service_type="command",
+            status_command=self._normalize_optional_command(payload.get("status")),
+            health_command=self._normalize_optional_command(payload.get("health")),
+            start_command=self._normalize_optional_command(payload.get("start")),
+            stop_command=self._normalize_optional_command(payload.get("stop")),
+            restart_command=self._normalize_optional_command(payload.get("restart")),
+            logs_command=self._normalize_optional_command(payload.get("logs")),
+        )
+        return service if service.available_actions else None
+
+    def _normalize_optional_command(self, value: object) -> Optional[str]:
+        """Normalize an optional command from YAML."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     def _is_container_workspace(
         self, summary: WorkspaceSummary, summaries: List[WorkspaceSummary]

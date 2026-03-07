@@ -17,6 +17,12 @@ workspaces:
       test: make test
       lint: make lint
       format: make format
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: systemd
+        unit: claude-bot.service
+        logs_tail: 80
 
   - path: FreelanceAggregator
     name: FreelanceAggregator

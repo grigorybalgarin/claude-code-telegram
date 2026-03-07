@@ -39,6 +39,7 @@ run_as_app git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
 
 install -D -m 755 "$APP_DIR/ops/server/setup-workspace.sh" /usr/local/lib/claude-bot/setup-workspace.sh
 install -D -m 644 "$APP_DIR/ops/systemd/claude-bot.service" /etc/systemd/system/claude-bot.service
+install -D -m 644 "$APP_DIR/ops/server/50-claude-bot-systemd.rules" /etc/polkit-1/rules.d/50-claude-bot-systemd.rules
 
 run_as_app "$APP_DIR/.venv/bin/python" -m compileall -q "$APP_DIR/src"
 
