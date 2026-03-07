@@ -963,3 +963,59 @@ class OperationsRepository:
             )
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+    async def get_all_recent(self, limit: int = 50) -> List[Dict]:
+        """Get recent operations across all workspaces (for self-review)."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, workspace_path, operation_type, success,
+                       correlation_id, details, created_at
+                FROM workspace_operations
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                r = dict(row)
+                if r.get("details"):
+                    try:
+                        r["details"] = json.loads(r["details"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(r)
+            return results
+
+    async def get_incident_summary(
+        self, workspace_path: Optional[str] = None, days: int = 7
+    ) -> Dict[str, int]:
+        """Get incident counts by type for digest generation."""
+        async with self.db.get_connection() as conn:
+            if workspace_path:
+                cursor = await conn.execute(
+                    """
+                    SELECT operation_type, COUNT(*) as cnt
+                    FROM workspace_operations
+                    WHERE workspace_path = ?
+                      AND created_at > datetime('now', ?)
+                      AND operation_type LIKE 'incident_%'
+                    GROUP BY operation_type
+                    """,
+                    (workspace_path, f"-{days} days"),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT operation_type, COUNT(*) as cnt
+                    FROM workspace_operations
+                    WHERE created_at > datetime('now', ?)
+                      AND operation_type LIKE 'incident_%'
+                    GROUP BY operation_type
+                    """,
+                    (f"-{days} days",),
+                )
+            rows = await cursor.fetchall()
+            return {row["operation_type"]: row["cnt"] for row in rows}

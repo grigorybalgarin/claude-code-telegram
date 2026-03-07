@@ -1035,6 +1035,19 @@ class ActionRunner:
             return
 
         rel_path = self.panel.format_relative_path(profile.root_path, boundary_root)
+
+        # Pre-deploy safety gates
+        gate_report = await self.deploy.check_safety_gates(deploy_profile)
+        if not gate_report.can_proceed:
+            lines = ["⛔ <b>Deploy заблокирован</b>\n"]
+            for gr in gate_report.results:
+                icon = "✅" if gr.passed else ("⛔" if gr.gate.hard else "⚠️")
+                lines.append(f"  {icon} {gr.gate.description}")
+                if gr.message:
+                    lines.append(f"      {gr.message}")
+            await query.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
         status_msg = await query.message.reply_text(
             "🚀 <b>Запуск deploy</b>\n\n"
             f"Проект: <code>{escape_html(rel_path)}</code>",

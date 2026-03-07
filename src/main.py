@@ -363,6 +363,60 @@ def _start_workspace_monitor(
     return monitor
 
 
+def _start_maintenance_loop(
+    storage: "Storage",
+    notification_service: Optional[NotificationService],
+) -> Optional[Any]:
+    """Create the autonomous maintenance loop for self-review."""
+    from src.bot.agentic.autonomy import (
+        AutonomyTracker,
+        ImprovementBacklog,
+        MaintenanceLoop,
+        SelfReviewEngine,
+    )
+    from src.bot.agentic.ops_model import AutonomyGuardrails
+
+    guardrails = AutonomyGuardrails()
+    review = SelfReviewEngine(guardrails)
+    backlog = ImprovementBacklog()
+    tracker = AutonomyTracker(guardrails)
+
+    loop = MaintenanceLoop(
+        guardrails=guardrails,
+        review_engine=review,
+        backlog=backlog,
+        tracker=tracker,
+        review_interval_seconds=3600.0,  # 1 hour
+    )
+
+    # Wire ops fetch callback
+    if storage and hasattr(storage, "operations"):
+        async def _get_ops() -> list:
+            return await storage.operations.get_all_recent(limit=100)
+
+        loop.set_ops_callback(_get_ops)
+
+    # Wire save callback
+    if storage and hasattr(storage, "operations"):
+        async def _save(**kwargs: Any) -> None:
+            await storage.operations.save(**kwargs)
+
+        loop.set_save_callback(_save)
+
+    # Wire notification
+    if notification_service:
+        async def _notify(text: str) -> None:
+            from src.events.types import AgentResponseEvent
+
+            await notification_service.handle_response(
+                AgentResponseEvent(chat_id=0, text=text)
+            )
+
+        loop.set_notify_callback(_notify)
+
+    return loop
+
+
 async def run_application(app: Dict[str, Any]) -> None:
     """Run the application with graceful shutdown handling."""
     logger = structlog.get_logger()
@@ -379,6 +433,7 @@ async def run_application(app: Dict[str, Any]) -> None:
     scheduler: Optional[JobScheduler] = None
     project_threads_manager: Optional[ProjectThreadManager] = None
     workspace_monitor: Optional[Any] = None
+    maintenance_loop: Optional[Any] = None
 
     # Set up signal handlers for graceful shutdown
     shutdown_event = asyncio.Event()
@@ -490,6 +545,11 @@ async def run_application(app: Dict[str, Any]) -> None:
         if workspace_monitor:
             await workspace_monitor.start()
 
+        # Autonomous maintenance loop (self-review, improvement backlog)
+        maintenance_loop = _start_maintenance_loop(storage, notification_service)
+        if maintenance_loop:
+            await maintenance_loop.start()
+
         # Shutdown task
         shutdown_task = asyncio.create_task(shutdown_event.wait())
         tasks.append(shutdown_task)
@@ -526,6 +586,8 @@ async def run_application(app: Dict[str, Any]) -> None:
         logger.info("Shutting down application")
 
         try:
+            if maintenance_loop:
+                await maintenance_loop.stop()
             if workspace_monitor:
                 await workspace_monitor.stop()
             if scheduler:

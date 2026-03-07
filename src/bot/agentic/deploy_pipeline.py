@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
+from .ops_model import DeployGateReport, DeploySafetyGate, GateResult
 from .shell_executor import ShellExecutor
 
 logger = structlog.get_logger()
@@ -198,10 +199,83 @@ class DeployProfile:
 
 
 class DeployPipeline:
-    """Execute staged deploy with structured results."""
+    """Execute staged deploy with structured results and safety gates."""
 
     def __init__(self, shell: ShellExecutor):
         self.shell = shell
+
+    async def check_safety_gates(
+        self,
+        deploy_profile: DeployProfile,
+    ) -> DeployGateReport:
+        """Run pre-deploy safety checks. Call before execute()."""
+        report = DeployGateReport()
+        root = deploy_profile.workspace_root
+
+        # Gate 1: Clean worktree (hard gate for git repos)
+        if deploy_profile.update_command and "git" in deploy_profile.update_command:
+            r = await self.shell.execute(
+                workspace_root=root,
+                command="git status --porcelain --untracked-files=no",
+                timeout_seconds=10,
+            )
+            clean = r.success and not r.stdout_text.strip()
+            report.results.append(GateResult(
+                gate=DeploySafetyGate(
+                    name="clean_worktree",
+                    check_type="clean_worktree",
+                    hard=True,
+                    description="Рабочая директория должна быть чистой",
+                ),
+                passed=clean,
+                message="" if clean else "Есть незакоммиченные изменения",
+            ))
+
+        # Gate 2: Required commands present (hard gate)
+        has_restart = bool(deploy_profile.restart_command)
+        report.results.append(GateResult(
+            gate=DeploySafetyGate(
+                name="restart_command",
+                check_type="profile_complete",
+                hard=True,
+                description="Команда перезапуска должна быть задана",
+            ),
+            passed=has_restart,
+            message="" if has_restart else "Не задана команда restart/deploy",
+        ))
+
+        # Gate 3: Health command present (soft gate)
+        has_health = bool(deploy_profile.health_command)
+        report.results.append(GateResult(
+            gate=DeploySafetyGate(
+                name="health_command",
+                check_type="profile_complete",
+                hard=False,
+                description="Команда health check желательна",
+            ),
+            passed=has_health,
+            message="" if has_health else "Нет health check — deploy без верификации",
+        ))
+
+        # Gate 4: Service currently healthy (soft gate)
+        if deploy_profile.health_command:
+            r = await self.shell.execute(
+                workspace_root=root,
+                command=deploy_profile.health_command,
+                timeout_seconds=15,
+            )
+            report.results.append(GateResult(
+                gate=DeploySafetyGate(
+                    name="service_healthy",
+                    check_type="service_healthy",
+                    hard=False,
+                    description="Сервис должен быть здоров перед deploy",
+                ),
+                passed=r.success,
+                message="" if r.success else "Сервис не здоров перед deploy",
+            ))
+
+        return report
 
     async def execute(
         self,

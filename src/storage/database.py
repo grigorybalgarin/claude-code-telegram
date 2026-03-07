@@ -374,6 +374,54 @@ class DatabaseManager:
                     ON workspace_operations(correlation_id);
                 """,
             ),
+            (
+                7,
+                """
+                -- Incident tracking with severity and lifecycle
+                CREATE TABLE IF NOT EXISTS incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT NOT NULL UNIQUE,
+                    workspace_path TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'warning',
+                    dedup_key TEXT,
+                    detected_at TIMESTAMP,
+                    healed_at TIMESTAMP,
+                    heal_attempts INTEGER DEFAULT 0,
+                    suppressed_count INTEGER DEFAULT 0,
+                    details JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_incidents_workspace
+                    ON incidents(workspace_path, state, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_incidents_dedup
+                    ON incidents(dedup_key);
+
+                -- Self-improvement backlog
+                CREATE TABLE IF NOT EXISTS improvement_backlog (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    improvement_id TEXT NOT NULL UNIQUE,
+                    improvement_type TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    category TEXT,
+                    confidence REAL DEFAULT 0.5,
+                    priority INTEGER DEFAULT 0,
+                    safe_to_auto_apply BOOLEAN DEFAULT 0,
+                    status TEXT DEFAULT 'pending',
+                    details JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_improvements_status
+                    ON improvement_backlog(status, priority DESC);
+
+                -- Add severity column to workspace_operations if missing
+                -- (SQLite doesn't support IF NOT EXISTS for ALTER TABLE,
+                --  so we handle this gracefully in code)
+                """,
+            ),
         ]
 
     async def _init_pool(self):

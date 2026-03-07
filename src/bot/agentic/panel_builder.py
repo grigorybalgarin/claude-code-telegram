@@ -244,6 +244,14 @@ class PanelBuilder:
                     d_label += " · откат"
             lines.append(f"Деплой: <code>{d_label}</code> · {ago_text}")
 
+        # Suggested next action based on operational state
+        suggested = self._suggest_from_ops_state(
+            last_verify, last_resolve, last_deploy
+        )
+        if suggested:
+            lines.append("")
+            lines.append(f"💡 <b>Рекомендация:</b> {suggested}")
+
         if ctx.project_automation and profile and ctx.current_workspace != ctx.boundary_root:
             lines.extend(
                 [
@@ -252,6 +260,27 @@ class PanelBuilder:
                 ]
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _suggest_from_ops_state(
+        last_verify: Optional[Dict[str, Any]],
+        last_resolve: Optional[Dict[str, Any]],
+        last_deploy: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Derive a suggested next action from last operation results."""
+        # Failed verify → suggest resolve
+        if last_verify and not last_verify.get("success"):
+            failed = last_verify.get("failed_step", "")
+            return f"Запусти разбор — сбой на '{failed}'"
+        # Failed resolve → suggest manual check
+        if last_resolve and not last_resolve.get("success"):
+            if last_resolve.get("rollback"):
+                return "Был откат — проверь вручную"
+            return "Разбор не помог — нужен ручной анализ"
+        # Failed deploy → suggest verify
+        if last_deploy and not last_deploy.get("success"):
+            return "Деплой не удался — запусти проверку"
+        return None
 
     @staticmethod
     def _format_ago(seconds: int) -> str:

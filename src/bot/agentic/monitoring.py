@@ -2,62 +2,38 @@
 
 Periodically runs verify pipelines, detects state transitions,
 triggers auto-remediation when safe, and manages incident lifecycle.
-Notifies only on state changes (OK→FAIL, FAIL→OK), not repeated failures.
+Uses severity-aware notifications and incident deduplication.
 """
 
 import asyncio
 import time
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 import uuid
 
 import structlog
 
-from .problem_classifier import ProblemDiagnosis, classify_problem
+from .ops_model import (
+    AutonomyGuardrails,
+    Incident,
+    IncidentState,
+    Severity,
+)
+from .problem_classifier import ProblemDiagnosis, ProblemType, classify_problem
 from .server_diagnostics import DiagnosticsCollector
 from .shell_executor import ShellExecutor
 from .verify_pipeline import VerifyPipeline
 
 logger = structlog.get_logger()
 
-
-class IncidentState(Enum):
-    """Lifecycle state of a monitoring incident."""
-
-    DETECTED = "detected"
-    HEALING = "healing"
-    HEALED = "healed"
-    ESCALATED = "escalated"
-
-
-@dataclass
-class Incident:
-    """A single monitoring incident for a workspace."""
-
-    incident_id: str
-    workspace_path: str
-    state: IncidentState
-    diagnosis: Optional[ProblemDiagnosis] = None
-    detected_at: float = 0.0
-    healed_at: Optional[float] = None
-    heal_attempts: int = 0
-    last_error: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "incident_id": self.incident_id,
-            "workspace_path": self.workspace_path,
-            "state": self.state.value,
-            "problem_type": self.diagnosis.problem_type.value if self.diagnosis else None,
-            "short_cause": self.diagnosis.short_cause if self.diagnosis else "",
-            "detected_at": self.detected_at,
-            "healed_at": self.healed_at,
-            "heal_attempts": self.heal_attempts,
-            "last_error": self.last_error,
-        }
-
+# Re-export for backward compat with tests
+__all__ = [
+    "Incident",
+    "IncidentState",
+    "WorkspaceHealth",
+    "WorkspaceMonitor",
+]
 
 # Callback type for sending notifications
 NotifyCallback = Callable[[str], Coroutine[Any, Any, None]]
@@ -72,13 +48,41 @@ class WorkspaceHealth:
     healthy: bool = True
     consecutive_failures: int = 0
     active_incident: Optional[Incident] = None
+    last_healthy_at: Optional[float] = None
+    notification_cooldown_until: float = 0.0
+
+
+def _classify_severity(
+    diagnosis: Optional[ProblemDiagnosis],
+    consecutive_failures: int,
+    service_down: bool,
+) -> Severity:
+    """Determine incident severity from diagnosis and context."""
+    if service_down:
+        return Severity.CRITICAL
+    if diagnosis and diagnosis.is_critical_step:
+        return Severity.CRITICAL
+    if diagnosis and diagnosis.problem_type in (ProblemType.SERVICE, ProblemType.ENVIRONMENT):
+        return Severity.DEGRADED
+    if consecutive_failures >= 3:
+        return Severity.DEGRADED
+    if diagnosis and diagnosis.problem_type in (ProblemType.CODE, ProblemType.DEPLOY):
+        return Severity.WARNING
+    return Severity.WARNING
+
+
+def _make_dedup_key(workspace: str, diagnosis: Optional[ProblemDiagnosis]) -> str:
+    """Generate deduplication key for incident grouping."""
+    ptype = diagnosis.problem_type.value if diagnosis else "unknown"
+    step = diagnosis.failed_step_label if diagnosis else ""
+    return f"{workspace}:{ptype}:{step}"
 
 
 class WorkspaceMonitor:
     """Proactive health monitor for workspaces with operations config.
 
     Runs verify pipelines on a schedule, detects state transitions,
-    and orchestrates auto-heal + notification.
+    and orchestrates auto-heal + notification with severity awareness.
     """
 
     def __init__(
@@ -88,17 +92,22 @@ class WorkspaceMonitor:
         diagnostics: DiagnosticsCollector,
         *,
         check_interval_seconds: float = 300.0,
-        max_heal_attempts: int = 1,
+        max_heal_attempts: int = 2,
+        guardrails: Optional[AutonomyGuardrails] = None,
     ) -> None:
         self.shell = shell
         self.verify = verify
         self.diagnostics = diagnostics
         self.check_interval = check_interval_seconds
         self.max_heal_attempts = max_heal_attempts
+        self.guardrails = guardrails or AutonomyGuardrails()
 
         self._health: Dict[str, WorkspaceHealth] = {}
         self._running = False
         self._task: Optional[asyncio.Task[None]] = None
+        self._recent_heal_timestamps: List[float] = []
+        self._recent_dedup_keys: Dict[str, float] = {}  # key -> last_notified_at
+        self._notification_cooldown = 300.0  # 5 min between same notifications
 
         # Callbacks
         self._on_notify: Optional[NotifyCallback] = None
@@ -110,7 +119,6 @@ class WorkspaceMonitor:
         self._profiles: List[Any] = []
 
     def set_profiles(self, profiles: List[Any]) -> None:
-        """Set the list of workspace profiles to monitor."""
         self._profiles = profiles
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
@@ -149,9 +157,7 @@ class WorkspaceMonitor:
         return [
             h.active_incident
             for h in self._health.values()
-            if h.active_incident
-            and h.active_incident.state
-            in {IncidentState.DETECTED, IncidentState.HEALING}
+            if h.active_incident and h.active_incident.is_active
         ]
 
     # ------------------------------------------------------------------
@@ -159,6 +165,8 @@ class WorkspaceMonitor:
     # ------------------------------------------------------------------
 
     async def _run_loop(self) -> None:
+        # Brief initial delay for system stabilization
+        await asyncio.sleep(30)
         while self._running:
             try:
                 await self._check_all()
@@ -198,22 +206,17 @@ class WorkspaceMonitor:
         if report.success:
             health.healthy = True
             health.consecutive_failures = 0
+            health.last_healthy_at = now
 
-            # Transition FAIL→OK
             if not was_healthy:
                 await self._on_recovery(health, profile)
         else:
             health.healthy = False
             health.consecutive_failures += 1
 
-            # Transition OK→FAIL (first failure)
             if was_healthy:
                 await self._on_new_failure(health, profile, report)
-            # Already failing — try heal if not exhausted
-            elif (
-                health.active_incident
-                and health.active_incident.state == IncidentState.DETECTED
-            ):
+            elif health.active_incident and health.active_incident.is_active:
                 await self._try_auto_heal(health, profile)
 
     # ------------------------------------------------------------------
@@ -223,7 +226,6 @@ class WorkspaceMonitor:
     async def _on_new_failure(
         self, health: WorkspaceHealth, profile: Any, report: Any
     ) -> None:
-        """Handle first failure detection for a workspace."""
         ops = getattr(profile, "operations", None)
         server_diag = await self.diagnostics.collect(profile, Path(health.workspace_path))
         diagnosis = classify_problem(
@@ -232,28 +234,47 @@ class WorkspaceMonitor:
             server_context=server_diag.as_prompt_context(),
         )
 
+        severity = _classify_severity(
+            diagnosis, health.consecutive_failures, service_down=False
+        )
+        dedup_key = _make_dedup_key(health.workspace_path, diagnosis)
+
+        # Check dedup: reopen existing instead of creating new
+        if self._is_duplicate(dedup_key):
+            if health.active_incident:
+                health.active_incident.suppressed_count += 1
+            return
+
         incident = Incident(
             incident_id=str(uuid.uuid4())[:8],
             workspace_path=health.workspace_path,
             state=IncidentState.DETECTED,
-            diagnosis=diagnosis,
+            severity=severity,
+            diagnosis=None,  # We'll store ProblemDiagnosis info via to_dict
             detected_at=time.time(),
+            max_heal_attempts=self.max_heal_attempts,
+            dedup_key=dedup_key,
         )
+        # Store diagnosis info in a way compatible with the old interface
+        incident._problem_diagnosis = diagnosis  # type: ignore[attr-defined]
         health.active_incident = incident
 
-        # Persist
         await self._persist_incident(incident, "incident_detected")
+        self._recent_dedup_keys[dedup_key] = time.time()
 
-        # Notify
         display_name = getattr(profile, "display_name", health.workspace_path)
+        emoji = severity.emoji
         lines = [
-            f"🔴 <b>{display_name}: сбой обнаружен</b>",
+            f"{emoji} <b>{display_name}: сбой обнаружен</b>",
+            f"<b>Серьезность:</b> {severity.label_ru}",
             "",
             f"<b>Тип:</b> {diagnosis.label}",
             f"<b>Шаг:</b> {diagnosis.failed_step_label}",
         ]
         if diagnosis.short_cause:
             lines.append(f"<b>Причина:</b> {diagnosis.short_cause}")
+        if diagnosis.runbook_hint:
+            lines.append(f"💡 {diagnosis.runbook_hint}")
 
         if self._should_auto_heal(profile, diagnosis):
             lines.append("\nПробую автоматическое восстановление...")
@@ -262,17 +283,15 @@ class WorkspaceMonitor:
 
         await self._notify("\n".join(lines))
 
-        # Try auto-heal immediately if applicable
         if self._should_auto_heal(profile, diagnosis):
             await self._try_auto_heal(health, profile)
 
     async def _on_recovery(self, health: WorkspaceHealth, profile: Any) -> None:
-        """Handle recovery (FAIL→OK transition)."""
         incident = health.active_incident
         display_name = getattr(profile, "display_name", health.workspace_path)
 
         if incident:
-            incident.state = IncidentState.HEALED
+            incident.transition_to(IncidentState.HEALED, "verify passed")
             incident.healed_at = time.time()
             await self._persist_incident(incident, "incident_healed")
 
@@ -280,50 +299,95 @@ class WorkspaceMonitor:
             lines = [
                 f"🟢 <b>{display_name}: восстановлен</b>",
                 "",
-                f"<b>Был сбой:</b> {incident.diagnosis.label if incident.diagnosis else '?'}",
-                f"<b>Длительность:</b> {duration}с",
             ]
+            diag = getattr(incident, "_problem_diagnosis", None)
+            if diag:
+                lines.append(f"<b>Был сбой:</b> {diag.label}")
+            lines.append(f"<b>Длительность:</b> {duration}с")
             if incident.heal_attempts > 0:
                 lines.append(f"<b>Авто-починок:</b> {incident.heal_attempts}")
+            if incident.suppressed_count > 0:
+                lines.append(f"<b>Подавлено дубликатов:</b> {incident.suppressed_count}")
             await self._notify("\n".join(lines))
+
+            # Clear dedup key on recovery
+            self._recent_dedup_keys.pop(incident.dedup_key, None)
         else:
             await self._notify(f"🟢 <b>{display_name}: проверки проходят</b>")
 
         health.active_incident = None
 
     async def _try_auto_heal(self, health: WorkspaceHealth, profile: Any) -> None:
-        """Attempt automatic remediation if policy allows."""
         incident = health.active_incident
         if not incident:
             return
 
-        if incident.heal_attempts >= self.max_heal_attempts:
+        # Check guardrails
+        if incident.heal_attempts >= incident.max_heal_attempts:
             if incident.state != IncidentState.ESCALATED:
-                incident.state = IncidentState.ESCALATED
+                incident.transition_to(
+                    IncidentState.ESCALATED,
+                    f"max heal attempts ({incident.max_heal_attempts}) reached",
+                )
                 await self._persist_incident(incident, "incident_escalated")
                 display_name = getattr(profile, "display_name", health.workspace_path)
                 await self._notify(
                     f"⚠️ <b>{display_name}: авто-починка исчерпана</b>\n\n"
-                    f"Попыток: {incident.heal_attempts}/{self.max_heal_attempts}\n"
+                    f"Попыток: {incident.heal_attempts}/{incident.max_heal_attempts}\n"
                     "Требуется ручной разбор."
                 )
             return
 
-        if not self._should_auto_heal(profile, incident.diagnosis):
+        # Check cooldown
+        if incident.cooldown_until > time.time():
             return
 
-        incident.state = IncidentState.HEALING
-        incident.heal_attempts += 1
+        diag = getattr(incident, "_problem_diagnosis", None)
+        if not self._should_auto_heal(profile, diag):
+            return
 
-        # Find restart command from services
+        # Check global guardrail limits
+        now = time.time()
+        window = self.guardrails.heal_window_seconds
+        recent_heals = sum(
+            1 for t in self._recent_heal_timestamps if now - t < window
+        )
+        if not self.guardrails.allows_heal(recent_heals):
+            logger.info("Heal blocked by global guardrails")
+            return
+
+        incident.transition_to(IncidentState.HEALING, "auto-heal attempt")
+        incident.heal_attempts += 1
+        self._recent_heal_timestamps.append(now)
+
+        # Multi-step heal: status check → restart → wait → health verify
         restart_cmd = self._get_restart_command(profile)
         if not restart_cmd:
-            incident.state = IncidentState.ESCALATED
+            incident.transition_to(IncidentState.ESCALATED, "no restart command")
             incident.last_error = "Нет команды перезапуска"
             await self._persist_incident(incident, "incident_escalated")
             return
 
         workspace_root = Path(health.workspace_path)
+
+        # Step 1: Pre-restart health check
+        health_cmd = self._get_health_command(profile)
+        if health_cmd:
+            pre_check = await self.shell.execute(
+                workspace_root=workspace_root,
+                command=health_cmd,
+                timeout_seconds=10,
+            )
+            if pre_check.success:
+                # Service is actually up — transient failure, set cooldown
+                incident.transition_to(
+                    IncidentState.DETECTED, "service already healthy, cooldown"
+                )
+                incident.cooldown_until = now + self.guardrails.heal_cooldown_seconds
+                await self._persist_incident(incident, "heal_attempted")
+                return
+
+        # Step 2: Restart
         result = await self.shell.execute(
             workspace_root=workspace_root,
             command=restart_cmd,
@@ -332,7 +396,7 @@ class WorkspaceMonitor:
 
         if not result.success:
             incident.last_error = result.stderr_text or result.error or "restart failed"
-            incident.state = IncidentState.ESCALATED
+            incident.transition_to(IncidentState.ESCALATED, "restart command failed")
             await self._persist_incident(incident, "heal_failed")
             display_name = getattr(profile, "display_name", health.workspace_path)
             await self._notify(
@@ -341,9 +405,10 @@ class WorkspaceMonitor:
             )
             return
 
-        # Wait and re-check
+        # Step 3: Wait for service to stabilize
         await asyncio.sleep(5)
-        health_cmd = self._get_health_command(profile)
+
+        # Step 4: Post-restart health verify
         if health_cmd:
             check = await self.shell.execute(
                 workspace_root=workspace_root,
@@ -351,11 +416,17 @@ class WorkspaceMonitor:
                 timeout_seconds=15,
             )
             if check.success:
-                # Will be picked up as recovery in next cycle
-                incident.state = IncidentState.DETECTED  # stay detected, next verify will confirm
+                incident.transition_to(
+                    IncidentState.DETECTED, "heal successful, waiting for verify"
+                )
                 await self._persist_incident(incident, "heal_attempted")
+                # Set short cooldown before next heal attempt
+                incident.cooldown_until = now + self.guardrails.heal_cooldown_seconds
             else:
-                incident.state = IncidentState.ESCALATED
+                incident.transition_to(
+                    IncidentState.ESCALATED,
+                    "restart ok but health check failed",
+                )
                 incident.last_error = "Перезапуск выполнен, но проверка не прошла"
                 await self._persist_incident(incident, "heal_failed")
 
@@ -365,18 +436,15 @@ class WorkspaceMonitor:
 
     @staticmethod
     def _should_auto_heal(profile: Any, diagnosis: Optional[ProblemDiagnosis]) -> bool:
-        """Check if auto-heal is allowed by profile policy."""
         ops = getattr(profile, "operations", None)
         if not ops or not getattr(ops, "self_heal_restart", False):
             return False
-        # Only auto-heal service problems (not code/config/deploy issues)
         if diagnosis and diagnosis.problem_type.value in ("code", "config", "deploy"):
             return False
         return True
 
     @staticmethod
     def _get_restart_command(profile: Any) -> Optional[str]:
-        """Extract restart command from profile services."""
         for svc in getattr(profile, "services", ()):
             cmd = getattr(svc, "restart_command", None)
             if cmd:
@@ -385,7 +453,6 @@ class WorkspaceMonitor:
 
     @staticmethod
     def _get_health_command(profile: Any) -> Optional[str]:
-        """Extract health check command from profile services."""
         for svc in getattr(profile, "services", ()):
             cmd = getattr(svc, "health_command", None) or getattr(
                 svc, "status_command", None
@@ -393,6 +460,13 @@ class WorkspaceMonitor:
             if cmd:
                 return cmd
         return None
+
+    def _is_duplicate(self, dedup_key: str) -> bool:
+        """Check if this incident pattern was recently notified."""
+        last = self._recent_dedup_keys.get(dedup_key)
+        if last and time.time() - last < self._notification_cooldown:
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Persistence & notification
@@ -409,7 +483,10 @@ class WorkspaceMonitor:
                     correlation_id=incident.incident_id,
                 )
             except Exception:
-                logger.warning("Failed to persist incident", incident_id=incident.incident_id)
+                logger.warning(
+                    "Failed to persist incident",
+                    incident_id=incident.incident_id,
+                )
 
     async def _notify(self, text: str) -> None:
         if self._on_notify:
