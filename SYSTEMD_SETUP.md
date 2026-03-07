@@ -1,6 +1,84 @@
-# Systemd User Service Setup
+# Systemd Setup
 
-This guide shows how to run the Claude Code Telegram Bot as a persistent systemd user service.
+This guide shows how to run the Claude Code Telegram Bot under `systemd`.
+
+## Recommended: Hardened System Service
+
+For a personal production bot, the safer default is:
+
+- run the bot as a dedicated Unix user such as `claude-bot`
+- keep the app in `/srv/claude-bot/app`
+- set `APPROVED_DIRECTORY=/srv/claude-bot/workspaces`
+- expose only selected projects via bind mounts into `/srv/claude-bot/workspaces`
+
+This keeps the bot automated, but narrows the damage radius if it makes a mistake.
+
+### Layout
+
+```text
+/home/claude-bot
+  .claude
+  .ssh
+  .config/gh
+
+/srv/claude-bot
+  app
+  workspaces
+    ClaudeBot
+    Gr_dev
+    FreelanceAggregator
+    MacProjects
+```
+
+### Service And Workspace Scripts
+
+Reference files live in the repo:
+
+- `ops/systemd/claude-bot.service`
+- `ops/server/setup-workspace.sh`
+
+Install them on the server:
+
+```bash
+sudo install -D -m 755 ops/server/setup-workspace.sh /usr/local/lib/claude-bot/setup-workspace.sh
+sudo install -D -m 644 ops/systemd/claude-bot.service /etc/systemd/system/claude-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-bot.service
+```
+
+### Deploy Updates
+
+Once the hardened runtime is installed, update the bot with:
+
+```bash
+sudo bash /srv/claude-bot/app/ops/server/deploy-app.sh
+```
+
+The deploy script:
+
+- fetches and fast-forwards the app checkout
+- reinstalls the managed `systemd` unit and workspace script
+- runs `compileall`
+- restarts `claude-bot.service`
+- aborts if the app worktree is dirty
+
+Update `.env` in `/srv/claude-bot/app`:
+
+```bash
+APPROVED_DIRECTORY=/srv/claude-bot/workspaces
+MCP_CONFIG_PATH=/srv/claude-bot/app/config/mcp.json
+```
+
+Verify:
+
+```bash
+systemctl status claude-bot --no-pager
+journalctl -u claude-bot -n 50 --no-pager
+```
+
+## Legacy: User Service
+
+This mode runs the bot as a persistent systemd user service.
 
 **⚠️ SECURITY NOTE:** Before setting up the service, ensure your `.env` file has `DEVELOPMENT_MODE=false` and `ENVIRONMENT=production` for secure operation.
 

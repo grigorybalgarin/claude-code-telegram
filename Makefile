@@ -1,5 +1,5 @@
 .PHONY: install dev test lint format clean help run run-remote remote-attach remote-stop \
-       bump-patch bump-minor bump-major release version
+       bump-patch bump-minor bump-major release version deploy-systemd deploy-systemd-local
 
 # Default target
 help:
@@ -19,6 +19,8 @@ help:
 	@echo "  run-remote    - Start bot in tmux on remote Mac (unlocks keychain)"
 	@echo "  remote-attach - Attach to running bot tmux session"
 	@echo "  remote-stop   - Stop the bot tmux session"
+	@echo "  deploy-systemd - SSH to server and run ops/server/deploy-app.sh"
+	@echo "  deploy-systemd-local - Run ops/server/deploy-app.sh on the current machine"
 
 install:
 	poetry install --no-dev
@@ -66,6 +68,13 @@ remote-attach:  ## Attach to running bot tmux session
 
 remote-stop:  ## Stop the bot tmux session
 	tmux kill-session -t claude-bot
+
+deploy-systemd:  ## Deploy to a systemd host; set DEPLOY_HOST and optional DEPLOY_USER
+	@test -n "$(DEPLOY_HOST)" || (echo "DEPLOY_HOST is required" && exit 1)
+	ssh $(if $(DEPLOY_USER),$(DEPLOY_USER),root)@$(DEPLOY_HOST) 'bash /srv/claude-bot/app/ops/server/deploy-app.sh'
+
+deploy-systemd-local:  ## Run the systemd deploy script on the current machine
+	sudo bash ops/server/deploy-app.sh
 
 # --- Version Management ---
 

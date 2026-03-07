@@ -1,0 +1,28 @@
+[Unit]
+Description=Claude Code Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claude-bot
+Group=claude-bot
+SupplementaryGroups=staff dialout
+WorkingDirectory=/srv/claude-bot/app
+Environment=HOME=/home/claude-bot
+Environment=PATH=/srv/claude-bot/app/.venv/bin:/usr/local/bin:/usr/bin:/bin
+PermissionsStartOnly=true
+ExecStartPre=/usr/local/lib/claude-bot/setup-workspace.sh
+ExecStart=/srv/claude-bot/app/.venv/bin/python -m src.main
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
