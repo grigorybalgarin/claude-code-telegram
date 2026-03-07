@@ -14,9 +14,7 @@ workspaces:
     commands:
       install: make install
       dev: make dev
-      test: make test
-      lint: make lint
-      format: make format
+      build: .venv/bin/python -m compileall -q src
     services:
       - key: app
         name: ClaudeBot Service
