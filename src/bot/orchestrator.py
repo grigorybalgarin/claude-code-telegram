@@ -42,6 +42,7 @@ from .agentic.context import (
     VerifyStep,
 )
 from .agentic.shell_executor import ShellExecutor
+from .agentic.resolve_runner import ResolveRunner
 from .agentic.service_controller import ServiceController
 from .agentic.verify_pipeline import VerifyPipeline
 from .features.change_guard import ChangeGuardReport
@@ -167,6 +168,7 @@ class MessageOrchestrator:
         self.shell = ShellExecutor()
         self.verify = VerifyPipeline(self.shell)
         self.services = ServiceController(self.shell)
+        self.resolver = ResolveRunner(self.verify)
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -2064,11 +2066,12 @@ class MessageOrchestrator:
     ) -> None:
         """Autonomously investigate, fix, and re-verify the current workspace."""
         user_id = query.from_user.id
-        current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        claude_integration = context.bot_data.get("claude_integration")
-        if not claude_integration or not project_automation or not profile:
+        ws_ctx = self._build_workspace_context(context)
+        current_workspace = ws_ctx.current_workspace
+        profile = ws_ctx.profile
+        boundary_root = ws_ctx.boundary_root
+
+        if not ws_ctx.claude_integration or not ws_ctx.project_automation or not profile:
             await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
@@ -2082,7 +2085,7 @@ class MessageOrchestrator:
 
         status_msg = await query.message.reply_text(
             "🛠 <b>Разбираюсь</b>\n\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
             "Сначала найду проблему, потом попробую исправить ее автоматически.",
             parse_mode="HTML",
         )
@@ -2090,7 +2093,7 @@ class MessageOrchestrator:
         async def _on_resolve_step(index: int, total: int, step: VerifyStep) -> None:
             await status_msg.edit_text(
                 "⏳ <b>Проверяю</b>\n\n"
-                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
                 f"Шаг <code>{index}/{total}</code>: <code>{escape_html(step.label)}</code>\n"
                 f"Команда: <code>{escape_html(step.command)}</code>",
                 parse_mode="HTML",
@@ -2100,180 +2103,92 @@ class MessageOrchestrator:
         if initial_report.success:
             await status_msg.edit_text(
                 "✅ <b>Проблем не найдено</b>\n\n"
-                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
                 "Все детерминированные проверки уже проходят.",
                 parse_mode="HTML",
             )
             return
-
-        initial_failed_step = initial_report.failed_step
-        failing_result = initial_report.results[-1][1]
-        failure_output = (
-            failing_result.stderr_text
-            or failing_result.stdout_text
-            or failing_result.error
-            or "нет подробного вывода"
-        )
-        prompt = project_automation.build_general_autopilot_prompt(
-            (
-                "Разберись с проблемой в проекте и исправь ее.\n"
-                f"Сейчас не проходит шаг проверки '{initial_failed_step.label}'.\n"
-                f"Команда шага: {initial_failed_step.command}\n"
-                f"Вывод ошибки:\n{failure_output}\n\n"
-                "Действуй автономно:\n"
-                "1. Определи точную причину сбоя.\n"
-                "2. Если проблема в коде или конфигурации проекта, внеси минимальные правки.\n"
-                "3. Если проблема только в окружении сервера, не делай опасных инфраструктурных изменений молча; "
-                "объясни точную причину и предложи безопасное исправление.\n"
-                "4. После правок самостоятельно прогони релевантные проверки снова.\n"
-                "5. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
-            ),
-            profile,
-        )
-
-        features = context.bot_data.get("features")
-        change_guard = (
-            getattr(features, "get_project_change_guard", lambda: None)()
-            if features
-            else None
-        )
-        storage = context.bot_data.get("storage")
-        audit_logger = context.bot_data.get("audit_logger")
 
         session_id = context.user_data.get("claude_session_id")
         if current_workspace != profile.root_path:
             session_id = None
         context.user_data["current_directory"] = profile.root_path
 
-        checkpoint = None
-        rollback_report = None
-        success = False
-        try:
-            if change_guard and profile.has_git_repo:
-                checkpoint = await change_guard.create_checkpoint(profile.root_path)
+        await status_msg.edit_text(
+            "🛠 <b>Разбираюсь</b>\n\n"
+            f"Найден сбой: <code>{escape_html(initial_report.failed_step.label)}</code>\n"
+            "Пробую исправить его автоматически.",
+            parse_mode="HTML",
+        )
 
-            await status_msg.edit_text(
-                "🛠 <b>Разбираюсь</b>\n\n"
-                f"Найден сбой: <code>{escape_html(initial_failed_step.label)}</code>\n"
-                "Пробую исправить его автоматически.",
-                parse_mode="HTML",
-            )
+        result = await self.resolver.run(ws_ctx, session_id, initial_report)
 
-            claude_response = await claude_integration.run_command(
-                prompt=prompt,
-                working_directory=profile.root_path,
-                user_id=user_id,
-                session_id=session_id,
-                force_new=False,
-            )
-            context.user_data["claude_session_id"] = claude_response.session_id
-            success = True
+        if result.claude_response:
+            context.user_data["claude_session_id"] = result.claude_response.session_id
 
-            if storage:
-                try:
-                    await storage.save_claude_interaction(
-                        user_id=user_id,
-                        session_id=claude_response.session_id,
-                        prompt="[button] resolve",
-                        response=claude_response,
-                        ip_address=None,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to log resolve interaction", error=str(e))
-
-            final_report = await self.verify.execute(profile)
-            success = final_report.success
-            if checkpoint and change_guard:
-                if final_report.success:
-                    await change_guard.cleanup_checkpoint(checkpoint)
-                else:
-                    rollback_report = await change_guard.rollback(
-                        checkpoint,
-                        reason=f"resolve verification failed: {final_report.failed_step.command}",
-                    )
-
-            await status_msg.delete()
-
-            from .utils.formatting import ResponseFormatter
-
-            formatter = ResponseFormatter(self.settings)
-            for message in formatter.format_claude_response(claude_response.content):
-                if message.text and message.text.strip():
-                    await query.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                    )
-
-            header = (
-                "✅ <b>Разобрался</b>"
-                if final_report.success
-                else "⚠️ <b>Проблему нашел, но до конца не добил</b>"
-            )
-            verify_report_text = self.verify.format_report(
-                profile, boundary_root, final_report
-            )
-            await query.message.reply_text(
-                f"{header}\n\n{verify_report_text}",
-                parse_mode="HTML",
-            )
-
-            if rollback_report and change_guard:
-                await query.message.reply_text(
-                    change_guard.format_report_html(rollback_report),
-                    parse_mode="HTML",
-                )
-
-            if audit_logger:
-                await audit_logger.log_automation_run(
-                    user_id=user_id,
-                    request="button:resolve",
-                    workspace_root=str(profile.root_path),
-                    matched_playbook=None,
-                    read_only=False,
-                    success=success,
-                    mode="agentic_button",
-                    checkpoint_created=bool(checkpoint),
-                    rollback_triggered=bool(
-                        rollback_report and rollback_report.rollback_triggered
-                    ),
-                    rollback_succeeded=bool(
-                        rollback_report and rollback_report.rollback_succeeded
-                    ),
-                    workspace_changed=current_workspace != profile.root_path,
-                )
-        except Exception as e:
-            if checkpoint and change_guard:
-                rollback_report = await change_guard.rollback(
-                    checkpoint,
-                    reason=f"resolve error: {type(e).__name__}",
-                )
+        if result.error and not result.claude_response:
             try:
                 await status_msg.edit_text(
                     "❌ <b>Не удалось разобраться автоматически</b>\n\n"
-                    f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-                    f"Ошибка: <code>{escape_html(str(e))}</code>",
+                    f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
+                    f"Ошибка: <code>{escape_html(result.error)}</code>",
                     parse_mode="HTML",
                 )
             except Exception:
                 pass
-            if audit_logger:
-                await audit_logger.log_automation_run(
-                    user_id=user_id,
-                    request="button:resolve",
-                    workspace_root=str(profile.root_path),
-                    matched_playbook=None,
-                    read_only=False,
-                    success=False,
-                    mode="agentic_button",
-                    checkpoint_created=bool(checkpoint),
-                    rollback_triggered=bool(
-                        rollback_report and rollback_report.rollback_triggered
-                    ),
-                    rollback_succeeded=bool(
-                        rollback_report and rollback_report.rollback_succeeded
-                    ),
-                    workspace_changed=current_workspace != profile.root_path,
+        else:
+            await status_msg.delete()
+
+            if result.claude_response:
+                from .utils.formatting import ResponseFormatter
+
+                formatter = ResponseFormatter(self.settings)
+                for message in formatter.format_claude_response(result.claude_response.content):
+                    if message.text and message.text.strip():
+                        await query.message.reply_text(
+                            message.text,
+                            parse_mode=message.parse_mode,
+                        )
+
+            if result.final_report:
+                header = (
+                    "✅ <b>Разобрался</b>"
+                    if result.success
+                    else "⚠️ <b>Проблему нашел, но до конца не добил</b>"
                 )
+                verify_report_text = self.verify.format_report(
+                    profile, boundary_root, result.final_report
+                )
+                await query.message.reply_text(
+                    f"{header}\n\n{verify_report_text}",
+                    parse_mode="HTML",
+                )
+
+            if result.rollback_report and ws_ctx.change_guard:
+                await query.message.reply_text(
+                    ws_ctx.change_guard.format_report_html(result.rollback_report),
+                    parse_mode="HTML",
+                )
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_automation_run(
+                user_id=user_id,
+                request="button:resolve",
+                workspace_root=str(profile.root_path),
+                matched_playbook=None,
+                read_only=False,
+                success=result.success,
+                mode="agentic_button",
+                checkpoint_created=bool(result.rollback_report),
+                rollback_triggered=bool(
+                    result.rollback_report and result.rollback_report.rollback_triggered
+                ),
+                rollback_succeeded=bool(
+                    result.rollback_report and result.rollback_report.rollback_succeeded
+                ),
+                workspace_changed=current_workspace != profile.root_path,
+            )
 
     async def _run_agentic_background_action(
         self,
