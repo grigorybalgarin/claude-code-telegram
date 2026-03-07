@@ -1459,6 +1459,38 @@ class MessageOrchestrator:
         # Audit log
         audit_logger = context.bot_data.get("audit_logger")
         if audit_logger:
+            if autopilot_plan:
+                verification_results = []
+                if guard_report:
+                    verification_results = [
+                        {
+                            "command": result.command,
+                            "success": result.success,
+                            "returncode": result.returncode,
+                        }
+                        for result in guard_report.verification_results
+                    ]
+
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request=message_text,
+                    workspace_root=str(working_dir),
+                    matched_playbook=autopilot_plan.matched_playbook,
+                    read_only=autopilot_plan.read_only,
+                    success=success,
+                    mode="agentic",
+                    checkpoint_created=bool(
+                        checkpoint or (guard_report and guard_report.checkpoint_created)
+                    ),
+                    verification_results=verification_results,
+                    rollback_triggered=bool(
+                        guard_report and guard_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        guard_report and guard_report.rollback_succeeded
+                    ),
+                    workspace_changed=working_dir != current_dir,
+                )
             await audit_logger.log_command(
                 user_id=user_id,
                 command="text_message",

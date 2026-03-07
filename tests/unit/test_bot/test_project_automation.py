@@ -1,6 +1,7 @@
 """Tests for project automation profiles and commands."""
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,7 @@ from src.bot.features.project_automation import ProjectAutomationManager
 from src.bot.handlers.command import (
     diag_command,
     playbooks_command,
+    recent_activity_command,
     run_playbook_command,
 )
 from src.config import create_test_config
@@ -213,6 +215,20 @@ async def test_diag_command_renders_workspace_summary(tmp_path):
 
     storage = MagicMock()
     storage.health_check = AsyncMock(return_value=True)
+    storage.audit.get_user_audit_log = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                event_type="automation_run",
+                event_data={
+                    "details": {
+                        "playbook": "doctor",
+                        "workspace_root": str(tmp_path),
+                        "read_only": True,
+                    }
+                },
+            )
+        ]
+    )
     mem0_client = MagicMock()
     mem0_client.health = AsyncMock(return_value=True)
 
@@ -236,3 +252,48 @@ async def test_diag_command_renders_workspace_summary(tmp_path):
     assert "Diagnostics" in message
     assert "Storage" in message
     assert "Workspace root" in message
+    assert "Last autopilot" in message
+
+
+@pytest.mark.asyncio
+async def test_recent_activity_command_lists_autopilot_runs(tmp_path):
+    """Recent activity should include the latest autopilot runs."""
+    settings = create_test_config(approved_directory=str(tmp_path), agentic_mode=False)
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.reply_text = AsyncMock()
+
+    storage = MagicMock()
+    storage.messages.get_user_messages = AsyncMock(return_value=[])
+    storage.audit.get_user_audit_log = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                event_type="automation_run",
+                event_data={
+                    "details": {
+                        "playbook": "test",
+                        "workspace_root": str(tmp_path / "repo"),
+                        "checkpoint_created": True,
+                    }
+                },
+                success=True,
+                timestamp=datetime.now(timezone.utc),
+            )
+        ]
+    )
+
+    context = MagicMock()
+    context.user_data = {"current_directory": tmp_path}
+    context.bot_data = {
+        "settings": settings,
+        "audit_logger": None,
+        "storage": storage,
+    }
+
+    await recent_activity_command(update, context)
+
+    message = update.message.reply_text.call_args[0][0]
+    assert "Recent autopilot" in message
+    assert "test" in message
+    assert "verified" in message

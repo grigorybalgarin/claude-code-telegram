@@ -77,6 +77,26 @@ def _format_event_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%m-%d %H:%M UTC")
 
 
+def _format_automation_status(details: dict[str, Any]) -> str:
+    """Return a compact status label for an autopilot run."""
+    if details.get("rollback_triggered"):
+        return "rolled back" if details.get("rollback_succeeded") else "rollback failed"
+    if details.get("verification_failed_command"):
+        return "verify failed"
+    if details.get("checkpoint_created"):
+        return "verified"
+    if details.get("read_only"):
+        return "read-only"
+    return "completed"
+
+
+def _format_workspace_value(workspace_root: Optional[str], approved_directory: Path) -> str:
+    """Format workspace path from stored audit details."""
+    if not workspace_root:
+        return "?"
+    return _format_relative_path(Path(workspace_root), approved_directory)
+
+
 def _get_project_automation(context: ContextTypes.DEFAULT_TYPE) -> Optional[Any]:
     """Get project automation feature when available."""
     features = context.bot_data.get("features")
@@ -1081,6 +1101,22 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             lines.append(f"🌿 Git: <code>error: {escape_html(str(e))}</code>")
 
+    if storage:
+        audit_entries = await storage.audit.get_user_audit_log(user_id, limit=12)
+        latest_automation = next(
+            (entry for entry in audit_entries if entry.event_type == "automation_run"),
+            None,
+        )
+        if latest_automation:
+            payload = latest_automation.event_data or {}
+            details = payload.get("details", {})
+            lines.append(
+                "🧾 Last autopilot: "
+                f"<code>{escape_html(str(details.get('playbook', 'general')))}</code> • "
+                f"<code>{escape_html(_format_workspace_value(details.get('workspace_root'), settings.approved_directory))}</code> • "
+                f"<code>{escape_html(_format_automation_status(details))}</code>"
+            )
+
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
     if audit_logger:
@@ -1113,6 +1149,9 @@ async def recent_activity_command(
     messages = await storage.messages.get_user_messages(user_id, limit=5)
     audit_entries = await storage.audit.get_user_audit_log(user_id, limit=10)
     command_entries = [entry for entry in audit_entries if entry.event_type == "command"][:5]
+    automation_entries = [
+        entry for entry in audit_entries if entry.event_type == "automation_run"
+    ][:5]
 
     lines = ["🕘 <b>Recent Activity</b>"]
 
@@ -1140,8 +1179,26 @@ async def recent_activity_command(
                 f"<code>{command_name}</code> • risk <code>{risk}</code>"
             )
 
+    if automation_entries:
+        lines.extend(["", "<b>Recent autopilot</b>"])
+        for entry in automation_entries:
+            payload = entry.event_data or {}
+            details = payload.get("details", {})
+            playbook = escape_html(str(details.get("playbook", "general")))
+            workspace = escape_html(
+                _format_workspace_value(
+                    details.get("workspace_root"), settings.approved_directory
+                )
+            )
+            status = escape_html(_format_automation_status(details))
+            result = "✅" if entry.success else "⚠️"
+            lines.append(
+                f"{result} {escape_html(_format_event_timestamp(entry.timestamp))} • "
+                f"<code>{playbook}</code> • <code>{workspace}</code> • {status}"
+            )
+
     if len(lines) == 1:
-        lines.extend(["", "No recent prompts or commands yet."])
+        lines.extend(["", "No recent prompts, commands, or autopilot runs yet."])
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 

@@ -349,6 +349,58 @@ class AuditLogger:
             risk_level=risk_level,
         )
 
+    async def log_automation_run(
+        self,
+        user_id: int,
+        request: str,
+        workspace_root: str,
+        matched_playbook: Optional[str],
+        read_only: bool,
+        success: bool,
+        mode: str,
+        checkpoint_created: bool = False,
+        verification_results: Optional[List[Dict[str, Any]]] = None,
+        rollback_triggered: bool = False,
+        rollback_succeeded: bool = False,
+        workspace_changed: bool = False,
+    ) -> None:
+        """Log a high-level autopilot run with guard outcomes."""
+        verification_results = verification_results or []
+        failed_verification = next(
+            (item.get("command") for item in verification_results if not item.get("success")),
+            None,
+        )
+
+        if rollback_triggered and not rollback_succeeded:
+            risk_level = "high"
+        elif rollback_triggered or failed_verification:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        event = AuditEvent(
+            timestamp=datetime.now(UTC),
+            user_id=user_id,
+            event_type="automation_run",
+            success=success and failed_verification is None,
+            details={
+                "request_preview": request[:160],
+                "workspace_root": workspace_root,
+                "playbook": matched_playbook or "general",
+                "read_only": read_only,
+                "mode": mode,
+                "workspace_changed": workspace_changed,
+                "checkpoint_created": checkpoint_created,
+                "verification_results": verification_results[:10],
+                "verification_failed_command": failed_verification,
+                "rollback_triggered": rollback_triggered,
+                "rollback_succeeded": rollback_succeeded,
+            },
+            risk_level=risk_level,
+        )
+
+        await self.storage.store_event(event)
+
     async def log_file_access(
         self,
         user_id: int,

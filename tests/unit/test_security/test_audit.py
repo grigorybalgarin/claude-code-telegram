@@ -352,6 +352,37 @@ class TestAuditLogger:
         low_risk_event = events[0]  # Most recent
         assert low_risk_event.risk_level == "low"
 
+    async def test_log_automation_run_with_rollback(self, audit_logger, storage):
+        """Automation runs should capture checkpoint, verify, and rollback state."""
+        await audit_logger.log_automation_run(
+            user_id=123,
+            request="почини тесты",
+            workspace_root="/projects/demo",
+            matched_playbook="test",
+            read_only=False,
+            success=True,
+            mode="agentic",
+            checkpoint_created=True,
+            verification_results=[
+                {"command": "pytest -q", "success": False, "returncode": 1}
+            ],
+            rollback_triggered=True,
+            rollback_succeeded=True,
+            workspace_changed=True,
+        )
+
+        events = await storage.get_events()
+        event = events[0]
+
+        assert event.event_type == "automation_run"
+        assert event.success is False
+        assert event.details["playbook"] == "test"
+        assert event.details["checkpoint_created"] is True
+        assert event.details["verification_failed_command"] == "pytest -q"
+        assert event.details["rollback_triggered"] is True
+        assert event.details["workspace_changed"] is True
+        assert event.risk_level == "medium"
+
     async def test_log_file_access(self, audit_logger, storage):
         """Test logging file access."""
         await audit_logger.log_file_access(

@@ -385,6 +385,7 @@ async def handle_text_message(
         )
         autopilot_plan = None
         prompt_text = message_text
+        command_succeeded = False
         if project_automation:
             autopilot_plan = project_automation.build_automation_plan(
                 message_text,
@@ -434,6 +435,7 @@ async def handle_text_message(
                 on_stream=stream_handler,
                 force_new=force_new,
             )
+            command_succeeded = True
 
             # New session created successfully — clear the one-shot flag
             if force_new:
@@ -714,11 +716,43 @@ async def handle_text_message(
 
         # Log successful message processing
         if audit_logger:
+            if autopilot_plan:
+                verification_results = []
+                if guard_report:
+                    verification_results = [
+                        {
+                            "command": result.command,
+                            "success": result.success,
+                            "returncode": result.returncode,
+                        }
+                        for result in guard_report.verification_results
+                    ]
+
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request=message_text,
+                    workspace_root=str(working_dir),
+                    matched_playbook=autopilot_plan.matched_playbook,
+                    read_only=autopilot_plan.read_only,
+                    success=command_succeeded,
+                    mode="classic",
+                    checkpoint_created=bool(
+                        checkpoint or (guard_report and guard_report.checkpoint_created)
+                    ),
+                    verification_results=verification_results,
+                    rollback_triggered=bool(
+                        guard_report and guard_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        guard_report and guard_report.rollback_succeeded
+                    ),
+                    workspace_changed=working_dir != current_dir,
+                )
             await audit_logger.log_command(
                 user_id=user_id,
                 command="text_message",
                 args=[update.message.text[:100]],  # First 100 chars
-                success=True,
+                success=command_succeeded,
             )
 
         logger.info("Text message processed successfully", user_id=user_id)
