@@ -138,7 +138,12 @@ _LABELS = {
 
 @dataclass(frozen=True)
 class ProblemDiagnosis:
-    """Structured diagnosis of a workspace problem."""
+    """Structured diagnosis of a workspace problem.
+
+    This is the unified diagnosis object used across verify, resolve,
+    deploy, and status flows. It answers: what type of problem, where,
+    why, and what can be done about it.
+    """
 
     problem_type: ProblemType
     label: str
@@ -146,6 +151,8 @@ class ProblemDiagnosis:
     short_cause: str
     safe_to_autofix: bool
     confidence: float = 0.5  # 0.0-1.0, how confident the classification is
+    server_context: str = ""  # server diagnostics summary for prompts
+    is_critical_step: bool = False  # step is marked critical in operations config
 
     @property
     def is_code_fixable(self) -> bool:
@@ -155,9 +162,38 @@ class ProblemDiagnosis:
             ProblemType.DEPLOY,
         }
 
+    @property
+    def needs_caution(self) -> bool:
+        return self.problem_type in {
+            ProblemType.SERVICE,
+            ProblemType.ENVIRONMENT,
+        }
 
-def classify_problem(report: VerifyReport) -> ProblemDiagnosis:
-    """Classify the type of problem from a failing verify report."""
+    def to_dict(self) -> dict:
+        """Serialize for storage and status display."""
+        return {
+            "problem_type": self.problem_type.value,
+            "label": self.label,
+            "failed_step": self.failed_step_label,
+            "short_cause": self.short_cause,
+            "safe_to_autofix": self.safe_to_autofix,
+            "confidence": self.confidence,
+            "is_critical": self.is_critical_step,
+        }
+
+
+def classify_problem(
+    report: VerifyReport,
+    operations_config: Optional[object] = None,
+    server_context: str = "",
+) -> ProblemDiagnosis:
+    """Classify the type of problem from a failing verify report.
+
+    Args:
+        report: The verification report with step results.
+        operations_config: Optional OperationConfig from the profile.
+        server_context: Optional server diagnostics context string.
+    """
     if report.success or not report.failed_step:
         return ProblemDiagnosis(
             problem_type=ProblemType.UNKNOWN,
@@ -180,6 +216,12 @@ def classify_problem(report: VerifyReport) -> ProblemDiagnosis:
         ProblemType.DEPLOY,
     }
 
+    # Check if step is critical per operations config
+    is_critical = False
+    if operations_config:
+        critical_steps = getattr(operations_config, "critical_steps", ()) or ()
+        is_critical = failed_step.label in critical_steps
+
     return ProblemDiagnosis(
         problem_type=problem_type,
         label=_LABELS[problem_type],
@@ -187,6 +229,8 @@ def classify_problem(report: VerifyReport) -> ProblemDiagnosis:
         short_cause=short_cause,
         safe_to_autofix=safe_to_autofix,
         confidence=confidence,
+        server_context=server_context,
+        is_critical_step=is_critical,
     )
 
 
@@ -205,10 +249,11 @@ def format_verify_summary(
             f"Проект: {rel_path}"
         )
 
+    critical_marker = " [критичный]" if diagnosis.is_critical_step else ""
     lines = [
         f"<b>{diagnosis.label}</b>",
         "",
-        f"<b>Что не так:</b> шаг '{diagnosis.failed_step_label}' не прошел",
+        f"<b>Что не так:</b> шаг '{diagnosis.failed_step_label}'{critical_marker} не прошел",
     ]
     if diagnosis.short_cause:
         lines.append(f"<b>Причина:</b> {diagnosis.short_cause}")
@@ -216,7 +261,7 @@ def format_verify_summary(
 
     if diagnosis.safe_to_autofix:
         lines.append(
-            "\n<b>Можно попробовать:</b> нажми «Разберись» для автоматического исправления"
+            "\n<b>Следующий шаг:</b> нажми «Разберись» для автоматического исправления"
         )
     elif diagnosis.problem_type == ProblemType.ENVIRONMENT:
         lines.append(
@@ -225,7 +270,7 @@ def format_verify_summary(
         )
     elif diagnosis.problem_type == ProblemType.SERVICE:
         lines.append(
-            "\n<b>Совет:</b> проверь логи сервиса и его состояние"
+            "\n<b>Следующий шаг:</b> проверь логи сервиса и его состояние"
         )
 
     return "\n".join(lines)

@@ -28,6 +28,25 @@ class ProjectPlaybook:
 
 
 @dataclass(frozen=True)
+class OperationConfig:
+    """Explicit operation configuration for a workspace.
+
+    Defines which verify steps are critical, what diagnose commands to run,
+    and what self-heal actions are safe for this project.
+    """
+
+    critical_steps: tuple[str, ...] = ()
+    diagnose_commands: Dict[str, str] = None  # type: ignore[assignment]
+    self_heal_restart: bool = False
+    self_heal_verify_after_restart: bool = False
+    deploy_rollback_safe: bool = False
+
+    def __post_init__(self) -> None:
+        if self.diagnose_commands is None:
+            object.__setattr__(self, "diagnose_commands", {})
+
+
+@dataclass(frozen=True)
 class ProjectProfile:
     """Detected project profile for the current workspace."""
 
@@ -42,6 +61,7 @@ class ProjectProfile:
     services: tuple["ManagedService", ...] = ()
     operator_notes: str = ""
     sort_priority: int = 0
+    operations: Optional["OperationConfig"] = None
 
     def relative_root(self, approved_directory: Path) -> str:
         """Return project root relative to approved directory when possible."""
@@ -222,13 +242,17 @@ class ProjectAutomationManager:
         )
 
     def validate_profiles(self, boundary_root: Path) -> List[str]:
-        """Validate loaded workspace profiles and return warnings.
+        """Validate loaded workspace profiles and return warnings/errors.
+
+        Returns list of validation messages (prefixed with [error] or [warn]).
 
         Checks:
         - Paths exist under boundary_root
         - No duplicate aliases across profiles
-        - Commands reference existing executables (best-effort)
         - Service definitions have at least one action
+        - Operations config references valid commands
+        - Deploy command exists if deploy_rollback_safe is set
+        - Self-heal requires a service with restart + health
         """
         warnings: List[str] = []
         if not self._workspace_overrides:
@@ -241,14 +265,14 @@ class ProjectAutomationManager:
 
             if not full_path.is_dir():
                 warnings.append(
-                    f"{profile_name}: путь '{rel_path}' не найден"
+                    f"[warn] {profile_name}: путь '{rel_path}' не найден"
                 )
 
             for alias in override.get("aliases") or ():
                 alias_lower = str(alias).lower()
                 if alias_lower in seen_aliases:
                     warnings.append(
-                        f"{profile_name}: алиас '{alias}' "
+                        f"[warn] {profile_name}: алиас '{alias}' "
                         f"уже используется в '{seen_aliases[alias_lower]}'"
                     )
                 else:
@@ -259,12 +283,44 @@ class ProjectAutomationManager:
                 for service in services:
                     if not service.available_actions:
                         warnings.append(
-                            f"{profile_name}: сервис '{service.display_name}' "
+                            f"[error] {profile_name}: сервис '{service.display_name}' "
                             f"не имеет ни одного действия"
                         )
 
+            # Validate operations config
+            ops = override.get("operations")
+            if isinstance(ops, OperationConfig):
+                commands = override.get("commands") or {}
+                if ops.deploy_rollback_safe and not commands.get("deploy"):
+                    warnings.append(
+                        f"[warn] {profile_name}: deploy_rollback_safe=true, "
+                        f"но команда deploy не задана"
+                    )
+                if ops.self_heal_restart:
+                    has_restart = False
+                    has_health = False
+                    if services:
+                        for svc in services:
+                            if getattr(svc, "restart_command", None):
+                                has_restart = True
+                            if getattr(svc, "health_command", None) or getattr(
+                                svc, "status_command", None
+                            ):
+                                has_health = True
+                    if not has_restart:
+                        warnings.append(
+                            f"[error] {profile_name}: self_heal_restart=true, "
+                            f"но нет сервиса с restart командой"
+                        )
+                    if not has_health:
+                        warnings.append(
+                            f"[warn] {profile_name}: self_heal_restart=true, "
+                            f"но нет health/status команды для проверки"
+                        )
+
         for warning in warnings:
-            logger.warning("Profile validation: %s", warning)
+            log_fn = logger.error if warning.startswith("[error]") else logger.warning
+            log_fn("Profile validation: %s", warning)
 
         return warnings
 
@@ -1124,9 +1180,39 @@ class ProjectAutomationManager:
                 },
                 "services": services,
                 "sort_priority": int(entry.get("priority", 0) or 0),
+                "operations": self._parse_operations_override(
+                    entry.get("operations")
+                ),
             }
 
         return overrides
+
+    @staticmethod
+    def _parse_operations_override(
+        raw: object,
+    ) -> Optional[OperationConfig]:
+        """Parse operations config from YAML entry."""
+        if not isinstance(raw, dict):
+            return None
+        diagnose_commands = raw.get("diagnose") or {}
+        if not isinstance(diagnose_commands, dict):
+            diagnose_commands = {}
+        critical = raw.get("critical_steps") or []
+        if not isinstance(critical, list):
+            critical = []
+        return OperationConfig(
+            critical_steps=tuple(str(s).strip() for s in critical if s),
+            diagnose_commands={
+                str(k).strip(): str(v).strip()
+                for k, v in diagnose_commands.items()
+                if str(k).strip() and str(v).strip()
+            },
+            self_heal_restart=bool(raw.get("self_heal_restart", False)),
+            self_heal_verify_after_restart=bool(
+                raw.get("self_heal_verify_after_restart", False)
+            ),
+            deploy_rollback_safe=bool(raw.get("deploy_rollback_safe", False)),
+        )
 
     def _apply_workspace_override(
         self, profile: ProjectProfile, boundary_root: Path
@@ -1163,6 +1249,7 @@ class ProjectAutomationManager:
             services=services,
             operator_notes=str(override.get("operator_notes") or ""),
             sort_priority=int(override.get("sort_priority") or 0),
+            operations=override.get("operations") or profile.operations,
         )
 
     def _parse_service_override(

@@ -21,6 +21,7 @@ from ..utils.html_format import escape_html
 from .context import AgenticWorkspaceContext, ShellActionResult, VerifyStep
 from .deploy_pipeline import DeployPipeline, DeployProfile
 from .panel_builder import PanelBuilder
+from .server_diagnostics import DiagnosticsCollector
 from .problem_classifier import (
     classify_problem,
     format_resolve_summary,
@@ -58,6 +59,7 @@ class ActionRunner:
         self.resolver = resolver
         self.panel = panel
         self.deploy = DeployPipeline(shell)
+        self.diagnostics = DiagnosticsCollector(shell)
 
     # ------------------------------------------------------------------
     # Context resolution helpers (shared with orchestrator)
@@ -614,7 +616,19 @@ class ActionRunner:
             )
 
         report = await self.verify.execute(profile, on_step=_on_step)
-        diagnosis = classify_problem(report)
+
+        # Collect server diagnostics for failing reports
+        server_context = ""
+        if not report.success:
+            server_diag = await self.diagnostics.collect(profile, profile.root_path)
+            server_context = server_diag.as_prompt_context()
+
+        ops_config = getattr(profile, "operations", None)
+        diagnosis = classify_problem(
+            report,
+            operations_config=ops_config,
+            server_context=server_context,
+        )
 
         # Smart summary + detailed report below
         summary = format_verify_summary(report, diagnosis, rel_path)
@@ -719,10 +733,18 @@ class ActionRunner:
             session_id = None
         context.user_data["current_directory"] = profile.root_path
 
+        # Collect server diagnostics for context
+        server_diag = await self.diagnostics.collect(profile, profile.root_path)
+        diag_lines = server_diag.summary_lines()
+        diag_hint = ""
+        if diag_lines:
+            diag_hint = "\n" + "\n".join(f"  {l}" for l in diag_lines)
+
         await status_msg.edit_text(
             "🛠 <b>Разбираюсь</b>\n\n"
             f"Найден сбой: <code>{escape_html(initial_report.failed_step.label)}</code>\n"
-            "Пробую исправить его автоматически.",
+            f"{diag_hint}\n"
+            "Пробую исправить автоматически.",
             parse_mode="HTML",
         )
 
@@ -741,6 +763,7 @@ class ActionRunner:
             session_id,
             initial_report,
             on_progress=_on_resolve_progress,
+            server_context=server_diag.as_prompt_context(),
         )
 
         if result.claude_response:
@@ -1065,3 +1088,125 @@ class ActionRunner:
                 args=[str(profile.root_path)],
                 success=result.overall_success,
             )
+
+    # ------------------------------------------------------------------
+    # Self-heal: safe automated recovery for known scenarios
+    # ------------------------------------------------------------------
+
+    async def try_self_heal(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> bool:
+        """Attempt safe self-heal for the current workspace.
+
+        Only acts if the profile has self_heal_restart enabled and the
+        primary service is down. Returns True if healing was attempted.
+        """
+        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
+            self._get_workspace_profile(context)
+        )
+        if not profile:
+            return False
+
+        ops = getattr(profile, "operations", None)
+        if not ops or not getattr(ops, "self_heal_restart", False):
+            return False
+
+        # Check if primary service is down
+        primary_service = self.verify.select_primary_service(profile)
+        if not primary_service:
+            return False
+
+        restart_cmd = getattr(primary_service, "restart_command", None)
+        if not restart_cmd:
+            return False
+
+        health_cmd = (
+            getattr(primary_service, "health_command", None)
+            or getattr(primary_service, "status_command", None)
+        )
+        if not health_cmd:
+            return False
+
+        # Check current state
+        health_result = await self.shell.execute(
+            workspace_root=profile.root_path,
+            command=health_cmd,
+            timeout_seconds=10,
+        )
+        if health_result.success:
+            return False  # Service is up, no heal needed
+
+        import time as _time
+        import uuid as _uuid
+
+        correlation_id = str(_uuid.uuid4())[:8]
+        rel_path = self.panel.format_relative_path(profile.root_path, boundary_root)
+
+        status_msg = await query.message.reply_text(
+            "🔄 <b>Self-heal</b>\n\n"
+            f"Сервис <code>{escape_html(primary_service.display_name)}</code> не активен.\n"
+            "Перезапускаю...",
+            parse_mode="HTML",
+        )
+
+        # Restart
+        restart_result = await self.shell.execute(
+            workspace_root=profile.root_path,
+            command=restart_cmd,
+            timeout_seconds=30,
+        )
+
+        if not restart_result.success:
+            await status_msg.edit_text(
+                "❌ <b>Self-heal: перезапуск не удался</b>\n\n"
+                f"Сервис: {escape_html(primary_service.display_name)}\n"
+                f"Ошибка: <code>{escape_html(restart_result.stderr_text or restart_result.error or '?')}</code>",
+                parse_mode="HTML",
+            )
+            await self._save_operation(
+                context, str(profile.root_path), "self_heal", False,
+                {"action": "restart", "error": restart_result.error},
+                correlation_id=correlation_id,
+            )
+            return True
+
+        # Verify after restart if configured
+        verify_ok = None
+        if getattr(ops, "self_heal_verify_after_restart", False):
+            import asyncio
+            await asyncio.sleep(3)
+            health_result = await self.shell.execute(
+                workspace_root=profile.root_path,
+                command=health_cmd,
+                timeout_seconds=15,
+            )
+            verify_ok = health_result.success
+
+        if verify_ok is False:
+            await status_msg.edit_text(
+                "⚠️ <b>Self-heal: перезапущен, но проверка не прошла</b>\n\n"
+                f"Сервис: {escape_html(primary_service.display_name)}\n"
+                "Требуется ручной разбор.",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text(
+                "✅ <b>Self-heal: сервис восстановлен</b>\n\n"
+                f"Сервис: {escape_html(primary_service.display_name)}\n"
+                f"Проект: <code>{escape_html(rel_path)}</code>",
+                parse_mode="HTML",
+            )
+
+        await self._save_operation(
+            context, str(profile.root_path), "self_heal",
+            verify_ok is not False,
+            {
+                "action": "restart",
+                "verify_ok": verify_ok,
+                "timestamp": _time.time(),
+            },
+            correlation_id=correlation_id,
+        )
+        return True

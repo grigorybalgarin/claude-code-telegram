@@ -273,15 +273,22 @@ class Storage:
         }
 
     async def cleanup_old_data(self, days: int = 30) -> Dict[str, int]:
-        """Cleanup old data."""
+        """Cleanup old data including operational state."""
         logger.info("Starting data cleanup", days=days)
 
-        # Cleanup old sessions
         sessions_cleaned = await self.sessions.cleanup_old_sessions(days)
+        operations_cleaned = await self.operations.cleanup_old_operations(days)
 
-        logger.info("Data cleanup complete", sessions_cleaned=sessions_cleaned)
+        logger.info(
+            "Data cleanup complete",
+            sessions_cleaned=sessions_cleaned,
+            operations_cleaned=operations_cleaned,
+        )
 
-        return {"sessions_cleaned": sessions_cleaned}
+        return {
+            "sessions_cleaned": sessions_cleaned,
+            "operations_cleaned": operations_cleaned,
+        }
 
     async def get_user_dashboard(self, user_id: int) -> Dict[str, Any]:
         """Get comprehensive user dashboard data."""

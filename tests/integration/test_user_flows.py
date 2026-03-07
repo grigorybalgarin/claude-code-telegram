@@ -1000,3 +1000,250 @@ class TestPersistentStatusFallback:
         )
         assert "Деплой" not in text
         assert "Статус" in text
+
+
+# ── Operation Config Tests ─────────────────────────────────────────────
+
+
+class TestOperationConfig:
+    """Tests for project-specific operation configuration."""
+
+    def test_operation_config_defaults(self):
+        """OperationConfig has sensible defaults."""
+        from src.bot.features.project_automation import OperationConfig
+
+        config = OperationConfig()
+        assert config.critical_steps == ()
+        assert config.diagnose_commands == {}
+        assert config.self_heal_restart is False
+        assert config.deploy_rollback_safe is False
+
+    def test_operation_config_full(self):
+        """OperationConfig accepts all fields."""
+        from src.bot.features.project_automation import OperationConfig
+
+        config = OperationConfig(
+            critical_steps=("health", "lint"),
+            diagnose_commands={"svc": "systemctl is-active app"},
+            self_heal_restart=True,
+            self_heal_verify_after_restart=True,
+            deploy_rollback_safe=True,
+        )
+        assert "health" in config.critical_steps
+        assert config.self_heal_restart is True
+
+    def test_profile_has_operations_field(self):
+        """ProjectProfile accepts operations config."""
+        from src.bot.features.project_automation import OperationConfig
+
+        profile = _make_profile(Path("/tmp/test"))
+        # SimpleNamespace doesn't have operations by default
+        assert not hasattr(profile, "operations") or profile.operations is None
+
+    def test_classify_with_critical_step(self):
+        """Classifier marks step as critical when in operations config."""
+        from src.bot.features.project_automation import OperationConfig
+
+        ops = OperationConfig(critical_steps=("health",))
+        result = ShellActionResult(
+            command="check",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="Connection refused",
+            stderr_text="",
+        )
+        step = VerifyStep(label="health", command="curl localhost:8080")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report, operations_config=ops)
+        assert diagnosis.is_critical_step is True
+
+    def test_classify_without_critical_step(self):
+        """Non-critical steps are not marked as critical."""
+        from src.bot.features.project_automation import OperationConfig
+
+        ops = OperationConfig(critical_steps=("health",))
+        result = ShellActionResult(
+            command="lint",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="flake8 error",
+            stderr_text="",
+        )
+        step = VerifyStep(label="lint", command="flake8 src")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report, operations_config=ops)
+        assert diagnosis.is_critical_step is False
+
+
+# ── Server Diagnostics Tests ──────────────────────────────────────────
+
+
+class TestServerDiagnostics:
+    """Tests for server diagnostics data structure."""
+
+    def test_server_diagnostics_defaults(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics()
+        assert diag.service_active is None
+        assert diag.has_service_problem is False
+        assert diag.has_disk_problem is False
+        assert diag.is_flapping is False
+        assert diag.summary_lines() == []
+        assert diag.as_prompt_context() == ""
+
+    def test_service_down_detection(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics(service_active=False, service_state="inactive")
+        assert diag.has_service_problem is True
+        lines = diag.summary_lines()
+        assert any("не активен" in l for l in lines)
+
+    def test_disk_problem_detection(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics(
+            disk_usage="/dev/sda1  20G  19G  1G  97% /"
+        )
+        assert diag.has_disk_problem is True
+
+    def test_flapping_detection(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics(restart_count=5)
+        assert diag.is_flapping is True
+
+    def test_no_flapping_with_few_restarts(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics(restart_count=1)
+        assert diag.is_flapping is False
+
+    def test_prompt_context_formatting(self):
+        from src.bot.agentic.server_diagnostics import ServerDiagnostics
+
+        diag = ServerDiagnostics(
+            service_state="active (running)",
+            recent_errors="error: something broke",
+        )
+        ctx = diag.as_prompt_context()
+        assert "Диагностика сервера" in ctx
+        assert "something broke" in ctx
+
+    def test_diagnosis_to_dict(self):
+        """ProblemDiagnosis.to_dict() includes all fields."""
+        result = ShellActionResult(
+            command="test",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="SyntaxError: bad",
+            stderr_text="",
+        )
+        step = VerifyStep(label="test", command="pytest")
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
+        diagnosis = classify_problem(report)
+        d = diagnosis.to_dict()
+        assert "problem_type" in d
+        assert "confidence" in d
+        assert "is_critical" in d
+        assert isinstance(d["confidence"], float)
+
+
+# ── Retention/Cleanup Tests ───────────────────────────────────────────
+
+
+class TestRetentionCleanup:
+    """Tests for operations cleanup policy."""
+
+    async def test_cleanup_method_exists(self):
+        """OperationsRepository has cleanup_old_operations method."""
+        from src.storage.repositories import OperationsRepository
+        assert hasattr(OperationsRepository, "cleanup_old_operations")
+
+    async def test_storage_cleanup_includes_operations(self):
+        """Storage.cleanup_old_data returns operations_cleaned count."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.storage.facade import Storage
+
+        storage = Storage.__new__(Storage)
+        storage.sessions = MagicMock()
+        storage.sessions.cleanup_old_sessions = AsyncMock(return_value=5)
+        storage.operations = MagicMock()
+        storage.operations.cleanup_old_operations = AsyncMock(return_value=10)
+
+        result = await storage.cleanup_old_data(days=7)
+        assert result["sessions_cleaned"] == 5
+        assert result["operations_cleaned"] == 10
+
+
+# ── Profile Validation Tests ──────────────────────────────────────────
+
+
+class TestProfileValidation:
+    """Tests for enhanced profile validation."""
+
+    def test_validate_self_heal_without_restart(self):
+        """Validation catches self_heal_restart without restart command."""
+        from src.bot.features.project_automation import (
+            OperationConfig,
+            ProjectAutomationManager,
+        )
+
+        pa = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        pa._workspace_overrides = {
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(self_heal_restart=True),
+            }
+        }
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            errors = [w for w in warnings if w.startswith("[error]")]
+            assert any("self_heal_restart" in w for w in errors)
+
+    def test_validate_deploy_rollback_without_deploy_cmd(self):
+        """Validation warns about deploy_rollback_safe without deploy command."""
+        from src.bot.features.project_automation import (
+            OperationConfig,
+            ProjectAutomationManager,
+        )
+
+        pa = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        pa._workspace_overrides = {
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {"health": "echo ok"},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(deploy_rollback_safe=True),
+            }
+        }
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("deploy_rollback_safe" in w for w in warnings)

@@ -936,8 +936,30 @@ class OperationsRepository:
         workspace_path: str,
     ) -> Dict[str, Optional[Dict]]:
         """Get latest operation of each type for a workspace — the operational state."""
-        op_types = ["verify", "resolve", "deploy", "service", "restart"]
+        op_types = ["verify", "resolve", "deploy", "service", "restart", "self_heal"]
         state: Dict[str, Optional[Dict]] = {}
         for op_type in op_types:
             state[op_type] = await self.get_last(workspace_path, op_type)
         return state
+
+    async def cleanup_old_operations(self, retention_days: int = 30) -> int:
+        """Delete operations older than retention_days. Returns count deleted."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                DELETE FROM workspace_operations
+                WHERE created_at < datetime('now', ?)
+                """,
+                (f"-{retention_days} days",),
+            )
+            await conn.commit()
+            return cursor.rowcount or 0
+
+    async def count_operations(self) -> int:
+        """Return total number of stored operations."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM workspace_operations"
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0

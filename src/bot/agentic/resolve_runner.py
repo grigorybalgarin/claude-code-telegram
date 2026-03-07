@@ -69,6 +69,7 @@ class ResolveRunner:
         session_id: str | None,
         initial_report: VerifyReport,
         on_progress: Optional[Callable[[str], Coroutine]] = None,
+        server_context: str = "",
     ) -> ResolveResult:
         """Execute the full resolve cycle with up to MAX_RESOLVE_ATTEMPTS.
 
@@ -121,7 +122,12 @@ class ResolveRunner:
 
             current_report = initial_report
             current_session_id = session_id
-            diagnosis = classify_problem(initial_report)
+            ops_config = getattr(ctx.profile, "operations", None)
+            diagnosis = classify_problem(
+                initial_report,
+                operations_config=ops_config,
+                server_context=server_context,
+            )
 
             for attempt in range(1, MAX_RESOLVE_ATTEMPTS + 1):
                 is_retry = attempt > 1
@@ -138,7 +144,11 @@ class ResolveRunner:
                         )
 
                 if is_retry:
-                    diagnosis = classify_problem(current_report)
+                    diagnosis = classify_problem(
+                        current_report,
+                        operations_config=ops_config,
+                        server_context=server_context,
+                    )
 
                 prompt = self._build_prompt(
                     ctx, current_report, diagnosis=diagnosis, is_retry=is_retry
@@ -279,6 +289,11 @@ class ResolveRunner:
             if log_text:
                 logs_context = f"\nЛоги сервиса:\n{log_text}\n"
 
+        # Server diagnostics context
+        server_diag_context = ""
+        if diagnosis and diagnosis.server_context:
+            server_diag_context = diagnosis.server_context
+
         # Git diff for recent changes context
         git_context = ""
         if ctx.profile.has_git_repo:
@@ -293,6 +308,7 @@ class ResolveRunner:
                 f"Команда: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
                 f"{logs_context}"
+                f"{server_diag_context}"
                 f"{git_context}\n"
                 "Действуй автономно:\n"
                 "1. Внимательно прочитай новый вывод ошибки — возможно, ты внес новый баг.\n"
@@ -309,6 +325,7 @@ class ResolveRunner:
                 f"Команда шага: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
                 f"{logs_context}"
+                f"{server_diag_context}"
                 f"{git_context}\n"
                 "Действуй автономно:\n"
                 "1. Определи точную причину сбоя.\n"
