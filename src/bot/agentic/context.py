@@ -53,12 +53,13 @@ class ResolveResult:
     """Structured result of an autonomous resolve attempt."""
 
     initial_failure: Optional[VerifyStep]
-    claude_response: Optional[Any]  # ClaudeResponse from facade
+    claude_response: Optional[Any]  # ClaudeResponse from facade (last attempt)
     final_report: Optional[VerifyReport]
     rollback_report: Optional[Any]  # ChangeGuardReport
     success: bool
     checkpoint_created: bool = False
     error: Optional[str] = None
+    attempts: int = 1
 
 
 @dataclass

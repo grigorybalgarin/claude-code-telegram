@@ -1563,7 +1563,19 @@ class MessageOrchestrator:
             parse_mode="HTML",
         )
 
-        result = await self.resolver.run(ws_ctx, user_id, session_id, initial_report)
+        async def _on_resolve_progress(status_text: str) -> None:
+            try:
+                await status_msg.edit_text(
+                    f"🛠 <b>Разбираюсь</b>\n\n{escape_html(status_text)}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        result = await self.resolver.run(
+            ws_ctx, user_id, session_id, initial_report,
+            on_progress=_on_resolve_progress,
+        )
 
         if result.claude_response:
             context.user_data["claude_session_id"] = result.claude_response.session_id
@@ -1593,10 +1605,15 @@ class MessageOrchestrator:
                         )
 
             if result.final_report:
+                attempts_note = (
+                    f" (попытка {result.attempts})"
+                    if result.attempts > 1
+                    else ""
+                )
                 header = (
-                    "✅ <b>Разобрался</b>"
+                    f"✅ <b>Разобрался{attempts_note}</b>"
                     if result.success
-                    else "⚠️ <b>Проблему нашел, но до конца не добил</b>"
+                    else f"⚠️ <b>Проблему нашел, но до конца не добил{attempts_note}</b>"
                 )
                 verify_report_text = self.verify.format_report(
                     profile, boundary_root, result.final_report

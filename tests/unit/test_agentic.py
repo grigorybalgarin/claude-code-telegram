@@ -427,11 +427,14 @@ class TestResolveRunner:
             session_id="sess-123",
             content="Fixed the issue",
         ))
+        pa = MagicMock()
+        # Make build_general_autopilot_prompt pass through the user_request
+        pa.build_general_autopilot_prompt = lambda req, prof: f"AUTOPILOT\n{req}"
         return AgenticWorkspaceContext(
             current_directory=tmp_dir,
             current_workspace=tmp_dir,
             boundary_root=tmp_dir,
-            project_automation=MagicMock() if has_automation else None,
+            project_automation=pa if has_automation else None,
             profile=profile if has_automation else None,
             claude_integration=claude_integration,
             storage=None,
@@ -457,6 +460,126 @@ class TestResolveRunner:
         report = VerifyReport(results=[], failed_step=None, logs_result=None)
         result = await runner.run(ctx, user_id=1, session_id=None, initial_report=report)
         assert result.success is True
+
+    async def test_resolve_calls_claude_with_both_outputs(self, tmp_dir):
+        """Prompt should include both stderr and stdout when available."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        step = VerifyStep(label="test", command="pytest")
+        failing = ShellActionResult(
+            command="pytest", returncode=1, success=False,
+            timed_out=False, stdout_text="FAILED test_foo", stderr_text="ImportError: no module",
+        )
+        report = VerifyReport(
+            results=[(step, failing)], failed_step=step, logs_result=None,
+        )
+        prompt = runner._build_prompt(ctx, report)
+        assert "stderr:" in prompt
+        assert "ImportError" in prompt
+        assert "stdout:" in prompt
+        assert "FAILED test_foo" in prompt
+
+    async def test_resolve_includes_passing_steps_context(self, tmp_dir):
+        """Prompt should mention which steps already pass."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        ok_step = VerifyStep(label="health", command="curl :8080")
+        ok_result = ShellActionResult(
+            command="curl :8080", returncode=0, success=True,
+            timed_out=False, stdout_text="ok", stderr_text="",
+        )
+        fail_step = VerifyStep(label="test", command="pytest")
+        fail_result = ShellActionResult(
+            command="pytest", returncode=1, success=False,
+            timed_out=False, stdout_text="FAILED", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(ok_step, ok_result), (fail_step, fail_result)],
+            failed_step=fail_step,
+            logs_result=None,
+        )
+        prompt = runner._build_prompt(ctx, report)
+        assert "health" in prompt
+        assert "проходят" in prompt.lower() or "Уже проходят" in prompt
+
+    async def test_resolve_retry_prompt_differs(self, tmp_dir):
+        """Retry prompt should mention previous attempt failed."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        step = VerifyStep(label="test", command="pytest")
+        result = ShellActionResult(
+            command="pytest", returncode=1, success=False,
+            timed_out=False, stdout_text="still failing", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None,
+        )
+        first_prompt = runner._build_prompt(ctx, report, is_retry=False)
+        retry_prompt = runner._build_prompt(ctx, report, is_retry=True)
+        assert "Предыдущая попытка" in retry_prompt
+        assert "Предыдущая попытка" not in first_prompt
+
+    async def test_resolve_includes_logs_context(self, tmp_dir):
+        """Prompt should include service logs when available."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        step = VerifyStep(label="health", command="curl :8080")
+        fail = ShellActionResult(
+            command="curl :8080", returncode=1, success=False,
+            timed_out=False, stdout_text="", stderr_text="connection refused",
+        )
+        logs = ShellActionResult(
+            command="journalctl", returncode=0, success=True,
+            timed_out=False, stdout_text="Error: port already in use", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, fail)], failed_step=step, logs_result=logs,
+        )
+        prompt = runner._build_prompt(ctx, report)
+        assert "port already in use" in prompt
+
+    async def test_resolve_on_progress_called(self, tmp_dir):
+        """on_progress should be called during resolve cycle."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        step = VerifyStep(label="health", command="echo ok")
+        fail = ShellActionResult(
+            command="echo ok", returncode=1, success=False,
+            timed_out=False, stdout_text="", stderr_text="err",
+        )
+        report = VerifyReport(
+            results=[(step, fail)], failed_step=step, logs_result=None,
+        )
+        progress_calls = []
+        async def on_progress(text):
+            progress_calls.append(text)
+        await runner.run(
+            ctx, user_id=1, session_id=None, initial_report=report,
+            on_progress=on_progress,
+        )
+        assert len(progress_calls) >= 1
+        assert any("health" in call for call in progress_calls)
+
+    async def test_resolve_attempts_field(self, tmp_dir):
+        """Result should report how many attempts were made."""
+        ctx = self._make_ctx(tmp_dir)
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        runner = ResolveRunner(verify)
+        # With a report that already passes, attempts should be 1 (default)
+        report = VerifyReport(results=[], failed_step=None, logs_result=None)
+        result = await runner.run(ctx, user_id=1, session_id=None, initial_report=report)
+        assert result.attempts == 1
 
 
 # ── PanelBuilder ─────────────────────────────────────────────────────
