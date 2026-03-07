@@ -102,6 +102,19 @@ class _PendingMessage:
     context: Any
 
 
+@dataclass(frozen=True)
+class _ShellActionResult:
+    """Structured result of a deterministic shell action."""
+
+    command: str
+    returncode: int
+    success: bool
+    timed_out: bool
+    stdout_text: str
+    stderr_text: str
+    error: Optional[str] = None
+
+
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
@@ -1342,6 +1355,7 @@ class MessageOrchestrator:
             "<b>Managed Services</b>",
             "",
             f"Workspace: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
+            "Lifecycle actions auto-run follow-up checks and attach logs on failure.",
         ]
         if header:
             lines.extend(["", header])
@@ -1679,33 +1693,14 @@ class MessageOrchestrator:
             return normalized
         return normalized[-limit:]
 
-    async def _run_agentic_shell_action(
+    async def _execute_agentic_shell_action(
         self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
         workspace_root: Path,
-        boundary_root: Path,
-        title: str,
         command: str,
-        audit_command: str,
         timeout_seconds: int = 120,
-    ) -> None:
-        """Run a deterministic shell action and report the result in Telegram."""
-        user_id = query.from_user.id
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Running Command</b>\n\n"
-            f"Action: <code>{escape_html(title)}</code>\n"
-            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
-            f"Command: <code>{escape_html(command)}</code>",
-            parse_mode="HTML",
-        )
-
-        success = False
+    ) -> _ShellActionResult:
+        """Execute a deterministic shell action and capture a redacted result."""
         timed_out = False
-        stdout_text = ""
-        stderr_text = ""
-        returncode = -1
-
         try:
             process = await asyncio.create_subprocess_exec(
                 "/bin/sh",
@@ -1730,38 +1725,178 @@ class MessageOrchestrator:
             stderr_text = self._tail_command_output(
                 _redact_secrets(stderr.decode("utf-8", errors="replace"))
             )
-            success = not timed_out and returncode == 0
-
-            lines = [
-                f"✅ <b>{escape_html(title)}</b>" if success else f"❌ <b>{escape_html(title)}</b>",
-                "",
-                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
-                f"Command: <code>{escape_html(command)}</code>",
-                f"Exit code: <code>{returncode}</code>",
-            ]
-            if timed_out:
-                lines.append(f"Timed out after <code>{timeout_seconds}s</code>.")
-            if stdout_text:
-                lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(stdout_text)}</pre>"])
-            if stderr_text:
-                lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(stderr_text)}</pre>"])
-            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
-        except Exception as e:
-            await status_msg.edit_text(
-                "❌ <b>Command Failed</b>\n\n"
-                f"Action: <code>{escape_html(title)}</code>\n"
-                f"Error: <code>{escape_html(str(e))}</code>",
-                parse_mode="HTML",
+            return _ShellActionResult(
+                command=command,
+                returncode=returncode,
+                success=not timed_out and returncode == 0,
+                timed_out=timed_out,
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
             )
-        finally:
-            audit_logger = context.bot_data.get("audit_logger")
-            if audit_logger:
-                await audit_logger.log_command(
-                    user_id=user_id,
-                    command=audit_command,
-                    args=[command, str(workspace_root)],
-                    success=success,
+        except Exception as e:
+            return _ShellActionResult(
+                command=command,
+                returncode=-1,
+                success=False,
+                timed_out=False,
+                stdout_text="",
+                stderr_text="",
+                error=str(e),
+            )
+
+    def _build_agentic_shell_action_lines(
+        self,
+        title: str,
+        workspace_root: Path,
+        boundary_root: Path,
+        result: _ShellActionResult,
+    ) -> List[str]:
+        """Format a shell action result into Telegram-friendly lines."""
+        if result.error:
+            return [
+                "❌ <b>Command Failed</b>",
+                "",
+                f"Action: <code>{escape_html(title)}</code>",
+                f"Error: <code>{escape_html(result.error)}</code>",
+            ]
+
+        lines = [
+            f"✅ <b>{escape_html(title)}</b>"
+            if result.success
+            else f"❌ <b>{escape_html(title)}</b>",
+            "",
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>",
+            f"Command: <code>{escape_html(result.command)}</code>",
+            f"Exit code: <code>{result.returncode}</code>",
+        ]
+        if result.timed_out:
+            lines.append("Timed out.")
+        if result.stdout_text:
+            lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(result.stdout_text)}</pre>"])
+        if result.stderr_text:
+            lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(result.stderr_text)}</pre>"])
+        return lines
+
+    @staticmethod
+    def _summarize_agentic_shell_result(result: _ShellActionResult, limit: int = 140) -> str:
+        """Build a compact one-line summary of a shell action result."""
+        if result.error:
+            summary = result.error
+        else:
+            summary = result.stdout_text or result.stderr_text or ""
+        compact = " ".join(summary.split())
+        if not compact:
+            compact = "no output"
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3] + "..."
+
+    @staticmethod
+    def _select_agentic_background_verification(profile: Any) -> Optional[str]:
+        """Select the best health command for a background action."""
+        command = profile.commands.get("health")
+        if command:
+            return command
+
+        for service in getattr(profile, "services", ()):
+            if getattr(service, "health_command", None):
+                return service.health_command
+        for service in getattr(profile, "services", ()):
+            if getattr(service, "status_command", None):
+                return service.status_command
+        return None
+
+    async def _run_agentic_service_follow_up_checks(
+        self,
+        service: Any,
+        workspace_root: Path,
+        action_key: str,
+    ) -> tuple[List[tuple[str, _ShellActionResult]], Optional[_ShellActionResult], bool]:
+        """Run post-action checks for managed service lifecycle operations."""
+        checks: List[tuple[str, _ShellActionResult]] = []
+        logs_result: Optional[_ShellActionResult] = None
+        all_required_checks_passed = True
+
+        if action_key in {"start", "restart"}:
+            await asyncio.sleep(2.0)
+            for label, command in (
+                ("status", service.command_for("status")),
+                ("health", service.command_for("health")),
+            ):
+                if not command:
+                    continue
+                result = await self._execute_agentic_shell_action(
+                    workspace_root,
+                    command,
+                    timeout_seconds=45,
                 )
+                checks.append((label, result))
+                if not result.success:
+                    all_required_checks_passed = False
+            if not all_required_checks_passed and service.command_for("logs"):
+                logs_result = await self._execute_agentic_shell_action(
+                    workspace_root,
+                    service.command_for("logs"),
+                    timeout_seconds=30,
+                )
+        elif action_key == "stop" and service.command_for("status"):
+            await asyncio.sleep(1.0)
+            status_result = await self._execute_agentic_shell_action(
+                workspace_root,
+                service.command_for("status"),
+                timeout_seconds=30,
+            )
+            checks.append(("status", status_result))
+
+        return checks, logs_result, all_required_checks_passed
+
+    async def _run_agentic_shell_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        workspace_root: Path,
+        boundary_root: Path,
+        title: str,
+        command: str,
+        audit_command: str,
+        timeout_seconds: int = 120,
+    ) -> None:
+        """Run a deterministic shell action and report the result in Telegram."""
+        user_id = query.from_user.id
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Command</b>\n\n"
+            f"Action: <code>{escape_html(title)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
+            f"Command: <code>{escape_html(command)}</code>",
+            parse_mode="HTML",
+        )
+
+        result = await self._execute_agentic_shell_action(
+            workspace_root=workspace_root,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
+        await status_msg.edit_text(
+            "\n".join(
+                self._build_agentic_shell_action_lines(
+                    title=title,
+                    workspace_root=workspace_root,
+                    boundary_root=boundary_root,
+                    result=result,
+                )
+            ),
+            parse_mode="HTML",
+        )
+
+        success = result.success
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command=audit_command,
+                args=[command, str(workspace_root)],
+                success=success,
+            )
 
     async def _run_agentic_command_action(
         self,
@@ -1819,15 +1954,101 @@ class MessageOrchestrator:
             return
 
         title = f"{service.display_name}: {action_key}"
-        await self._run_agentic_shell_action(
-            query=query,
-            context=context,
-            workspace_root=profile.root_path,
-            boundary_root=boundary_root,
-            title=title,
-            command=command,
-            audit_command=f"service_{service.key}_{action_key}",
+        user_id = query.from_user.id
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Service Action</b>\n\n"
+            f"Service: <code>{escape_html(service.display_name)}</code>\n"
+            f"Action: <code>{escape_html(action_key)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Command: <code>{escape_html(command)}</code>",
+            parse_mode="HTML",
         )
+
+        main_result = await self._execute_agentic_shell_action(
+            workspace_root=profile.root_path,
+            command=command,
+            timeout_seconds=120,
+        )
+
+        checks: List[tuple[str, _ShellActionResult]] = []
+        logs_result: Optional[_ShellActionResult] = None
+        checks_ok = True
+        if action_key in {"start", "restart", "stop"} and main_result.success:
+            await status_msg.edit_text(
+                "⏳ <b>Waiting For Service Checks</b>\n\n"
+                f"Service: <code>{escape_html(service.display_name)}</code>\n"
+                f"Action: <code>{escape_html(action_key)}</code>",
+                parse_mode="HTML",
+            )
+            checks, logs_result, checks_ok = await self._run_agentic_service_follow_up_checks(
+                service=service,
+                workspace_root=profile.root_path,
+                action_key=action_key,
+            )
+        elif not main_result.success and action_key in {"start", "restart"} and service.command_for("logs"):
+            logs_result = await self._execute_agentic_shell_action(
+                profile.root_path,
+                service.command_for("logs"),
+                timeout_seconds=30,
+            )
+
+        final_success = main_result.success and checks_ok
+        lines = [
+            "✅ <b>Service Action Complete</b>"
+            if final_success
+            else "❌ <b>Service Action Failed</b>",
+            "",
+            f"Service: <code>{escape_html(service.display_name)}</code>",
+            f"Action: <code>{escape_html(action_key)}</code>",
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+            f"Command: <code>{escape_html(command)}</code>",
+            f"Exit code: <code>{main_result.returncode}</code>",
+        ]
+        if main_result.error:
+            lines.append(f"Error: <code>{escape_html(main_result.error)}</code>")
+        elif main_result.timed_out:
+            lines.append("Timed out.")
+        if main_result.stdout_text:
+            lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(main_result.stdout_text)}</pre>"])
+        if main_result.stderr_text:
+            lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(main_result.stderr_text)}</pre>"])
+
+        if checks:
+            lines.extend(["", "<b>Post-checks</b>"])
+            for label, result in checks:
+                check_state = "ok" if result.success else "failed"
+                if result.timed_out:
+                    check_state = "timeout"
+                lines.append(
+                    f"• <code>{escape_html(label)}</code>: <code>{escape_html(check_state)}</code> "
+                    f"(exit <code>{result.returncode}</code>)"
+                )
+                summary = self._summarize_agentic_shell_result(result)
+                if summary and summary != "no output":
+                    lines.append(f"  <code>{escape_html(summary)}</code>")
+
+        if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
+            log_body = logs_result.stdout_text or logs_result.stderr_text
+            if logs_result.error:
+                log_body = logs_result.error
+            lines.extend(
+                [
+                    "",
+                    "<b>Service logs</b>",
+                    f"<pre>{escape_html(log_body)}</pre>",
+                ]
+            )
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command=f"service_{service.key}_{action_key}",
+                args=[command, str(profile.root_path)],
+                success=final_success,
+            )
 
     async def _run_agentic_background_action(
         self,
@@ -1850,7 +2071,7 @@ class MessageOrchestrator:
             await query.answer("Action is not available in this workspace.", show_alert=True)
             return
 
-        verification_command = profile.commands.get("health")
+        verification_command = self._select_agentic_background_verification(profile)
         verification_mode = None
         verification_delay_seconds = 0.0
         verification_retries = 1

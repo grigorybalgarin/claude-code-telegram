@@ -896,8 +896,135 @@ workspaces:
 
     query.message.reply_text.assert_awaited_once()
     result_text = status_msg.edit_text.call_args.args[0]
-    assert "ClaudeBot Service: status" in result_text
+    assert "Service Action Complete" in result_text
+    assert "Service: <code>ClaudeBot Service</code>" in result_text
+    assert "Action: <code>status</code>" in result_text
     assert "service ok" in result_text
+
+
+async def test_agentic_service_restart_runs_post_checks_and_logs(agentic_settings, tmp_dir):
+    """Lifecycle service actions should auto-run follow-up checks and attach logs on failure."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: command
+        restart: python3 -c "print('restarted')"
+        status: python3 -c "print('active')"
+        health: python3 -c "import sys; print('unhealthy'); sys.exit(1)"
+        logs: python3 -c "print('recent service log')"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    query = MagicMock()
+    query.data = "act:svc:app:restart"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    status_msg = AsyncMock()
+    status_msg.edit_text = AsyncMock()
+    query.message.reply_text = AsyncMock(return_value=status_msg)
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    result_text = status_msg.edit_text.call_args.args[0]
+    assert "Service Action Failed" in result_text
+    assert "Post-checks" in result_text
+    assert "health" in result_text
+    assert "unhealthy" in result_text
+    assert "Service logs" in result_text
+    assert "recent service log" in result_text
+
+
+async def test_agentic_background_action_uses_service_health_fallback(
+    agentic_settings, tmp_dir
+):
+    """Background jobs should fall back to managed service health when workspace health is absent."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "ClaudeBot"
+    workspace_root.mkdir()
+    (workspace_root / ".git").mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: ClaudeBot
+    name: ClaudeBot
+    commands:
+      start: python3 -c "import time; print('boot'); time.sleep(10)"
+    services:
+      - key: app
+        name: ClaudeBot Service
+        type: command
+        health: python3 -c "print('service healthy')"
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    operator_runtime = WorkspaceOperatorRuntime(tmp_dir / "operator_runtime")
+
+    query = MagicMock()
+    query.data = "act:start"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(
+            get_project_automation=lambda: manager,
+            get_workspace_operator=lambda: operator_runtime,
+        ),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    job = operator_runtime.get_latest_job(workspace_root)
+    assert job is not None
+    assert job.verification_command == 'python3 -c "print(\'service healthy\')"'
+    assert job.verification_mode == "while_running"
+
+    stopped = await operator_runtime.stop_job(job.job_id)
+    if stopped.is_active:
+        await asyncio.sleep(0.3)
 
 
 def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):
