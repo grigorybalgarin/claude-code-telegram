@@ -34,6 +34,13 @@ from telegram.ext import (
 from ..claude.sdk_integration import StreamUpdate
 from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
+from .agentic.context import (
+    AgenticWorkspaceContext,
+    ResolveResult,
+    ShellActionResult,
+    VerifyReport,
+    VerifyStep,
+)
 from .features.change_guard import ChangeGuardReport
 from ..utils.redaction import redact_sensitive_text
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
@@ -143,26 +150,9 @@ class _MessageActionProxy:
         )
 
 
-@dataclass(frozen=True)
-class _ShellActionResult:
-    """Structured result of a deterministic shell action."""
-
-    command: str
-    returncode: int
-    success: bool
-    timed_out: bool
-    stdout_text: str
-    stderr_text: str
-    error: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class _VerifyStep:
-    """One deterministic verification step for the current workspace."""
-
-    label: str
-    command: str
-    logs_command: Optional[str] = None
+# Backwards-compatible aliases for internal usage within this file
+_ShellActionResult = ShellActionResult
+_VerifyStep = VerifyStep
 
 
 class MessageOrchestrator:
@@ -966,6 +956,36 @@ class MessageOrchestrator:
             getattr(features, "get_workspace_operator", lambda: None)()
             if features
             else None
+        )
+
+    def _build_workspace_context(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> AgenticWorkspaceContext:
+        """Build a rich workspace context from Telegram context.
+
+        This is the bridge between Telegram-level state and the extracted
+        agentic modules. Modules receive this instead of raw context.
+        """
+        current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        features = context.bot_data.get("features")
+        change_guard = (
+            getattr(features, "get_project_change_guard", lambda: None)()
+            if features
+            else None
+        )
+        return AgenticWorkspaceContext(
+            current_directory=current_dir,
+            current_workspace=current_workspace,
+            boundary_root=boundary_root,
+            project_automation=project_automation,
+            profile=profile,
+            operator_runtime=self._get_agentic_operator_runtime(context),
+            claude_integration=context.bot_data.get("claude_integration"),
+            storage=context.bot_data.get("storage"),
+            audit_logger=context.bot_data.get("audit_logger"),
+            change_guard=change_guard,
         )
 
     def _build_agentic_context_markup(
