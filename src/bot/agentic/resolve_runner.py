@@ -21,6 +21,7 @@ class ResolveRunner:
     async def run(
         self,
         ctx: AgenticWorkspaceContext,
+        user_id: int,
         session_id: str | None,
         initial_report: VerifyReport,
     ) -> ResolveResult:
@@ -92,7 +93,7 @@ class ResolveRunner:
             claude_response = await ctx.claude_integration.run_command(
                 prompt=prompt,
                 working_directory=ctx.profile.root_path,
-                user_id=0,  # Will be overridden by caller
+                user_id=user_id,
                 session_id=session_id,
                 force_new=False,
             )
@@ -100,7 +101,7 @@ class ResolveRunner:
             if ctx.storage:
                 try:
                     await ctx.storage.save_claude_interaction(
-                        user_id=0,
+                        user_id=user_id,
                         session_id=claude_response.session_id,
                         prompt="[button] resolve",
                         response=claude_response,
@@ -126,6 +127,7 @@ class ResolveRunner:
                 final_report=final_report,
                 rollback_report=rollback_report,
                 success=final_report.success,
+                checkpoint_created=checkpoint is not None,
             )
 
         except Exception as e:
@@ -140,5 +142,6 @@ class ResolveRunner:
                 final_report=None,
                 rollback_report=rollback_report,
                 success=False,
+                checkpoint_created=checkpoint is not None,
                 error=str(e),
             )

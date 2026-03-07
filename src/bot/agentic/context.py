@@ -57,6 +57,7 @@ class ResolveResult:
     final_report: Optional[VerifyReport]
     rollback_report: Optional[Any]  # ChangeGuardReport
     success: bool
+    checkpoint_created: bool = False
     error: Optional[str] = None
 
 

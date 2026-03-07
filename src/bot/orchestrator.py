@@ -2121,7 +2121,7 @@ class MessageOrchestrator:
             parse_mode="HTML",
         )
 
-        result = await self.resolver.run(ws_ctx, session_id, initial_report)
+        result = await self.resolver.run(ws_ctx, user_id, session_id, initial_report)
 
         if result.claude_response:
             context.user_data["claude_session_id"] = result.claude_response.session_id
@@ -2180,7 +2180,7 @@ class MessageOrchestrator:
                 read_only=False,
                 success=result.success,
                 mode="agentic_button",
-                checkpoint_created=bool(result.rollback_report),
+                checkpoint_created=result.checkpoint_created,
                 rollback_triggered=bool(
                     result.rollback_report and result.rollback_report.rollback_triggered
                 ),

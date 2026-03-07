@@ -249,7 +249,7 @@ async def test_agentic_start_shows_persistent_reply_keyboard(agentic_settings, d
         for row in markup.keyboard
         for button in row
     ]
-    assert labels == ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"]
+    assert labels == ["📂 Статус", "✅ Проверить", "🛠 Разберись"]
     assert "Alice" in call_kwargs.args[0]
     assert context.user_data["agentic_reply_keyboard_ready"] is True
 
@@ -937,7 +937,7 @@ workspaces:
 
     markup = orchestrator._build_agentic_control_panel_markup(profile)
     labels = [button.text for row in markup.inline_keyboard for button in row]
-    assert labels == ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"]
+    assert labels == ["📂 Статус", "✅ Проверить", "🛠 Разберись"]
 
     query = MagicMock()
     query.data = "act:services"
