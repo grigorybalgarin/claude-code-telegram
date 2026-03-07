@@ -1,4 +1,6 @@
 workspaces:
+  # ── Core projects ──────────────────────────────────────────────────
+
   - path: ClaudeBot
     name: ClaudeBot
     aliases:
@@ -8,9 +10,10 @@ workspaces:
       - bot
     priority: 100
     notes: |
-      This is the Telegram bot itself.
+      This is the Telegram bot itself (this project).
       Prefer small coherent changes, preserve the systemd deploy workflow under ops/server,
       keep logs redacted, and avoid widening runtime permissions.
+      Deploy: ssh to server, run ops/server/deploy-app.sh as root.
     commands:
       install: make install
       dev: make dev
@@ -30,13 +33,15 @@ workspaces:
       - fa
     priority: 90
     notes: |
-      This is a script-based Python product with a Telegram bot and FastAPI web panel.
+      Script-based Python product with a Telegram bot and FastAPI web panel.
       Prefer the existing run.sh/main.py workflow and keep the web panel + bot startup path intact.
     commands:
       install: pip install -r requirements.txt
       dev: ./run.sh
       start: python main.py
       health: python -m py_compile main.py bot.py web.py
+
+  # ── Gr_dev umbrella ────────────────────────────────────────────────
 
   - path: Gr_dev
     name: Gr_dev
@@ -46,9 +51,9 @@ workspaces:
       - grdev
     priority: 80
     notes: |
-      This workspace is an umbrella repo with several subprojects.
-      Prefer routing into the specific subproject when the request mentions freelance-aggregator,
-      portfolio-site, github-profile, or resume-bot.
+      Umbrella repo with several subprojects: freelance-aggregator, portfolio-site,
+      github-profile, resume-bot. Route into the specific subproject when the request
+      mentions one of them.
 
   - path: Gr_dev/freelance-aggregator
     name: Gr_dev Freelance Aggregator
@@ -58,12 +63,38 @@ workspaces:
       - gr freelance aggregator
     priority: 85
     notes: |
-      This is the nested freelance aggregator inside the Gr_dev umbrella repository.
-      Use the existing Python entrypoint and keep changes scoped to this subproject.
+      Nested freelance aggregator inside the Gr_dev umbrella.
+      Use the existing Python entrypoint, keep changes scoped to this subproject.
     commands:
       install: pip install -r requirements.txt
       start: python main.py
       health: python -m py_compile main.py bot.py web.py
+
+  - path: Gr_dev/resume-bot
+    name: Resume Bot
+    aliases:
+      - resume bot
+      - resume
+      - gr resume
+    priority: 83
+    notes: |
+      Resume/market analyzer Telegram bot in Gr_dev umbrella.
+      Entry point: resume_bot.py, launcher: run_resume_bot.sh.
+    commands:
+      start: ./run_resume_bot.sh
+      health: python -m py_compile resume_bot.py market_analyzer.py
+
+  - path: Gr_dev/portfolio-site
+    name: Portfolio Site
+    aliases:
+      - portfolio
+      - portfolio site
+      - gr portfolio
+    priority: 81
+    notes: |
+      Static portfolio site in Gr_dev umbrella. Plain HTML/CSS, no build step.
+
+  # ── MacProjects ────────────────────────────────────────────────────
 
   - path: MacProjects/Poolbill
     name: Poolbill
@@ -74,7 +105,7 @@ workspaces:
       - pool game
     priority: 70
     notes: |
-      This is a Node monorepo with server, client, and bot workspaces.
+      Node monorepo with server, client, and bot workspaces.
       Prefer root workspace commands unless the request explicitly targets server, client, or bot.
     commands:
       dev: npm run dev
@@ -82,3 +113,63 @@ workspaces:
       typecheck: npm run typecheck
       test: npm run test
       health: npm run typecheck
+
+  - path: MacProjects/RPG
+    name: RPG
+    aliases:
+      - rpg
+      - rpg game
+    priority: 68
+    notes: |
+      Monorepo with apps/backend (Python FastAPI + Alembic + Docker) and apps/frontend.
+      Backend uses requirements.txt, has tests and Docker Compose.
+      Prefer working in apps/backend unless frontend is explicitly mentioned.
+    commands:
+      health: python -m py_compile apps/backend/app/*.py
+
+  - path: "MacProjects/My project 1.0"
+    name: Unity Game
+    aliases:
+      - unity
+      - unity game
+      - my project
+      - game project
+    priority: 65
+    notes: |
+      Unity C# game project. Scripts are in Assets/Scripts/.
+      No CLI build commands available on server (Unity Editor required).
+      Focus on C# script editing and code review when working here.
+
+  - path: MacProjects/AIGeng
+    name: AIGeng
+    aliases:
+      - aigeng
+      - ai geng
+      - ai gen
+    priority: 60
+    notes: |
+      Python Telegram bot for AI generation. Uses python-telegram-bot.
+      Entry point: main.py, has tests in tests/.
+    commands:
+      install: pip install -r requirements.txt
+      start: python main.py
+      health: python -m py_compile main.py
+      test: python -m pytest tests/ -q
+
+  - path: MacProjects/Game1488
+    name: Game1488
+    aliases:
+      - game1488
+    priority: 50
+    notes: |
+      Unity game project. Scripts in Assets/. No CLI build.
+
+  - path: MacProjects/AQA_TEST
+    name: AQA Tests
+    aliases:
+      - aqa
+      - aqa test
+      - aqa testing
+    priority: 45
+    notes: |
+      QA/testing workspace with test exercises and practice projects.
