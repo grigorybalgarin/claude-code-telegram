@@ -62,7 +62,15 @@ class FeatureRegistry:
         # Project automation is always available because it only inspects the
         # current workspace and provides deterministic playbooks.
         try:
-            self.features["project_automation"] = ProjectAutomationManager()
+            pa = ProjectAutomationManager()
+            self.features["project_automation"] = pa
+            warnings = pa.validate_profiles(self.config.approved_directory)
+            if warnings:
+                logger.warning(
+                    "Profile validation warnings",
+                    count=len(warnings),
+                    warnings=warnings,
+                )
             logger.info("Project automation feature enabled")
         except Exception as e:
             logger.error("Failed to initialize project automation", error=str(e))

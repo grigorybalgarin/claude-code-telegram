@@ -10,7 +10,8 @@ import pytest
 
 from src.bot.features.operator_runtime import WorkspaceOperatorRuntime
 from src.bot.features.project_automation import ProjectAutomationManager
-from src.bot.orchestrator import MessageOrchestrator, _redact_secrets
+from src.bot.agentic.stream_handler import _redact_secrets
+from src.bot.orchestrator import MessageOrchestrator
 from src.config import create_test_config
 
 
@@ -1256,7 +1257,7 @@ def test_format_agentic_job_status_includes_health_state(agentic_settings, deps,
         job_id="abcdef123456",
     )
 
-    text = orchestrator._format_agentic_job_status(job, tmp_dir)
+    text = orchestrator.panel.format_job_status(job, tmp_dir)
 
     assert "running start" in text
     assert "идет проверка" in text
@@ -1576,8 +1577,8 @@ class TestRedactSecrets:
 
     def test_summarize_tool_input_bash_redacts(self, agentic_settings, deps):
         """_summarize_tool_input applies redaction to Bash commands."""
-        orchestrator = MessageOrchestrator(agentic_settings, deps)
-        result = orchestrator._summarize_tool_input(
+        from src.bot.agentic.stream_handler import StreamHandler
+        result = StreamHandler.summarize_tool_input(
             "Bash",
             {"command": "curl --token=mysupersecrettoken123 https://api.example.com"},
         )
@@ -1586,8 +1587,8 @@ class TestRedactSecrets:
 
     def test_summarize_tool_input_non_bash_unchanged(self, agentic_settings, deps):
         """Non-Bash tools don't go through redaction."""
-        orchestrator = MessageOrchestrator(agentic_settings, deps)
-        result = orchestrator._summarize_tool_input(
+        from src.bot.agentic.stream_handler import StreamHandler
+        result = StreamHandler.summarize_tool_input(
             "Read", {"file_path": "/home/user/.env"}
         )
         assert result == ".env"
@@ -1605,7 +1606,7 @@ class TestTypingHeartbeat:
         chat.send_action = AsyncMock()
 
         orchestrator = MessageOrchestrator(agentic_settings, deps)
-        heartbeat = orchestrator._start_typing_heartbeat(chat, interval=0.05)
+        heartbeat = orchestrator.stream.start_typing_heartbeat(chat, interval=0.05)
 
         # Let the heartbeat fire a few times
         await asyncio.sleep(0.2)
@@ -1623,7 +1624,7 @@ class TestTypingHeartbeat:
         """Cancelling the heartbeat task does not raise."""
         chat = AsyncMock()
         orchestrator = MessageOrchestrator(agentic_settings, deps)
-        heartbeat = orchestrator._start_typing_heartbeat(chat, interval=0.05)
+        heartbeat = orchestrator.stream.start_typing_heartbeat(chat, interval=0.05)
 
         heartbeat.cancel()
         # Should not raise
@@ -1647,7 +1648,7 @@ class TestTypingHeartbeat:
         chat.send_action = flaky_send_action
 
         orchestrator = MessageOrchestrator(agentic_settings, deps)
-        heartbeat = orchestrator._start_typing_heartbeat(chat, interval=0.05)
+        heartbeat = orchestrator.stream.start_typing_heartbeat(chat, interval=0.05)
 
         await asyncio.sleep(0.3)
         heartbeat.cancel()
@@ -1665,7 +1666,7 @@ class TestTypingHeartbeat:
 
         progress_msg = AsyncMock()
         tool_log: list = []  # type: ignore[type-arg]
-        callback = orchestrator._make_stream_callback(
+        callback = orchestrator.stream.make_stream_callback(
             verbose_level=1,
             progress_msg=progress_msg,
             tool_log=tool_log,
@@ -1677,7 +1678,7 @@ class TestTypingHeartbeat:
         # (typing is no longer handled by the stream callback)
         import inspect
 
-        sig = inspect.signature(orchestrator._make_stream_callback)
+        sig = inspect.signature(orchestrator.stream.make_stream_callback)
         assert "chat" not in sig.parameters
 
 

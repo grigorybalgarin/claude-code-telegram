@@ -143,22 +143,24 @@ class PanelBuilder:
         session_id: Optional[str],
         active_task_elapsed: Optional[int] = None,
         queue_size: int = 0,
+        last_verify: Optional[Dict[str, Any]] = None,
+        last_resolve: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build a short human-readable status summary."""
-        session_status = "\u0430\u043a\u0442\u0438\u0432\u043d\u0430" if session_id else "\u043d\u0435\u0442"
+        session_status = "активна" if session_id else "нет"
 
         if not session_id and ctx.claude_integration:
             existing = await ctx.claude_integration._find_resumable_session(
                 user_id, ctx.current_workspace
             )
             if existing:
-                session_status = f"\u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c {existing.session_id[:8]}..."
+                session_status = f"можно восстановить {existing.session_id[:8]}..."
 
         task_parts = []
         if active_task_elapsed is not None:
-            task_parts.append(f"\u0437\u0430\u0434\u0430\u0447\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f {active_task_elapsed}\u0441")
+            task_parts.append(f"задача выполняется {active_task_elapsed}с")
             if queue_size:
-                task_parts.append(f"\u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438 {queue_size}")
+                task_parts.append(f"в очереди {queue_size}")
 
         profile = ctx.profile
         project_label = (
@@ -168,38 +170,82 @@ class PanelBuilder:
         )
         project_path = self.format_relative_path(ctx.current_workspace, ctx.boundary_root)
         verify_steps = self.verify.build_steps(profile) if profile else []
-        verify_status = "\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430" if verify_steps else "\u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0430"
+        verify_status = "доступна" if verify_steps else "не настроена"
         primary_service = self.verify.select_primary_service(profile)
 
         lines = [
-            "<b>\u0421\u0442\u0430\u0442\u0443\u0441</b>",
+            "<b>Статус</b>",
             "",
-            f"\U0001f4e6 \u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442: <code>{escape_html(project_label)}</code>",
-            f"\U0001f4c2 \u041f\u0443\u0442\u044c: <code>{escape_html(project_path)}</code>",
-            f"\U0001f916 \u0421\u0435\u0441\u0441\u0438\u044f: <code>{escape_html(session_status)}</code>",
-            f"\u2705 \u041f\u043e\u043b\u043d\u0430\u044f \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430: <code>{escape_html(verify_status)}</code>",
+            f"\U0001f4e6 Активный проект: <code>{escape_html(project_label)}</code>",
+            f"\U0001f4c2 Путь: <code>{escape_html(project_path)}</code>",
+            f"\U0001f916 Сессия: <code>{escape_html(session_status)}</code>",
+            f"\u2705 Полная проверка: <code>{escape_html(verify_status)}</code>",
         ]
         if primary_service:
             lines.append(
-                f"\U0001f9e9 \u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0441\u0435\u0440\u0432\u0438\u0441: <code>{escape_html(primary_service.display_name)}</code>"
+                f"\U0001f9e9 Основной сервис: <code>{escape_html(primary_service.display_name)}</code>"
             )
         if task_parts:
-            task_joined = escape_html(" \u00b7 ".join(task_parts))
-            lines.append(f"\u2699\ufe0f \u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435: <code>{task_joined}</code>")
+            task_joined = escape_html(" · ".join(task_parts))
+            lines.append(f"\u2699\ufe0f Выполнение: <code>{task_joined}</code>")
         if ctx.operator_runtime:
             latest_job = ctx.operator_runtime.get_latest_job(ctx.current_workspace)
             if latest_job:
                 lines.append(
-                    f"\U0001f9f5 \u0417\u0430\u0434\u0430\u0447\u0430: <code>{escape_html(self.format_job_status(latest_job, ctx.boundary_root))}</code>"
+                    f"\U0001f9f5 Задача: <code>{escape_html(self.format_job_status(latest_job, ctx.boundary_root))}</code>"
                 )
+
+        # Last verify/resolve results
+        if last_verify or last_resolve:
+            lines.append("")
+        if last_verify:
+            import time as _time
+
+            ago = int(_time.time() - last_verify.get("timestamp", 0))
+            ago_text = self._format_ago(ago)
+            if last_verify.get("success"):
+                v_label = f"✅ всё ок ({last_verify['steps_passed']}/{last_verify['steps_total']})"
+            else:
+                failed = escape_html(last_verify.get("failed_step", "?"))
+                v_label = f"❌ сбой на '{failed}' ({last_verify['steps_passed']}/{last_verify['steps_total']})"
+            lines.append(f"Проверка: <code>{v_label}</code> · {ago_text}")
+        if last_resolve:
+            import time as _time
+
+            ago = int(_time.time() - last_resolve.get("timestamp", 0))
+            ago_text = self._format_ago(ago)
+            if last_resolve.get("success"):
+                r_label = "✅ исправлено"
+            elif last_resolve.get("rollback"):
+                r_label = "⚠️ откат"
+            elif last_resolve.get("error"):
+                r_label = f"❌ ошибка"
+            else:
+                r_label = "⚠️ не добил"
+            attempts = last_resolve.get("attempts", 1)
+            if attempts > 1:
+                r_label += f" ({attempts}x)"
+            lines.append(f"Разбор: <code>{r_label}</code> · {ago_text}")
+
         if ctx.project_automation and profile and ctx.current_workspace != ctx.boundary_root:
             lines.extend(
                 [
                     "",
-                    "\u041c\u043e\u0436\u0435\u0448\u044c \u043f\u0440\u043e\u0441\u0442\u043e \u043d\u0430\u043f\u0438\u0441\u0430\u0442\u044c \u0437\u0430\u0434\u0430\u0447\u0443 \u043e\u0431\u044b\u0447\u043d\u044b\u043c \u0442\u0435\u043a\u0441\u0442\u043e\u043c. \u0411\u043e\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442 \u0435\u0435 \u0432 \u044d\u0442\u043e\u043c \u043f\u0440\u043e\u0435\u043a\u0442\u0435.",
+                    "Можешь просто написать задачу обычным текстом. Бот выполнит ее в этом проекте.",
                 ]
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_ago(seconds: int) -> str:
+        """Format seconds ago as a human-readable Russian string."""
+        if seconds < 60:
+            return "только что"
+        if seconds < 3600:
+            mins = seconds // 60
+            return f"{mins} мин назад"
+        hours = seconds // 3600
+        return f"{hours} ч назад"
 
     async def build_panel_text(
         self,

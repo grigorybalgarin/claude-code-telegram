@@ -16,7 +16,6 @@ import structlog
 from telegram import (
     BotCommand,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
     ReplyKeyboardMarkup,
     Update,
 )
@@ -29,62 +28,23 @@ from telegram.ext import (
     filters,
 )
 
-from ..claude.sdk_integration import StreamUpdate
 from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
-from .agentic.context import (
-    AgenticWorkspaceContext,
-    ShellActionResult,
-    VerifyStep,
-)
+from .agentic.context import AgenticWorkspaceContext
+from .agentic.action_runner import ActionRunner
 from .agentic.panel_builder import PanelBuilder
+from .agentic.stream_handler import StreamHandler, _tool_icon
 from .agentic.shell_executor import ShellExecutor
 from .agentic.resolve_runner import ResolveRunner
 from .agentic.service_controller import ServiceController
 from .agentic.verify_pipeline import VerifyPipeline
 from .features.change_guard import ChangeGuardReport
-from ..utils.redaction import redact_sensitive_text
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
 from .utils.formatting import FormattedMessage, ResponseFormatter
 from .utils.html_format import escape_html
-from .utils.image_extractor import (
-    ImageAttachment,
-    should_send_as_photo,
-    validate_image_path,
-)
+from .utils.image_extractor import ImageAttachment
 
 logger = structlog.get_logger()
-
-
-def _redact_secrets(text: str) -> str:
-    """Replace likely secrets/credentials with redacted placeholders."""
-    return redact_sensitive_text(text)
-
-
-# Tool name -> friendly emoji mapping for verbose output
-_TOOL_ICONS: Dict[str, str] = {
-    "Read": "\U0001f4d6",
-    "Write": "\u270f\ufe0f",
-    "Edit": "\u270f\ufe0f",
-    "MultiEdit": "\u270f\ufe0f",
-    "Bash": "\U0001f4bb",
-    "Glob": "\U0001f50d",
-    "Grep": "\U0001f50d",
-    "LS": "\U0001f4c2",
-    "Task": "\U0001f9e0",
-    "TaskOutput": "\U0001f9e0",
-    "WebFetch": "\U0001f310",
-    "WebSearch": "\U0001f310",
-    "NotebookRead": "\U0001f4d3",
-    "NotebookEdit": "\U0001f4d3",
-    "TodoRead": "\u2611\ufe0f",
-    "TodoWrite": "\u2611\ufe0f",
-}
-
-
-def _tool_icon(name: str) -> str:
-    """Return emoji for a tool, with a default wrench."""
-    return _TOOL_ICONS.get(name, "\U0001f527")
 
 
 @dataclass
@@ -164,6 +124,11 @@ class MessageOrchestrator:
         self.services = ServiceController(self.shell)
         self.resolver = ResolveRunner(self.verify)
         self.panel = PanelBuilder(self.verify, self.shell, self.services)
+        self.actions = ActionRunner(
+            self.settings, self.shell, self.verify,
+            self.services, self.resolver, self.panel,
+        )
+        self.stream = StreamHandler()
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -891,83 +856,19 @@ class MessageOrchestrator:
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> tuple[Path, Path, Path, Optional[Any], Optional[Any]]:
         """Resolve current directory, workspace root, and detected profile."""
-        current_dir = context.user_data.get(
-            "current_directory", self.settings.approved_directory
-        )
-        boundary_root = self._get_boundary_root(context).resolve()
-        features = context.bot_data.get("features")
-        project_automation = (
-            getattr(features, "get_project_automation", lambda: None)()
-            if features
-            else None
-        )
-        if not project_automation:
-            return current_dir, current_dir, boundary_root, None, None
-
-        current_dir = Path(current_dir).resolve()
-        if current_dir == boundary_root:
-            summaries = project_automation.list_workspace_summaries(boundary_root)
-            preferred = next(
-                (summary for summary in summaries if summary.relative_path != "/"),
-                summaries[0] if summaries else None,
-            )
-            if preferred is not None:
-                current_dir = preferred.root_path
-                context.user_data["current_directory"] = current_dir
-
-        profile = project_automation.build_profile(current_dir, boundary_root)
-        return current_dir, profile.root_path, boundary_root, project_automation, profile
+        return self.actions._get_workspace_profile(context)
 
     def _get_agentic_operator_runtime(
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> Optional[Any]:
         """Resolve the persistent background operator runtime."""
-        features = context.bot_data.get("features")
-        return (
-            getattr(features, "get_workspace_operator", lambda: None)()
-            if features
-            else None
-        )
+        return self.actions._get_operator_runtime(context)
 
     def _build_workspace_context(
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> AgenticWorkspaceContext:
-        """Build a rich workspace context from Telegram context.
-
-        This is the bridge between Telegram-level state and the extracted
-        agentic modules. Modules receive this instead of raw context.
-        """
-        current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        features = context.bot_data.get("features")
-        change_guard = (
-            getattr(features, "get_project_change_guard", lambda: None)()
-            if features
-            else None
-        )
-        return AgenticWorkspaceContext(
-            current_directory=current_dir,
-            current_workspace=current_workspace,
-            boundary_root=boundary_root,
-            project_automation=project_automation,
-            profile=profile,
-            operator_runtime=self._get_agentic_operator_runtime(context),
-            claude_integration=context.bot_data.get("claude_integration"),
-            storage=context.bot_data.get("storage"),
-            audit_logger=context.bot_data.get("audit_logger"),
-            change_guard=change_guard,
-        )
-
-    def _build_agentic_context_markup(
-        self, context: ContextTypes.DEFAULT_TYPE
-    ) -> InlineKeyboardMarkup:
-        """Build the current control panel markup for reply messages."""
-        return self.panel.build_control_panel_markup()
-
-    def _format_agentic_relative_path(self, path: Path, boundary_root: Path) -> str:
-        """Format a workspace-relative path for Telegram output."""
-        return self.panel.format_relative_path(path, boundary_root)
+        """Build a rich workspace context from Telegram context."""
+        return self.actions._build_workspace_context(context)
 
     def _build_agentic_control_panel_markup(
         self, profile: Optional[Any]
@@ -988,7 +889,9 @@ class MessageOrchestrator:
             active_elapsed = int(time.time() - active.started_at)
             queue_size = len(self._pending_messages.get(user_id, []))
         return await self.panel.build_status_text(
-            ctx, user_id, session_id, active_elapsed, queue_size
+            ctx, user_id, session_id, active_elapsed, queue_size,
+            last_verify=context.user_data.get("last_verify"),
+            last_resolve=context.user_data.get("last_resolve"),
         )
 
     async def _build_agentic_panel_text(
@@ -1007,15 +910,6 @@ class MessageOrchestrator:
         """Build a compact recent activity view for the control panel."""
         ctx = self._build_workspace_context(context)
         return await self.panel.build_recent_text(ctx, user_id)
-
-    def _format_agentic_job_status(self, job: Any, boundary_root: Path) -> str:
-        """Build a compact one-line status for a persisted operator job."""
-        return self.panel.format_job_status(job, boundary_root)
-
-    @staticmethod
-    def _format_agentic_job_verification(job: Any) -> Optional[str]:
-        """Return a compact verification label for background jobs."""
-        return PanelBuilder.format_job_verification(job)
 
     async def _build_agentic_jobs_text(
         self,
@@ -1050,1009 +944,6 @@ class MessageOrchestrator:
         """Build the workspace catalog view used by /repo and control buttons."""
         ctx = self._build_workspace_context(context)
         return await self.panel.build_workspace_catalog(ctx)
-
-    async def _run_agentic_playbook_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        playbook_slug: str,
-    ) -> None:
-        """Run a deterministic playbook from an agentic control button."""
-        user_id = query.from_user.id
-        current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        claude_integration = context.bot_data.get("claude_integration")
-        if not claude_integration or not project_automation or not profile:
-            await query.edit_message_text("Автоматизация проекта недоступна.")
-            return
-
-        playbook = project_automation.get_playbook(playbook_slug, profile)
-        if playbook is None:
-            await query.answer("Сценарий недоступен для этого проекта.", show_alert=True)
-            return
-
-        prompt = project_automation.build_playbook_prompt(playbook_slug, profile)
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Запуск сценария</b>\n\n"
-            f"Сценарий: <code>{escape_html(playbook.slug)}</code>\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
-            parse_mode="HTML",
-        )
-
-        features = context.bot_data.get("features")
-        change_guard = (
-            getattr(features, "get_project_change_guard", lambda: None)()
-            if features
-            else None
-        )
-        storage = context.bot_data.get("storage")
-        audit_logger = context.bot_data.get("audit_logger")
-
-        session_id = context.user_data.get("claude_session_id")
-        if current_workspace != profile.root_path:
-            session_id = None
-        context.user_data["current_directory"] = profile.root_path
-
-        mutating = playbook_slug in {"setup", "test", "quality"}
-        checkpoint = None
-        guard_report = None
-        success = False
-
-        try:
-            if mutating and change_guard and profile.has_git_repo:
-                checkpoint = await change_guard.create_checkpoint(profile.root_path)
-
-            claude_response = await claude_integration.run_command(
-                prompt=prompt,
-                working_directory=profile.root_path,
-                user_id=user_id,
-                session_id=session_id,
-                force_new=False,
-            )
-            success = True
-            context.user_data["claude_session_id"] = claude_response.session_id
-
-            if storage:
-                try:
-                    await storage.save_claude_interaction(
-                        user_id=user_id,
-                        session_id=claude_response.session_id,
-                        prompt=f"[button] run {playbook_slug}",
-                        response=claude_response,
-                        ip_address=None,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to log button playbook interaction", error=str(e))
-
-            if mutating and change_guard:
-                verification_results = await change_guard.run_verification_commands(
-                    profile.root_path,
-                    project_automation.get_verification_commands(profile),
-                )
-                guard_report = ChangeGuardReport(
-                    checkpoint_created=checkpoint is not None,
-                    checkpoint_id=checkpoint.checkpoint_id if checkpoint else None,
-                    verification_results=verification_results,
-                )
-                failed_result = next(
-                    (result for result in verification_results if not result.success),
-                    None,
-                )
-                if failed_result and checkpoint:
-                    success = False
-                    rollback_report = await change_guard.rollback(
-                        checkpoint,
-                        reason=f"verification failed: {failed_result.command}",
-                    )
-                    guard_report.rollback_triggered = rollback_report.rollback_triggered
-                    guard_report.rollback_succeeded = rollback_report.rollback_succeeded
-                    guard_report.failure_reason = rollback_report.failure_reason
-                    guard_report.rollback_error = rollback_report.rollback_error
-                elif checkpoint:
-                    await change_guard.cleanup_checkpoint(checkpoint)
-            elif checkpoint and change_guard:
-                guard_report = ChangeGuardReport(
-                    checkpoint_created=True,
-                    checkpoint_id=checkpoint.checkpoint_id,
-                )
-                await change_guard.cleanup_checkpoint(checkpoint)
-
-            await status_msg.delete()
-
-            formatter = ResponseFormatter(self.settings)
-            for message in formatter.format_claude_response(claude_response.content):
-                if message.text and message.text.strip():
-                    await query.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                    )
-
-            if guard_report and change_guard:
-                await query.message.reply_text(
-                    change_guard.format_report_html(guard_report),
-                    parse_mode="HTML",
-                )
-
-            if audit_logger:
-                verification_results = []
-                if guard_report:
-                    verification_results = [
-                        {
-                            "command": result.command,
-                            "success": result.success,
-                            "returncode": result.returncode,
-                        }
-                        for result in guard_report.verification_results
-                    ]
-                await audit_logger.log_automation_run(
-                    user_id=user_id,
-                    request=f"button:{playbook_slug}",
-                    workspace_root=str(profile.root_path),
-                    matched_playbook=playbook_slug,
-                    read_only=playbook_slug in {"doctor", "review"},
-                    success=success,
-                    mode="agentic_button",
-                    checkpoint_created=bool(
-                        checkpoint or (guard_report and guard_report.checkpoint_created)
-                    ),
-                    verification_results=verification_results,
-                    rollback_triggered=bool(
-                        guard_report and guard_report.rollback_triggered
-                    ),
-                    rollback_succeeded=bool(
-                        guard_report and guard_report.rollback_succeeded
-                    ),
-                    workspace_changed=current_workspace != profile.root_path,
-                )
-        except Exception as e:
-            if checkpoint and change_guard:
-                guard_report = await change_guard.rollback(
-                    checkpoint,
-                    reason=f"button playbook error: {type(e).__name__}",
-                )
-            try:
-                await status_msg.edit_text(
-                    "❌ <b>Ошибка сценария</b>\n\n"
-                    f"Сценарий: <code>{escape_html(playbook_slug)}</code>\n"
-                    f"Ошибка: <code>{escape_html(str(e))}</code>",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-            if audit_logger:
-                await audit_logger.log_automation_run(
-                    user_id=user_id,
-                    request=f"button:{playbook_slug}",
-                    workspace_root=str(profile.root_path),
-                    matched_playbook=playbook_slug,
-                    read_only=playbook_slug in {"doctor", "review"},
-                    success=False,
-                    mode="agentic_button",
-                    rollback_triggered=bool(
-                        guard_report and guard_report.rollback_triggered
-                    ),
-                    rollback_succeeded=bool(
-                        guard_report and guard_report.rollback_succeeded
-                    ),
-                    workspace_changed=current_workspace != profile.root_path,
-                )
-
-    async def _run_agentic_shell_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        workspace_root: Path,
-        boundary_root: Path,
-        title: str,
-        command: str,
-        audit_command: str,
-        timeout_seconds: int = 120,
-    ) -> None:
-        """Run a deterministic shell action and report the result in Telegram."""
-        user_id = query.from_user.id
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Выполнение команды</b>\n\n"
-            f"Действие: <code>{escape_html(title)}</code>\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(workspace_root, boundary_root))}</code>\n"
-            f"Команда: <code>{escape_html(command)}</code>",
-            parse_mode="HTML",
-        )
-
-        result = await self.shell.execute(
-            workspace_root=workspace_root,
-            command=command,
-            timeout_seconds=timeout_seconds,
-        )
-        await status_msg.edit_text(
-            "\n".join(
-                self.shell.format_result_lines(
-                    title=title,
-                    workspace_root=workspace_root,
-                    boundary_root=boundary_root,
-                    result=result,
-                )
-            ),
-            parse_mode="HTML",
-        )
-
-        success = result.success
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=user_id,
-                command=audit_command,
-                args=[command, str(workspace_root)],
-                success=success,
-            )
-
-    async def _run_agentic_command_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        command_key: str,
-    ) -> None:
-        """Run a direct workspace command for safe operator actions."""
-        user_id = query.from_user.id
-        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        if not project_automation or not profile:
-            await query.edit_message_text("Автоматизация проекта недоступна.")
-            return
-
-        command = profile.commands.get(command_key)
-        if not command:
-            await query.answer("Команда недоступна для этого проекта.", show_alert=True)
-            return
-
-        title = {
-            "health": "Проверка",
-            "build": "Сборка",
-        }.get(command_key, command_key.title())
-        await self._run_agentic_shell_action(
-            query=query,
-            context=context,
-            workspace_root=profile.root_path,
-            boundary_root=boundary_root,
-            title=title,
-            command=command,
-            audit_command=f"workspace_{command_key}",
-        )
-
-    async def _run_agentic_service_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        service_key: str,
-        action_key: str,
-    ) -> None:
-        """Run a managed service action from the explicit service catalog."""
-        _current_dir, _current_workspace, boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        service = self.services.resolve_service(profile, service_key)
-        if not profile or not service:
-            await query.answer("Сервис не настроен для этого проекта.", show_alert=True)
-            return
-
-        command = service.command_for(action_key)
-        if not command:
-            await query.answer("Это действие недоступно для сервиса.", show_alert=True)
-            return
-
-        title = f"{service.display_name}: {action_key}"
-        user_id = query.from_user.id
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Выполнение действия сервиса</b>\n\n"
-            f"Сервис: <code>{escape_html(service.display_name)}</code>\n"
-            f"Действие: <code>{escape_html(action_key)}</code>\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Команда: <code>{escape_html(command)}</code>",
-            parse_mode="HTML",
-        )
-
-        main_result = await self.shell.execute(
-            workspace_root=profile.root_path,
-            command=command,
-            timeout_seconds=120,
-        )
-
-        checks: List[tuple[str, ShellActionResult]] = []
-        logs_result: Optional[ShellActionResult] = None
-        checks_ok = True
-        if action_key in {"start", "restart", "stop"} and main_result.success:
-            await status_msg.edit_text(
-                "⏳ <b>Ожидание проверки сервиса</b>\n\n"
-                f"Сервис: <code>{escape_html(service.display_name)}</code>\n"
-                f"Действие: <code>{escape_html(action_key)}</code>",
-                parse_mode="HTML",
-            )
-            follow_up = await self.services.run_follow_up_checks(
-                service=service,
-                workspace_root=profile.root_path,
-                action_key=action_key,
-            )
-            checks, logs_result, checks_ok = follow_up.checks, follow_up.logs_result, follow_up.all_passed
-        elif not main_result.success and action_key in {"start", "restart"} and service.command_for("logs"):
-            logs_result = await self.shell.execute(
-                profile.root_path,
-                service.command_for("logs"),
-                timeout_seconds=30,
-            )
-
-        final_success = main_result.success and checks_ok
-        lines = [
-            "✅ <b>Действие сервиса выполнено</b>"
-            if final_success
-            else "❌ <b>Ошибка действия сервиса</b>",
-            "",
-            f"Сервис: <code>{escape_html(service.display_name)}</code>",
-            f"Действие: <code>{escape_html(action_key)}</code>",
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
-            f"Команда: <code>{escape_html(command)}</code>",
-            f"Код выхода: <code>{main_result.returncode}</code>",
-        ]
-        if main_result.error:
-            lines.append(f"Ошибка: <code>{escape_html(main_result.error)}</code>")
-        elif main_result.timed_out:
-            lines.append("Вышло время ожидания.")
-        if main_result.stdout_text:
-            lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(main_result.stdout_text)}</pre>"])
-        if main_result.stderr_text:
-            lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(main_result.stderr_text)}</pre>"])
-
-        if checks:
-            lines.extend(["", "<b>Дополнительные проверки</b>"])
-            for label, result in checks:
-                check_state = "ok" if result.success else "ошибка"
-                if result.timed_out:
-                    check_state = "таймаут"
-                lines.append(
-                    f"• <code>{escape_html(label)}</code>: <code>{escape_html(check_state)}</code> "
-                    f"(exit <code>{result.returncode}</code>)"
-                )
-                summary = self.shell.summarize(result)
-                if summary and summary != "нет вывода":
-                    lines.append(f"  <code>{escape_html(summary)}</code>")
-
-        if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
-            log_body = logs_result.stdout_text or logs_result.stderr_text
-            if logs_result.error:
-                log_body = logs_result.error
-            lines.extend(
-                [
-                    "",
-                    "<b>Логи сервиса</b>",
-                    f"<pre>{escape_html(log_body)}</pre>",
-                ]
-            )
-
-        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
-
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=user_id,
-                command=f"service_{service.key}_{action_key}",
-                args=[command, str(profile.root_path)],
-                success=final_success,
-            )
-
-    async def _run_agentic_verify_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-    ) -> None:
-        """Run the deterministic verification suite for the current workspace."""
-        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        if not project_automation or not profile:
-            await query.edit_message_text("Автоматизация проекта недоступна.")
-            return
-
-        steps = self.verify.build_steps(profile)
-        if not steps:
-            project_name = profile.display_name if profile else "этого проекта"
-            await query.answer(
-                f"Для {project_name} полная проверка пока не настроена.",
-                show_alert=True,
-            )
-            return
-
-        status_msg = await query.message.reply_text(
-            "▶️ <b>Запуск проверки</b>\n\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Шаги: <code>{escape_html(', '.join(step.label for step in steps))}</code>",
-            parse_mode="HTML",
-        )
-
-        async def _on_step(index: int, total: int, step: VerifyStep) -> None:
-            await status_msg.edit_text(
-                "⏳ <b>Выполняю проверку</b>\n\n"
-                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-                f"Шаг <code>{index}/{total}</code>: <code>{escape_html(step.label)}</code>\n"
-                f"Команда: <code>{escape_html(step.command)}</code>",
-                parse_mode="HTML",
-            )
-
-        report = await self.verify.execute(profile, on_step=_on_step)
-        await status_msg.edit_text(
-            self.verify.format_report(profile, boundary_root, report),
-            parse_mode="HTML",
-        )
-
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=query.from_user.id,
-                command="workspace_verify",
-                args=[step.command for step in steps],
-                success=success,
-            )
-
-    async def _run_agentic_resolve_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-    ) -> None:
-        """Autonomously investigate, fix, and re-verify the current workspace."""
-        user_id = query.from_user.id
-        ws_ctx = self._build_workspace_context(context)
-        current_workspace = ws_ctx.current_workspace
-        profile = ws_ctx.profile
-        boundary_root = ws_ctx.boundary_root
-
-        if not ws_ctx.claude_integration or not ws_ctx.project_automation or not profile:
-            await query.edit_message_text("Автоматизация проекта недоступна.")
-            return
-
-        steps = self.verify.build_steps(profile)
-        if not steps:
-            await query.answer(
-                f"Для {profile.display_name} нет шагов, с которых можно начать разбор.",
-                show_alert=True,
-            )
-            return
-
-        status_msg = await query.message.reply_text(
-            "🛠 <b>Разбираюсь</b>\n\n"
-            f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
-            "Сначала найду проблему, потом попробую исправить ее автоматически.",
-            parse_mode="HTML",
-        )
-
-        async def _on_resolve_step(index: int, total: int, step: VerifyStep) -> None:
-            await status_msg.edit_text(
-                "⏳ <b>Проверяю</b>\n\n"
-                f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
-                f"Шаг <code>{index}/{total}</code>: <code>{escape_html(step.label)}</code>\n"
-                f"Команда: <code>{escape_html(step.command)}</code>",
-                parse_mode="HTML",
-            )
-
-        initial_report = await self.verify.execute(profile, on_step=_on_resolve_step)
-        if initial_report.success:
-            await status_msg.edit_text(
-                "✅ <b>Проблем не найдено</b>\n\n"
-                f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
-                "Все детерминированные проверки уже проходят.",
-                parse_mode="HTML",
-            )
-            return
-
-        session_id = context.user_data.get("claude_session_id")
-        if current_workspace != profile.root_path:
-            session_id = None
-        context.user_data["current_directory"] = profile.root_path
-
-        await status_msg.edit_text(
-            "🛠 <b>Разбираюсь</b>\n\n"
-            f"Найден сбой: <code>{escape_html(initial_report.failed_step.label)}</code>\n"
-            "Пробую исправить его автоматически.",
-            parse_mode="HTML",
-        )
-
-        async def _on_resolve_progress(status_text: str) -> None:
-            try:
-                await status_msg.edit_text(
-                    f"🛠 <b>Разбираюсь</b>\n\n{escape_html(status_text)}",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-        result = await self.resolver.run(
-            ws_ctx, user_id, session_id, initial_report,
-            on_progress=_on_resolve_progress,
-        )
-
-        if result.claude_response:
-            context.user_data["claude_session_id"] = result.claude_response.session_id
-
-        if result.error and not result.claude_response:
-            try:
-                await status_msg.edit_text(
-                    "❌ <b>Не удалось разобраться автоматически</b>\n\n"
-                    f"Проект: <code>{escape_html(ws_ctx.format_relative_path(profile.root_path))}</code>\n"
-                    f"Ошибка: <code>{escape_html(result.error)}</code>",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-        else:
-            await status_msg.delete()
-
-            if result.claude_response:
-                formatter = ResponseFormatter(self.settings)
-                for message in formatter.format_claude_response(result.claude_response.content):
-                    if message.text and message.text.strip():
-                        await query.message.reply_text(
-                            message.text,
-                            parse_mode=message.parse_mode,
-                        )
-
-            if result.final_report:
-                attempts_note = (
-                    f" (попытка {result.attempts})"
-                    if result.attempts > 1
-                    else ""
-                )
-                header = (
-                    f"✅ <b>Разобрался{attempts_note}</b>"
-                    if result.success
-                    else f"⚠️ <b>Проблему нашел, но до конца не добил{attempts_note}</b>"
-                )
-                verify_report_text = self.verify.format_report(
-                    profile, boundary_root, result.final_report
-                )
-                await query.message.reply_text(
-                    f"{header}\n\n{verify_report_text}",
-                    parse_mode="HTML",
-                )
-
-            if result.rollback_report and ws_ctx.change_guard:
-                await query.message.reply_text(
-                    ws_ctx.change_guard.format_report_html(result.rollback_report),
-                    parse_mode="HTML",
-                )
-
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_automation_run(
-                user_id=user_id,
-                request="button:resolve",
-                workspace_root=str(profile.root_path),
-                matched_playbook=None,
-                read_only=False,
-                success=result.success,
-                mode="agentic_button",
-                checkpoint_created=result.checkpoint_created,
-                rollback_triggered=bool(
-                    result.rollback_report and result.rollback_report.rollback_triggered
-                ),
-                rollback_succeeded=bool(
-                    result.rollback_report and result.rollback_report.rollback_succeeded
-                ),
-                workspace_changed=current_workspace != profile.root_path,
-            )
-
-    async def _run_agentic_background_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        action_key: str,
-    ) -> None:
-        """Launch a long-running workspace command in the background."""
-        user_id = query.from_user.id
-        _current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        operator_runtime = self._get_agentic_operator_runtime(context)
-        if not project_automation or not profile or not operator_runtime:
-            await query.edit_message_text("Фоновые задачи недоступны.")
-            return
-
-        command = profile.commands.get(action_key)
-        if not command:
-            await query.answer("Это действие недоступно для проекта.", show_alert=True)
-            return
-
-        verification_command = self.verify.select_background_verification(profile)
-        verification_mode = None
-        verification_delay_seconds = 0.0
-        verification_retries = 1
-        verification_interval_seconds = 0.0
-        if verification_command:
-            if action_key in {"start", "dev"}:
-                verification_mode = "while_running"
-                verification_delay_seconds = 3.0
-                verification_retries = 4
-                verification_interval_seconds = 3.0
-            elif action_key == "deploy":
-                verification_mode = "after_exit"
-                verification_delay_seconds = 0.0
-                verification_retries = 4
-                verification_interval_seconds = 3.0
-
-        title = {
-            "start": "Запуск",
-            "dev": "Разработка",
-            "deploy": "Деплой",
-        }.get(action_key, action_key.title())
-
-        try:
-            job = await operator_runtime.launch_job(
-                workspace_root=profile.root_path,
-                action_key=action_key,
-                command=command,
-                title=title,
-                verification_command=verification_command,
-                verification_mode=verification_mode,
-                verification_delay_seconds=verification_delay_seconds,
-                verification_retries=verification_retries,
-                verification_interval_seconds=verification_interval_seconds,
-            )
-        except RuntimeError as exc:
-            await query.answer(str(exc), show_alert=True)
-            text, reply_markup = await self._build_agentic_jobs_text(context)
-            await query.edit_message_text(
-                text,
-                parse_mode="HTML",
-                reply_markup=reply_markup,
-            )
-            return
-
-        header = (
-            "▶️ <b>Фоновая задача запущена</b>\n\n"
-            f"Действие: <code>{escape_html(title)}</code>\n"
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-            f"Задача: <code>{escape_html(job.job_id)}</code>\n"
-            f"Команда: <code>{escape_html(command)}</code>"
-        )
-        if verification_command and verification_mode:
-            header += (
-                "\n"
-                f"Проверка после запуска: <code>{escape_html(verification_command)}</code>"
-            )
-        text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup,
-        )
-
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=user_id,
-                command=f"workspace_job_{action_key}",
-                args=[command, str(current_workspace)],
-                success=True,
-            )
-
-    async def _stop_agentic_background_action(
-        self,
-        query: Any,
-        context: ContextTypes.DEFAULT_TYPE,
-        job_id: str,
-    ) -> None:
-        """Stop a persisted background workspace job."""
-        operator_runtime = self._get_agentic_operator_runtime(context)
-        if not operator_runtime:
-            await query.edit_message_text("Фоновые задачи недоступны.")
-            return
-
-        try:
-            job = await operator_runtime.stop_job(job_id)
-        except RuntimeError as exc:
-            await query.answer(str(exc), show_alert=True)
-            return
-
-        header = (
-            "🛑 <b>Остановка запрошена</b>\n\n"
-            f"Задача: <code>{escape_html(job.job_id)}</code>\n"
-            f"Действие: <code>{escape_html(job.action_key)}</code>\n"
-            f"Статус: <code>{escape_html(job.status)}</code>"
-        )
-        text, reply_markup = await self._build_agentic_jobs_text(context, header=header)
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup,
-        )
-
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=query.from_user.id,
-                command="workspace_job_stop",
-                args=[job_id],
-                success=True,
-            )
-
-    def _format_verbose_progress(
-        self,
-        activity_log: List[Dict[str, Any]],
-        verbose_level: int,
-        start_time: float,
-    ) -> str:
-        """Build the progress message text based on activity so far."""
-        if not activity_log:
-            return "Working..."
-
-        elapsed = time.time() - start_time
-        lines: List[str] = [f"Working... ({elapsed:.0f}s)\n"]
-
-        for entry in activity_log[-15:]:  # Show last 15 entries max
-            kind = entry.get("kind", "tool")
-            if kind == "text":
-                # Claude's intermediate reasoning/commentary
-                snippet = entry.get("detail", "")
-                if verbose_level >= 2:
-                    lines.append(f"\U0001f4ac {snippet}")
-                else:
-                    # Level 1: one short line
-                    lines.append(f"\U0001f4ac {snippet[:80]}")
-            else:
-                # Tool call
-                icon = _tool_icon(entry["name"])
-                if verbose_level >= 2 and entry.get("detail"):
-                    lines.append(f"{icon} {entry['name']}: {entry['detail']}")
-                else:
-                    lines.append(f"{icon} {entry['name']}")
-
-        if len(activity_log) > 15:
-            lines.insert(1, f"... ({len(activity_log) - 15} earlier entries)\n")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _summarize_tool_input(tool_name: str, tool_input: Dict[str, Any]) -> str:
-        """Return a short summary of tool input for verbose level 2."""
-        if not tool_input:
-            return ""
-        if tool_name in ("Read", "Write", "Edit", "MultiEdit"):
-            path = tool_input.get("file_path") or tool_input.get("path", "")
-            if path:
-                # Show just the filename, not the full path
-                return path.rsplit("/", 1)[-1]
-        if tool_name in ("Glob", "Grep"):
-            pattern = tool_input.get("pattern", "")
-            if pattern:
-                return pattern[:60]
-        if tool_name == "Bash":
-            cmd = tool_input.get("command", "")
-            if cmd:
-                return _redact_secrets(cmd[:100])[:80]
-        if tool_name in ("WebFetch", "WebSearch"):
-            return (tool_input.get("url", "") or tool_input.get("query", ""))[:60]
-        if tool_name == "Task":
-            desc = tool_input.get("description", "")
-            if desc:
-                return desc[:60]
-        # Generic: show first key's value
-        for v in tool_input.values():
-            if isinstance(v, str) and v:
-                return v[:60]
-        return ""
-
-    @staticmethod
-    def _start_typing_heartbeat(
-        chat: Any,
-        interval: float = 2.0,
-    ) -> "asyncio.Task[None]":
-        """Start a background typing indicator task.
-
-        Sends typing every *interval* seconds, independently of
-        stream events. Cancel the returned task in a ``finally``
-        block.
-        """
-
-        async def _heartbeat() -> None:
-            try:
-                while True:
-                    await asyncio.sleep(interval)
-                    try:
-                        await chat.send_action("typing")
-                    except Exception:
-                        pass
-            except asyncio.CancelledError:
-                pass
-
-        return asyncio.create_task(_heartbeat())
-
-    def _make_stream_callback(
-        self,
-        verbose_level: int,
-        progress_msg: Any,
-        tool_log: List[Dict[str, Any]],
-        start_time: float,
-        mcp_images: Optional[List[ImageAttachment]] = None,
-        approved_directory: Optional[Path] = None,
-        draft_streamer: Optional[DraftStreamer] = None,
-    ) -> Optional[Callable[[StreamUpdate], Any]]:
-        """Create a stream callback for verbose progress updates.
-
-        When *mcp_images* is provided, the callback also intercepts
-        ``send_image_to_user`` tool calls and collects validated
-        :class:`ImageAttachment` objects for later Telegram delivery.
-
-        When *draft_streamer* is provided, tool activity and assistant
-        text are streamed to the user in real time via
-        ``sendMessageDraft``.
-
-        Returns None when verbose_level is 0 **and** no MCP image
-        collection or draft streaming is requested.
-        Typing indicators are handled by a separate heartbeat task.
-        """
-        need_mcp_intercept = mcp_images is not None and approved_directory is not None
-
-        if verbose_level == 0 and not need_mcp_intercept and draft_streamer is None:
-            return None
-
-        last_edit_time = [0.0]  # mutable container for closure
-
-        async def _on_stream(update_obj: StreamUpdate) -> None:
-            # Intercept send_image_to_user MCP tool calls.
-            # The SDK namespaces MCP tools as "mcp__<server>__<tool>",
-            # so match both the bare name and the namespaced variant.
-            if update_obj.tool_calls and need_mcp_intercept:
-                for tc in update_obj.tool_calls:
-                    tc_name = tc.get("name", "")
-                    if tc_name == "send_image_to_user" or tc_name.endswith(
-                        "__send_image_to_user"
-                    ):
-                        tc_input = tc.get("input", {})
-                        file_path = tc_input.get("file_path", "")
-                        caption = tc_input.get("caption", "")
-                        img = validate_image_path(
-                            file_path, approved_directory, caption
-                        )
-                        if img:
-                            mcp_images.append(img)
-
-            # Capture tool calls
-            if update_obj.tool_calls:
-                for tc in update_obj.tool_calls:
-                    name = tc.get("name", "unknown")
-                    detail = self._summarize_tool_input(name, tc.get("input", {}))
-                    if verbose_level >= 1:
-                        tool_log.append(
-                            {"kind": "tool", "name": name, "detail": detail}
-                        )
-                    if draft_streamer:
-                        icon = _tool_icon(name)
-                        line = (
-                            f"{icon} {name}: {detail}" if detail else f"{icon} {name}"
-                        )
-                        await draft_streamer.append_tool(line)
-
-            # Capture assistant text (reasoning / commentary)
-            if update_obj.type == "assistant" and update_obj.content:
-                text = update_obj.content.strip()
-                if text:
-                    first_line = text.split("\n", 1)[0].strip()
-                    if first_line:
-                        if verbose_level >= 1:
-                            tool_log.append(
-                                {"kind": "text", "detail": first_line[:120]}
-                            )
-                        if draft_streamer:
-                            await draft_streamer.append_tool(
-                                f"\U0001f4ac {first_line[:120]}"
-                            )
-
-            # Stream text to user via draft (prefer token deltas;
-            # skip full assistant messages to avoid double-appending)
-            if draft_streamer and update_obj.content:
-                if update_obj.type == "stream_delta":
-                    await draft_streamer.append_text(update_obj.content)
-
-            # Throttle progress message edits to avoid Telegram rate limits
-            if not draft_streamer and verbose_level >= 1:
-                now = time.time()
-                if (now - last_edit_time[0]) >= 2.0 and tool_log:
-                    last_edit_time[0] = now
-                    new_text = self._format_verbose_progress(
-                        tool_log, verbose_level, start_time
-                    )
-                    try:
-                        await progress_msg.edit_text(new_text)
-                    except Exception:
-                        pass
-
-        return _on_stream
-
-    async def _send_images(
-        self,
-        update: Update,
-        images: List[ImageAttachment],
-        reply_to_message_id: Optional[int] = None,
-        caption: Optional[str] = None,
-        caption_parse_mode: Optional[str] = None,
-    ) -> bool:
-        """Send extracted images as a media group (album) or documents.
-
-        If *caption* is provided and fits (≤1024 chars), it is attached to the
-        photo / first album item so text + images appear as one message.
-
-        Returns True if the caption was successfully embedded in the photo message.
-        """
-        photos: List[ImageAttachment] = []
-        documents: List[ImageAttachment] = []
-        for img in images:
-            if should_send_as_photo(img.path):
-                photos.append(img)
-            else:
-                documents.append(img)
-
-        # Telegram caption limit
-        use_caption = bool(
-            caption and len(caption) <= 1024 and photos and not documents
-        )
-        caption_sent = False
-
-        # Send raster photos as a single album (Telegram groups 2-10 items)
-        if photos:
-            try:
-                if len(photos) == 1:
-                    with open(photos[0].path, "rb") as f:
-                        await update.message.reply_photo(
-                            photo=f,
-                            reply_to_message_id=reply_to_message_id,
-                            caption=caption if use_caption else None,
-                            parse_mode=caption_parse_mode if use_caption else None,
-                        )
-                    caption_sent = use_caption
-                else:
-                    media = []
-                    file_handles = []
-                    for idx, img in enumerate(photos[:10]):
-                        fh = open(img.path, "rb")  # noqa: SIM115
-                        file_handles.append(fh)
-                        media.append(
-                            InputMediaPhoto(
-                                media=fh,
-                                caption=caption if use_caption and idx == 0 else None,
-                                parse_mode=(
-                                    caption_parse_mode
-                                    if use_caption and idx == 0
-                                    else None
-                                ),
-                            )
-                        )
-                    try:
-                        await update.message.chat.send_media_group(
-                            media=media,
-                            reply_to_message_id=reply_to_message_id,
-                        )
-                        caption_sent = use_caption
-                    finally:
-                        for fh in file_handles:
-                            fh.close()
-            except Exception as e:
-                logger.warning("Failed to send photo album", error=str(e))
-
-        # Send SVGs / large files as documents (one by one — can't mix in album)
-        for img in documents:
-            try:
-                with open(img.path, "rb") as f:
-                    await update.message.reply_document(
-                        document=f,
-                        filename=img.path.name,
-                        reply_to_message_id=reply_to_message_id,
-                    )
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning(
-                    "Failed to send document image",
-                    path=str(img.path),
-                    error=str(e),
-                )
-
-        return caption_sent
 
     async def agentic_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2173,7 +1064,7 @@ class MessageOrchestrator:
                 throttle_interval=self.settings.stream_draft_interval,
             )
 
-        on_stream = self._make_stream_callback(
+        on_stream = self.stream.make_stream_callback(
             verbose_level,
             progress_msg,
             tool_log,
@@ -2184,7 +1075,7 @@ class MessageOrchestrator:
         )
 
         # Independent typing heartbeat — stays alive even with no stream events
-        heartbeat = self._start_typing_heartbeat(chat)
+        heartbeat = self.stream.start_typing_heartbeat(chat)
 
         # Prepend custom instructions to prompt if set
         custom_instructions = context.user_data.get("custom_instructions", [])
@@ -2367,7 +1258,7 @@ class MessageOrchestrator:
 
         # Use MCP-collected images (from send_image_to_user tool calls)
         images: List[ImageAttachment] = mcp_images
-        panel_markup = self._build_agentic_context_markup(context)
+        panel_markup = self.panel.build_control_panel_markup()
 
         # Try to combine text + images in one message when possible
         caption_sent = False
@@ -2375,7 +1266,7 @@ class MessageOrchestrator:
             msg = formatted_messages[0]
             if msg.text and len(msg.text) <= 1024:
                 try:
-                    caption_sent = await self._send_images(
+                    caption_sent = await self.stream.send_images(
                         update,
                         images,
                         reply_to_message_id=update.message.message_id,
@@ -2426,7 +1317,7 @@ class MessageOrchestrator:
             # Send images separately if caption wasn't used
             if images:
                 try:
-                    await self._send_images(
+                    await self.stream.send_images(
                         update,
                         images,
                         reply_to_message_id=update.message.message_id,
@@ -2651,7 +1542,7 @@ class MessageOrchestrator:
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
         mcp_images_doc: List[ImageAttachment] = []
-        on_stream = self._make_stream_callback(
+        on_stream = self.stream.make_stream_callback(
             verbose_level,
             progress_msg,
             tool_log,
@@ -2660,7 +1551,7 @@ class MessageOrchestrator:
             approved_directory=self.settings.approved_directory,
         )
 
-        heartbeat = self._start_typing_heartbeat(chat)
+        heartbeat = self.stream.start_typing_heartbeat(chat)
         try:
             claude_response = await claude_integration.run_command(
                 prompt=prompt,
@@ -2700,7 +1591,7 @@ class MessageOrchestrator:
                 msg = formatted_messages[0]
                 if msg.text and len(msg.text) <= 1024:
                     try:
-                        caption_sent = await self._send_images(
+                        caption_sent = await self.stream.send_images(
                             update,
                             images,
                             reply_to_message_id=update.message.message_id,
@@ -2725,7 +1616,7 @@ class MessageOrchestrator:
 
                 if images:
                     try:
-                        await self._send_images(
+                        await self.stream.send_images(
                             update,
                             images,
                             reply_to_message_id=update.message.message_id,
@@ -2930,7 +1821,7 @@ class MessageOrchestrator:
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
         mcp_images_media: List[ImageAttachment] = []
-        on_stream = self._make_stream_callback(
+        on_stream = self.stream.make_stream_callback(
             verbose_level,
             progress_msg,
             tool_log,
@@ -2939,7 +1830,7 @@ class MessageOrchestrator:
             approved_directory=self.settings.approved_directory,
         )
 
-        heartbeat = self._start_typing_heartbeat(chat)
+        heartbeat = self.stream.start_typing_heartbeat(chat)
         try:
             claude_response = await claude_integration.run_command(
                 prompt=prompt,
@@ -2980,7 +1871,7 @@ class MessageOrchestrator:
             msg = formatted_messages[0]
             if msg.text and len(msg.text) <= 1024:
                 try:
-                    caption_sent = await self._send_images(
+                    caption_sent = await self.stream.send_images(
                         update,
                         images,
                         reply_to_message_id=update.message.message_id,
@@ -3005,7 +1896,7 @@ class MessageOrchestrator:
 
             if images:
                 try:
-                    await self._send_images(
+                    await self.stream.send_images(
                         update,
                         images,
                         reply_to_message_id=update.message.message_id,
@@ -3203,25 +2094,28 @@ class MessageOrchestrator:
                 await query.edit_message_text("Не удалось загрузить статистику.")
 
         elif action in {"doctor", "review", "setup", "test", "quality"}:
-            await self._run_agentic_playbook_action(query, context, action)
+            await self.actions.run_playbook(query, context, action)
 
         elif action == "verify":
-            await self._run_agentic_verify_action(query, context)
+            await self.actions.run_verify(query, context)
+
+        elif action == "resolve":
+            await self.actions.run_resolve(query, context)
 
         elif action in {"health", "build"}:
-            await self._run_agentic_command_action(query, context, action)
+            await self.actions.run_command(query, context, action)
 
         elif action in {"start", "dev", "deploy"}:
-            await self._run_agentic_background_action(query, context, action)
+            await self.actions.run_background(query, context, action)
 
         elif action.startswith("svc:"):
             _svc, service_key, service_action = action.split(":", 2)
-            await self._run_agentic_service_action(
+            await self.actions.run_service(
                 query, context, service_key, service_action
             )
 
         elif action.startswith("stop:"):
-            await self._stop_agentic_background_action(
+            await self.actions.stop_background(
                 query, context, action.split(":", 1)[1]
             )
 
@@ -3297,7 +2191,7 @@ class MessageOrchestrator:
         relative_display = (
             project_name
             if project_name == "/"
-            else self._format_agentic_relative_path(new_path, base)
+            else self.panel.format_relative_path(new_path, base)
         )
         (
             _current_dir,

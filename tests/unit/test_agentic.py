@@ -15,8 +15,10 @@ from src.bot.agentic.context import (
     VerifyReport,
     VerifyStep,
 )
+from src.bot.agentic.action_runner import ActionRunner
 from src.bot.agentic.panel_builder import PanelBuilder
 from src.bot.agentic.resolve_runner import ResolveRunner
+from src.bot.agentic.stream_handler import StreamHandler, _redact_secrets, _tool_icon
 from src.bot.agentic.service_controller import ServiceController, ServiceFollowUpResult
 from src.bot.agentic.shell_executor import ShellExecutor
 from src.bot.agentic.verify_pipeline import VerifyPipeline
@@ -824,3 +826,311 @@ class TestAgenticWorkspaceContext:
             profile=None,
         )
         assert ctx.format_relative_path(sub) == "sub"
+
+
+# --- StreamHandler tests ---
+
+
+class TestStreamHandler:
+    """Tests for extracted stream/typing/image handler."""
+
+    def test_tool_icon_known_tools(self):
+        assert _tool_icon("Read") == "\U0001f4d6"
+        assert _tool_icon("Bash") == "\U0001f4bb"
+        assert _tool_icon("Grep") == "\U0001f50d"
+
+    def test_tool_icon_mcp_prefix(self):
+        assert _tool_icon("mcp__slack__post") == "\U0001f9e9"
+
+    def test_tool_icon_unknown(self):
+        assert _tool_icon("CustomTool") == "\U0001f527"
+
+    def test_redact_secrets_safe_text(self):
+        assert _redact_secrets("ls -la") == "ls -la"
+
+    def test_redact_secrets_token(self):
+        result = _redact_secrets("curl --token=mysecret123 https://api.example.com")
+        assert "mysecret123" not in result
+
+    def test_summarize_tool_input_read(self):
+        sh = StreamHandler()
+        result = sh.summarize_tool_input("Read", {"file_path": "/home/user/project/main.py"})
+        assert result == "main.py"
+
+    def test_summarize_tool_input_bash(self):
+        sh = StreamHandler()
+        result = sh.summarize_tool_input("Bash", {"command": "echo hello"})
+        assert "hello" in result
+
+    def test_summarize_tool_input_empty(self):
+        sh = StreamHandler()
+        assert sh.summarize_tool_input("Read", {}) == ""
+
+    def test_summarize_tool_input_glob(self):
+        sh = StreamHandler()
+        result = sh.summarize_tool_input("Glob", {"pattern": "**/*.py"})
+        assert result == "**/*.py"
+
+    def test_format_verbose_progress_empty_log(self):
+        sh = StreamHandler()
+        assert sh.format_verbose_progress([], 1, 0.0) == "Working..."
+
+    def test_format_verbose_progress_with_tools(self):
+        sh = StreamHandler()
+        log = [
+            {"kind": "tool", "name": "Read", "detail": "main.py"},
+            {"kind": "text", "detail": "Analyzing the code"},
+        ]
+        result = sh.format_verbose_progress(log, 1, 0.0)
+        assert "Read" in result
+        assert "Analyzing" in result
+
+    def test_format_verbose_progress_truncates_at_15(self):
+        sh = StreamHandler()
+        log = [{"kind": "tool", "name": f"Tool{i}", "detail": ""} for i in range(20)]
+        result = sh.format_verbose_progress(log, 1, 0.0)
+        assert "5 earlier entries" in result
+
+    def test_make_stream_callback_returns_none_for_quiet(self):
+        sh = StreamHandler()
+        result = sh.make_stream_callback(
+            verbose_level=0,
+            progress_msg=None,
+            tool_log=[],
+            start_time=0.0,
+        )
+        assert result is None
+
+    def test_make_stream_callback_returns_callable_for_verbose(self):
+        sh = StreamHandler()
+        result = sh.make_stream_callback(
+            verbose_level=1,
+            progress_msg=MagicMock(),
+            tool_log=[],
+            start_time=0.0,
+        )
+        assert callable(result)
+
+    async def test_typing_heartbeat_fires(self):
+        chat = AsyncMock()
+        heartbeat = StreamHandler.start_typing_heartbeat(chat, interval=0.02)
+        await asyncio.sleep(0.1)
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
+        assert chat.send_action.call_count >= 2
+
+
+# --- ActionRunner context resolution tests ---
+
+
+class TestActionRunnerContext:
+    """Tests for ActionRunner's context resolution helpers."""
+
+    def test_get_boundary_root_default(self, tmp_dir):
+        settings = MagicMock()
+        settings.approved_directory = tmp_dir
+        runner = ActionRunner(
+            settings=settings,
+            shell=ShellExecutor(),
+            verify=VerifyPipeline(ShellExecutor()),
+            services=ServiceController(ShellExecutor()),
+            resolver=MagicMock(),
+            panel=MagicMock(),
+        )
+        context = MagicMock()
+        context.bot_data = {}
+        assert runner._get_boundary_root(context) == tmp_dir.resolve()
+
+    def test_get_boundary_root_override(self, tmp_dir):
+        settings = MagicMock()
+        settings.approved_directory = tmp_dir
+        runner = ActionRunner(
+            settings=settings,
+            shell=ShellExecutor(),
+            verify=VerifyPipeline(ShellExecutor()),
+            services=ServiceController(ShellExecutor()),
+            resolver=MagicMock(),
+            panel=MagicMock(),
+        )
+        override = tmp_dir / "override"
+        override.mkdir()
+        context = MagicMock()
+        context.bot_data = {"boundary_root": override}
+        assert runner._get_boundary_root(context) == override.resolve()
+
+
+# --- PanelBuilder status with last verify/resolve ---
+
+
+class TestStatusWithHistory:
+    """Test that status text includes last verify/resolve results."""
+
+    @pytest.fixture
+    def panel(self):
+        shell = ShellExecutor()
+        verify = VerifyPipeline(shell)
+        services = ServiceController(shell)
+        return PanelBuilder(verify, shell, services)
+
+    @pytest.fixture
+    def ctx(self, tmp_dir):
+        return AgenticWorkspaceContext(
+            current_directory=tmp_dir.resolve(),
+            current_workspace=tmp_dir.resolve(),
+            boundary_root=tmp_dir.resolve(),
+            project_automation=MagicMock(),
+            profile=MagicMock(
+                display_name="TestProject",
+                root_path=tmp_dir.resolve(),
+                stacks=("python",),
+                services=(),
+                commands={},
+                operator_notes="",
+            ),
+        )
+
+    async def test_status_shows_last_verify_success(self, panel, ctx):
+        import time
+        last_verify = {
+            "success": True,
+            "failed_step": None,
+            "steps_total": 3,
+            "steps_passed": 3,
+            "timestamp": time.time(),
+        }
+        text = await panel.build_status_text(
+            ctx, user_id=1, session_id=None,
+            last_verify=last_verify,
+        )
+        assert "всё ок" in text
+        assert "3/3" in text
+
+    async def test_status_shows_last_verify_failure(self, panel, ctx):
+        import time
+        last_verify = {
+            "success": False,
+            "failed_step": "тесты",
+            "steps_total": 3,
+            "steps_passed": 1,
+            "timestamp": time.time(),
+        }
+        text = await panel.build_status_text(
+            ctx, user_id=1, session_id=None,
+            last_verify=last_verify,
+        )
+        assert "сбой" in text
+        assert "тесты" in text
+        assert "1/3" in text
+
+    async def test_status_shows_last_resolve_success(self, panel, ctx):
+        import time
+        last_resolve = {
+            "success": True,
+            "attempts": 1,
+            "error": None,
+            "rollback": False,
+            "timestamp": time.time(),
+        }
+        text = await panel.build_status_text(
+            ctx, user_id=1, session_id=None,
+            last_resolve=last_resolve,
+        )
+        assert "исправлено" in text
+
+    async def test_status_shows_last_resolve_rollback(self, panel, ctx):
+        import time
+        last_resolve = {
+            "success": False,
+            "attempts": 2,
+            "error": None,
+            "rollback": True,
+            "timestamp": time.time(),
+        }
+        text = await panel.build_status_text(
+            ctx, user_id=1, session_id=None,
+            last_resolve=last_resolve,
+        )
+        assert "откат" in text
+        assert "2x" in text
+
+    def test_format_ago_just_now(self):
+        assert PanelBuilder._format_ago(30) == "только что"
+
+    def test_format_ago_minutes(self):
+        assert PanelBuilder._format_ago(180) == "3 мин назад"
+
+    def test_format_ago_hours(self):
+        assert PanelBuilder._format_ago(7200) == "2 ч назад"
+
+
+# --- Profile validation tests ---
+
+
+class TestProfileValidation:
+    """Tests for workspace profile validation."""
+
+    def test_validate_missing_path(self, tmp_dir):
+        from src.bot.features.project_automation import ProjectAutomationManager
+
+        manager = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        manager._workspace_overrides = {
+            "nonexistent": {
+                "display_name": "Ghost",
+                "aliases": (),
+                "commands": {},
+                "services": None,
+                "sort_priority": 0,
+                "operator_notes": "",
+            }
+        }
+        warnings = manager.validate_profiles(tmp_dir)
+        assert len(warnings) == 1
+        assert "не найден" in warnings[0]
+
+    def test_validate_duplicate_aliases(self, tmp_dir):
+        from src.bot.features.project_automation import ProjectAutomationManager
+
+        (tmp_dir / "proj1").mkdir()
+        (tmp_dir / "proj2").mkdir()
+        manager = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        manager._workspace_overrides = {
+            "proj1": {
+                "display_name": "Project1",
+                "aliases": ("bot",),
+                "commands": {},
+                "services": None,
+                "sort_priority": 0,
+                "operator_notes": "",
+            },
+            "proj2": {
+                "display_name": "Project2",
+                "aliases": ("bot",),
+                "commands": {},
+                "services": None,
+                "sort_priority": 0,
+                "operator_notes": "",
+            },
+        }
+        warnings = manager.validate_profiles(tmp_dir)
+        assert any("алиас" in w and "bot" in w for w in warnings)
+
+    def test_validate_no_warnings_for_valid(self, tmp_dir):
+        from src.bot.features.project_automation import ProjectAutomationManager
+
+        (tmp_dir / "myproj").mkdir()
+        manager = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        manager._workspace_overrides = {
+            "myproj": {
+                "display_name": "MyProj",
+                "aliases": ("mp",),
+                "commands": {"health": "echo ok"},
+                "services": None,
+                "sort_priority": 0,
+                "operator_notes": "",
+            }
+        }
+        warnings = manager.validate_profiles(tmp_dir)
+        assert warnings == []

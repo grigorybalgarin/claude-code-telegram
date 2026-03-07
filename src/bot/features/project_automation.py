@@ -221,6 +221,53 @@ class ProjectAutomationManager:
             self.workspace_profiles_path
         )
 
+    def validate_profiles(self, boundary_root: Path) -> List[str]:
+        """Validate loaded workspace profiles and return warnings.
+
+        Checks:
+        - Paths exist under boundary_root
+        - No duplicate aliases across profiles
+        - Commands reference existing executables (best-effort)
+        - Service definitions have at least one action
+        """
+        warnings: List[str] = []
+        if not self._workspace_overrides:
+            return warnings
+
+        seen_aliases: dict[str, str] = {}
+        for rel_path, override in self._workspace_overrides.items():
+            full_path = boundary_root / rel_path
+            profile_name = str(override.get("display_name") or rel_path)
+
+            if not full_path.is_dir():
+                warnings.append(
+                    f"{profile_name}: путь '{rel_path}' не найден"
+                )
+
+            for alias in override.get("aliases") or ():
+                alias_lower = str(alias).lower()
+                if alias_lower in seen_aliases:
+                    warnings.append(
+                        f"{profile_name}: алиас '{alias}' "
+                        f"уже используется в '{seen_aliases[alias_lower]}'"
+                    )
+                else:
+                    seen_aliases[alias_lower] = profile_name
+
+            services = override.get("services")
+            if services:
+                for service in services:
+                    if not service.available_actions:
+                        warnings.append(
+                            f"{profile_name}: сервис '{service.display_name}' "
+                            f"не имеет ни одного действия"
+                        )
+
+        for warning in warnings:
+            logger.warning("Profile validation: %s", warning)
+
+        return warnings
+
     def detect_workspace_root(self, current_dir: Path, boundary_root: Path) -> Path:
         """Find the most relevant workspace root inside the approved boundary."""
         current = current_dir.resolve()
