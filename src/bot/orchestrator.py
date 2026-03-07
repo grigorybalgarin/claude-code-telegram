@@ -885,6 +885,15 @@ class MessageOrchestrator:
             else None
         )
 
+    def _build_agentic_context_markup(
+        self, context: ContextTypes.DEFAULT_TYPE
+    ) -> InlineKeyboardMarkup:
+        """Build the current control panel markup for reply messages."""
+        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        return self._build_agentic_control_panel_markup(profile)
+
     def _format_agentic_relative_path(self, path: Path, boundary_root: Path) -> str:
         """Format a workspace-relative path for Telegram output."""
         try:
@@ -3104,6 +3113,7 @@ class MessageOrchestrator:
 
         # Use MCP-collected images (from send_image_to_user tool calls)
         images: List[ImageAttachment] = mcp_images
+        panel_markup = self._build_agentic_context_markup(context)
 
         # Try to combine text + images in one message when possible
         caption_sent = False
@@ -3122,13 +3132,29 @@ class MessageOrchestrator:
                     logger.warning("Image+caption send failed", error=str(img_err))
 
         # Send text messages (skip if caption was already embedded in photos)
+        sent_any_text = False
         if not caption_sent:
+            visible_messages = [
+                message
+                for message in formatted_messages
+                if message.text and message.text.strip()
+            ]
             for i, message in enumerate(formatted_messages):
                 if not message.text or not message.text.strip():
                     continue
                 reply_id = update.message.message_id if i == 0 else None
+                sent_any_text = True
+                is_last_visible = (
+                    bool(visible_messages)
+                    and message is visible_messages[-1]
+                    and not (guard_report and change_guard)
+                )
                 sent = await self._send_with_retry(
-                    update, message.text, message.parse_mode, reply_id
+                    update,
+                    message.text,
+                    message.parse_mode,
+                    reply_id,
+                    reply_markup=panel_markup if is_last_visible else None,
                 )
                 if not sent:
                     # Last resort: send truncated plain text
@@ -3136,6 +3162,7 @@ class MessageOrchestrator:
                         await update.message.reply_text(
                             message.text[:4000],
                             reply_to_message_id=reply_id,
+                            reply_markup=panel_markup if is_last_visible else None,
                         )
                     except Exception:
                         pass
@@ -3157,6 +3184,13 @@ class MessageOrchestrator:
             await update.message.reply_text(
                 change_guard.format_report_html(guard_report),
                 parse_mode="HTML",
+                reply_to_message_id=update.message.message_id,
+                reply_markup=panel_markup,
+            )
+        elif caption_sent and not sent_any_text:
+            await update.message.reply_text(
+                "Actions:",
+                reply_markup=panel_markup,
                 reply_to_message_id=update.message.message_id,
             )
 
@@ -3211,6 +3245,7 @@ class MessageOrchestrator:
         text: str,
         parse_mode: Optional[str],
         reply_to_message_id: Optional[int],
+        reply_markup: Optional[Any] = None,
         max_retries: int = 3,
     ) -> bool:
         """Send a message with exponential backoff retry.
@@ -3223,7 +3258,7 @@ class MessageOrchestrator:
                 await update.message.reply_text(
                     text,
                     parse_mode=pm,
-                    reply_markup=None,
+                    reply_markup=reply_markup,
                     reply_to_message_id=reply_to_message_id,
                 )
                 return True

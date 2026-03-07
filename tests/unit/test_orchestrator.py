@@ -297,7 +297,7 @@ async def test_agentic_status_compact(agentic_settings, deps):
 
 
 async def test_agentic_text_calls_claude(agentic_settings, deps):
-    """Agentic text handler calls Claude and returns response without keyboard."""
+    """Agentic text handler calls Claude and keeps control buttons on the final reply."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     # Mock Claude response
@@ -342,14 +342,13 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
     # Progress message deleted
     progress_msg.delete.assert_called_once()
 
-    # Response sent without keyboard (reply_markup=None)
     response_calls = [
         c
         for c in update.message.reply_text.call_args_list
         if c != update.message.reply_text.call_args_list[0]
     ]
-    for call in response_calls:
-        assert call.kwargs.get("reply_markup") is None
+    assert response_calls
+    assert response_calls[-1].kwargs.get("reply_markup") is not None
 
 
 async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):
