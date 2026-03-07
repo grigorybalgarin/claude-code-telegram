@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -41,6 +42,11 @@ from .exceptions import (
 from .monitor import _is_claude_internal_path, check_bash_directory_boundary
 
 logger = structlog.get_logger()
+
+_CLAUDE_STDERR_NOISE_PATTERNS = (
+    re.compile(r"^DEBUG MODEL CHECK:", re.IGNORECASE),
+    re.compile(r"^DEBUG_CMD_JSON:", re.IGNORECASE),
+)
 
 
 @dataclass
@@ -152,6 +158,32 @@ class ClaudeSDKManager:
         else:
             logger.info("No API key provided, using existing Claude CLI authentication")
 
+    @staticmethod
+    def _sanitize_stderr_line(line: str) -> Optional[str]:
+        """Return a safe stderr line to keep for diagnostics."""
+        sanitized = redact_sensitive_text(line, max_length=500).strip()
+        if not sanitized:
+            return None
+
+        if any(pattern.search(sanitized) for pattern in _CLAUDE_STDERR_NOISE_PATTERNS):
+            return None
+
+        return sanitized
+
+    @classmethod
+    def _summarize_captured_stderr(cls, stderr_lines: List[str]) -> str:
+        """Condense stderr lines into a short, deduplicated excerpt."""
+        if not stderr_lines:
+            return ""
+
+        deduped: list[str] = []
+        for line in stderr_lines:
+            if deduped and deduped[-1] == line:
+                continue
+            deduped.append(line)
+
+        return redact_sensitive_text("\n".join(deduped[-5:]), max_length=800)
+
     async def execute_command(
         self,
         prompt: str,
@@ -175,12 +207,16 @@ class ClaudeSDKManager:
             # Capture stderr from Claude CLI for better error diagnostics
             from collections import deque
 
-            stderr_lines: deque = deque(maxlen=30)
+            stderr_lines: deque[str] = deque(maxlen=12)
 
             def _stderr_callback(line: str) -> None:
-                sanitized_line = redact_sensitive_text(line, max_length=1000)
+                sanitized_line = self._sanitize_stderr_line(line)
+                if not sanitized_line:
+                    return
+
                 stderr_lines.append(sanitized_line)
-                logger.debug("Claude CLI stderr", line=sanitized_line)
+                if self.config.debug:
+                    logger.debug("Claude CLI stderr", line=sanitized_line)
 
             # Build system prompt, loading CLAUDE.md from working directory if present
             base_prompt = self._build_system_prompt(working_directory)
@@ -457,14 +493,15 @@ class ClaudeSDKManager:
         except ProcessError as e:
             error_str = redact_sensitive_text(str(e), max_length=2000)
             # Include captured stderr for better diagnostics
-            captured_stderr = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
+            captured_stderr = self._summarize_captured_stderr(list(stderr_lines))
             if captured_stderr:
                 error_str = f"{error_str}\nStderr: {captured_stderr}"
             logger.error(
                 "Claude process failed",
                 error=error_str,
                 exit_code=getattr(e, "exit_code", None),
-                stderr=captured_stderr or None,
+                stderr_excerpt=captured_stderr or None,
+                stderr_line_count=len(stderr_lines),
             )
             # Check if the process error is MCP-related
             if "mcp" in error_str.lower():

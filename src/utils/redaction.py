@@ -12,6 +12,10 @@ _SENSITIVE_KEY_PATTERN = re.compile(
 
 _TEXT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
+        re.compile(r"DEBUG_CMD_JSON:\[[^\n]*"),
+        "DEBUG_CMD_JSON:[redacted]",
+    ),
+    (
         re.compile(r"(https://api\.telegram\.org/bot)(\d{6,}:[^/\s]+)"),
         r"\1***",
     ),

@@ -392,6 +392,69 @@ class TestClaudeSDKManager:
             not hasattr(captured_options[0], "resume") or not captured_options[0].resume
         )
 
+    def test_sanitize_stderr_line_drops_noisy_debug_lines(self, sdk_manager):
+        """Verbose Claude CLI debug lines should not be kept for diagnostics."""
+        assert (
+            sdk_manager._sanitize_stderr_line(
+                'DEBUG_CMD_JSON:["/usr/bin/claude","--system-prompt","secret"]'
+            )
+            is None
+        )
+        assert sdk_manager._sanitize_stderr_line("DEBUG MODEL CHECK: model='x'") is None
+
+    def test_summarize_captured_stderr_deduplicates_and_redacts(self, sdk_manager):
+        """Captured stderr should stay short and safe."""
+        summary = sdk_manager._summarize_captured_stderr(
+            [
+                "First useful line",
+                "First useful line",
+                "GET https://api.telegram.org/bot123456:ABCDEFSECRET/sendMessage",
+                "Another useful line",
+            ]
+        )
+
+        assert "ABCDEFSECRET" not in summary
+        assert summary.count("First useful line") == 1
+        assert "Another useful line" in summary
+
+    async def test_process_error_ignores_noisy_stderr_debug_dump(self, sdk_manager):
+        """Noisy Claude CLI debug dumps should not leak into process errors."""
+        from claude_agent_sdk import ProcessError
+
+        from src.claude.exceptions import ClaudeProcessError
+
+        captured_options = []
+
+        def factory(options):
+            captured_options.append(options)
+            client = AsyncMock()
+            client.connect = AsyncMock()
+            client.disconnect = AsyncMock()
+
+            async def query_side_effect(*_args, **_kwargs):
+                options.stderr(
+                    'DEBUG_CMD_JSON:["/usr/bin/claude","--system-prompt","secret"]'
+                )
+                options.stderr("Actual stderr line")
+                raise ProcessError("Claude CLI exited with code 1")
+
+            client.query = AsyncMock(side_effect=query_side_effect)
+            client._query = AsyncMock()
+            client._query.receive_messages = AsyncMock()
+            return client
+
+        with patch("src.claude.sdk_integration.ClaudeSDKClient", side_effect=factory):
+            with pytest.raises(ClaudeProcessError) as exc_info:
+                await sdk_manager.execute_command(
+                    prompt="Test prompt",
+                    working_directory=Path("/test"),
+                )
+
+        error_text = str(exc_info.value)
+        assert "Actual stderr line" in error_text
+        assert "DEBUG_CMD_JSON" not in error_text
+        assert "secret" not in error_text
+
 
 class TestClaudeSandboxSettings:
     """Test sandbox and system_prompt settings on ClaudeAgentOptions."""
