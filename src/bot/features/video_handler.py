@@ -46,7 +46,9 @@ def extract_youtube_id(text: str) -> Optional[str]:
     return None
 
 
-async def get_youtube_transcript(video_id: str) -> VideoTranscript:
+async def get_youtube_transcript(
+    video_id: str, proxy_url: Optional[str] = None
+) -> VideoTranscript:
     """Fetch transcript for a YouTube video.
 
     Tries Russian first, then English, then any available language.
@@ -57,7 +59,15 @@ async def get_youtube_transcript(video_id: str) -> VideoTranscript:
     from youtube_transcript_api import YouTubeTranscriptApi
 
     def _fetch() -> VideoTranscript:
-        ytt = YouTubeTranscriptApi()
+        proxy_config = None
+        if proxy_url:
+            from youtube_transcript_api.proxies import GenericProxyConfig
+
+            proxy_config = GenericProxyConfig(
+                http_url=proxy_url,
+                https_url=proxy_url,
+            )
+        ytt = YouTubeTranscriptApi(proxy_config=proxy_config)
 
         # Try preferred languages first (ru, en), fall back to any
         fetched = None

@@ -201,6 +201,10 @@ class Settings(BaseSettings):
     groq_api_key: Optional[SecretStr] = Field(
         None, description="Groq API key for Whisper voice transcription"
     )
+    youtube_proxy_url: Optional[str] = Field(
+        None,
+        description="HTTP/SOCKS proxy URL for YouTube transcript fetching (to bypass IP bans)",
+    )
     voice_transcription_model: Optional[str] = Field(
         None,
         description=(

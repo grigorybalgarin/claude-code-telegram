@@ -878,7 +878,7 @@ class MessageOrchestrator:
                 [
                     InlineKeyboardButton("📂 Статус", callback_data="act:status"),
                     InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
-                    InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new"),
+                    InlineKeyboardButton("🛠 Разберись", callback_data="act:resolve"),
                 ],
             ]
         )
@@ -892,7 +892,7 @@ class MessageOrchestrator:
         )
         del profile
         rows: List[List[str]] = [
-            ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"],
+            ["📂 Статус", "✅ Проверить", "🛠 Разберись"],
         ]
 
         return ReplyKeyboardMarkup(
@@ -917,10 +917,10 @@ class MessageOrchestrator:
         action = {
             "📂 Статус": "status",
             "✅ Проверить": "verify",
-            "🆕 Новая сессия": "new",
+            "🛠 Разберись": "resolve",
             "📂 Status": "status",
             "✅ Verify": "verify",
-            "🆕 New": "new",
+            "Resolve": "resolve",
         }.get(normalized)
         if action:
             return action
@@ -994,7 +994,7 @@ class MessageOrchestrator:
             [
                 InlineKeyboardButton("📂 Статус", callback_data="act:status"),
                 InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
-                InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new"),
+                InlineKeyboardButton("🛠 Разберись", callback_data="act:resolve"),
             ]
         ]
         return InlineKeyboardMarkup(rows)
@@ -1909,6 +1909,113 @@ class MessageOrchestrator:
             return compact
         return compact[: limit - 3] + "..."
 
+    async def _execute_agentic_verify_steps(
+        self,
+        profile: Any,
+        boundary_root: Path,
+        status_msg: Optional[Any] = None,
+    ) -> tuple[
+        List[tuple[_VerifyStep, _ShellActionResult]],
+        Optional[_VerifyStep],
+        Optional[_ShellActionResult],
+    ]:
+        """Run the deterministic verification steps for a workspace."""
+        steps = self._build_agentic_verify_steps(profile)
+        results: List[tuple[_VerifyStep, _ShellActionResult]] = []
+        failed_step: Optional[_VerifyStep] = None
+        logs_result: Optional[_ShellActionResult] = None
+
+        for index, step in enumerate(steps, start=1):
+            if status_msg is not None:
+                await status_msg.edit_text(
+                    "⏳ <b>Выполняю проверку</b>\n\n"
+                    f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                    f"Шаг <code>{index}/{len(steps)}</code>: <code>{escape_html(step.label)}</code>\n"
+                    f"Команда: <code>{escape_html(step.command)}</code>",
+                    parse_mode="HTML",
+                )
+            result = await self._execute_agentic_shell_action(
+                workspace_root=profile.root_path,
+                command=step.command,
+                timeout_seconds=180,
+            )
+            results.append((step, result))
+            if not result.success:
+                failed_step = step
+                if step.logs_command:
+                    logs_result = await self._execute_agentic_shell_action(
+                        workspace_root=profile.root_path,
+                        command=step.logs_command,
+                        timeout_seconds=30,
+                    )
+                break
+
+        return results, failed_step, logs_result
+
+    def _build_agentic_verify_report_text(
+        self,
+        profile: Any,
+        boundary_root: Path,
+        results: List[tuple[_VerifyStep, _ShellActionResult]],
+        failed_step: Optional[_VerifyStep],
+        logs_result: Optional[_ShellActionResult],
+    ) -> str:
+        """Render a deterministic verification report."""
+        success = failed_step is None
+        lines = [
+            "✅ <b>Проверка завершена</b>"
+            if success
+            else "❌ <b>Проверка не пройдена</b>",
+            "",
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+        ]
+        if failed_step:
+            lines.append(f"Ошибка на шаге: <code>{escape_html(failed_step.label)}</code>")
+        lines.extend(["", "<b>Шаги</b>"])
+        for step, result in results:
+            state = "ok" if result.success else "ошибка"
+            if result.timed_out:
+                state = "таймаут"
+            lines.append(
+                f"• <code>{escape_html(step.label)}</code>: <code>{escape_html(state)}</code> "
+                f"(exit <code>{result.returncode}</code>)"
+            )
+            summary = self._summarize_agentic_shell_result(result)
+            if summary and summary != "нет вывода":
+                lines.append(f"  <code>{escape_html(summary)}</code>")
+
+        if results:
+            last_step, last_result = results[-1]
+            if (
+                not last_result.success
+                and (last_result.stdout_text or last_result.stderr_text or last_result.error)
+            ):
+                detail_text = (
+                    last_result.stdout_text
+                    or last_result.stderr_text
+                    or last_result.error
+                    or ""
+                )
+                lines.extend(
+                    [
+                        "",
+                        f"<b>Вывод ошибки: {escape_html(last_step.label)}</b>",
+                        f"<pre>{escape_html(detail_text)}</pre>",
+                    ]
+                )
+
+        if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
+            log_body = logs_result.stdout_text or logs_result.stderr_text or logs_result.error or ""
+            lines.extend(
+                [
+                    "",
+                    "<b>Логи сервиса</b>",
+                    f"<pre>{escape_html(log_body)}</pre>",
+                ]
+            )
+
+        return "\n".join(lines)
+
     @staticmethod
     def _select_agentic_background_verification(profile: Any) -> Optional[str]:
         """Select the best health command for a background action."""
@@ -2294,83 +2401,22 @@ class MessageOrchestrator:
             parse_mode="HTML",
         )
 
-        results: List[tuple[_VerifyStep, _ShellActionResult]] = []
-        logs_result: Optional[_ShellActionResult] = None
-        failed_step: Optional[_VerifyStep] = None
-
-        for index, step in enumerate(steps, start=1):
-            await status_msg.edit_text(
-                "⏳ <b>Выполняю проверку</b>\n\n"
-                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
-                f"Шаг <code>{index}/{len(steps)}</code>: <code>{escape_html(step.label)}</code>\n"
-                f"Команда: <code>{escape_html(step.command)}</code>",
-                parse_mode="HTML",
-            )
-            result = await self._execute_agentic_shell_action(
-                workspace_root=profile.root_path,
-                command=step.command,
-                timeout_seconds=180,
-            )
-            results.append((step, result))
-            if not result.success:
-                failed_step = step
-                if step.logs_command:
-                    logs_result = await self._execute_agentic_shell_action(
-                        workspace_root=profile.root_path,
-                        command=step.logs_command,
-                        timeout_seconds=30,
-                    )
-                break
-
+        results, failed_step, logs_result = await self._execute_agentic_verify_steps(
+            profile=profile,
+            boundary_root=boundary_root,
+            status_msg=status_msg,
+        )
         success = failed_step is None
-        lines = [
-            "✅ <b>Проверка завершена</b>"
-            if success
-            else "❌ <b>Проверка не пройдена</b>",
-            "",
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
-        ]
-        if failed_step:
-            lines.append(f"Ошибка на шаге: <code>{escape_html(failed_step.label)}</code>")
-        lines.extend(["", "<b>Шаги</b>"])
-        for step, result in results:
-            state = "ok" if result.success else "ошибка"
-            if result.timed_out:
-                state = "таймаут"
-            lines.append(
-                f"• <code>{escape_html(step.label)}</code>: <code>{escape_html(state)}</code> "
-                f"(exit <code>{result.returncode}</code>)"
-            )
-            summary = self._summarize_agentic_shell_result(result)
-            if summary and summary != "нет вывода":
-                lines.append(f"  <code>{escape_html(summary)}</code>")
-
-        if results:
-            last_step, last_result = results[-1]
-            if (
-                not last_result.success
-                and (last_result.stdout_text or last_result.stderr_text or last_result.error)
-            ):
-                detail_text = last_result.stdout_text or last_result.stderr_text or last_result.error or ""
-                lines.extend(
-                    [
-                        "",
-                        f"<b>Вывод ошибки: {escape_html(last_step.label)}</b>",
-                        f"<pre>{escape_html(detail_text)}</pre>",
-                    ]
-                )
-
-        if logs_result and (logs_result.stdout_text or logs_result.stderr_text or logs_result.error):
-            log_body = logs_result.stdout_text or logs_result.stderr_text or logs_result.error or ""
-            lines.extend(
-                [
-                    "",
-                    "<b>Логи сервиса</b>",
-                    f"<pre>{escape_html(log_body)}</pre>",
-                ]
-            )
-
-        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        await status_msg.edit_text(
+            self._build_agentic_verify_report_text(
+                profile=profile,
+                boundary_root=boundary_root,
+                results=results,
+                failed_step=failed_step,
+                logs_result=logs_result,
+            ),
+            parse_mode="HTML",
+        )
 
         audit_logger = context.bot_data.get("audit_logger")
         if audit_logger:
@@ -2380,6 +2426,229 @@ class MessageOrchestrator:
                 args=[step.command for step in steps],
                 success=success,
             )
+
+    async def _run_agentic_resolve_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Autonomously investigate, fix, and re-verify the current workspace."""
+        user_id = query.from_user.id
+        current_dir, current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        claude_integration = context.bot_data.get("claude_integration")
+        if not claude_integration or not project_automation or not profile:
+            await query.edit_message_text("Автоматизация проекта недоступна.")
+            return
+
+        steps = self._build_agentic_verify_steps(profile)
+        if not steps:
+            await query.answer(
+                f"Для {profile.display_name} нет шагов, с которых можно начать разбор.",
+                show_alert=True,
+            )
+            return
+
+        status_msg = await query.message.reply_text(
+            "🛠 <b>Разбираюсь</b>\n\n"
+            f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            "Сначала найду проблему, потом попробую исправить ее автоматически.",
+            parse_mode="HTML",
+        )
+
+        initial_results, initial_failed_step, initial_logs = (
+            await self._execute_agentic_verify_steps(
+                profile=profile,
+                boundary_root=boundary_root,
+                status_msg=status_msg,
+            )
+        )
+        if initial_failed_step is None:
+            await status_msg.edit_text(
+                "✅ <b>Проблем не найдено</b>\n\n"
+                f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                "Все детерминированные проверки уже проходят.",
+                parse_mode="HTML",
+            )
+            return
+
+        failing_result = initial_results[-1][1]
+        failure_output = (
+            failing_result.stderr_text
+            or failing_result.stdout_text
+            or failing_result.error
+            or "нет подробного вывода"
+        )
+        prompt = project_automation.build_general_autopilot_prompt(
+            (
+                "Разберись с проблемой в проекте и исправь ее.\n"
+                f"Сейчас не проходит шаг проверки '{initial_failed_step.label}'.\n"
+                f"Команда шага: {initial_failed_step.command}\n"
+                f"Вывод ошибки:\n{failure_output}\n\n"
+                "Действуй автономно:\n"
+                "1. Определи точную причину сбоя.\n"
+                "2. Если проблема в коде или конфигурации проекта, внеси минимальные правки.\n"
+                "3. Если проблема только в окружении сервера, не делай опасных инфраструктурных изменений молча; "
+                "объясни точную причину и предложи безопасное исправление.\n"
+                "4. После правок самостоятельно прогони релевантные проверки снова.\n"
+                "5. Заверши коротким отчетом: причина, что исправлено, итог проверок, что осталось."
+            ),
+            profile,
+        )
+
+        features = context.bot_data.get("features")
+        change_guard = (
+            getattr(features, "get_project_change_guard", lambda: None)()
+            if features
+            else None
+        )
+        storage = context.bot_data.get("storage")
+        audit_logger = context.bot_data.get("audit_logger")
+
+        session_id = context.user_data.get("claude_session_id")
+        if current_workspace != profile.root_path:
+            session_id = None
+        context.user_data["current_directory"] = profile.root_path
+
+        checkpoint = None
+        rollback_report = None
+        success = False
+        try:
+            if change_guard and profile.has_git_repo:
+                checkpoint = await change_guard.create_checkpoint(profile.root_path)
+
+            await status_msg.edit_text(
+                "🛠 <b>Разбираюсь</b>\n\n"
+                f"Найден сбой: <code>{escape_html(initial_failed_step.label)}</code>\n"
+                "Пробую исправить его автоматически.",
+                parse_mode="HTML",
+            )
+
+            claude_response = await claude_integration.run_command(
+                prompt=prompt,
+                working_directory=profile.root_path,
+                user_id=user_id,
+                session_id=session_id,
+                force_new=False,
+            )
+            context.user_data["claude_session_id"] = claude_response.session_id
+            success = True
+
+            if storage:
+                try:
+                    await storage.save_claude_interaction(
+                        user_id=user_id,
+                        session_id=claude_response.session_id,
+                        prompt="[button] resolve",
+                        response=claude_response,
+                        ip_address=None,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to log resolve interaction", error=str(e))
+
+            final_results, final_failed_step, final_logs = (
+                await self._execute_agentic_verify_steps(
+                    profile=profile,
+                    boundary_root=boundary_root,
+                )
+            )
+            success = final_failed_step is None
+            if checkpoint and change_guard:
+                if final_failed_step is None:
+                    await change_guard.cleanup_checkpoint(checkpoint)
+                else:
+                    rollback_report = await change_guard.rollback(
+                        checkpoint,
+                        reason=f"resolve verification failed: {final_failed_step.command}",
+                    )
+
+            await status_msg.delete()
+
+            from .utils.formatting import ResponseFormatter
+
+            formatter = ResponseFormatter(self.settings)
+            for message in formatter.format_claude_response(claude_response.content):
+                if message.text and message.text.strip():
+                    await query.message.reply_text(
+                        message.text,
+                        parse_mode=message.parse_mode,
+                    )
+
+            header = (
+                "✅ <b>Разобрался</b>"
+                if final_failed_step is None
+                else "⚠️ <b>Проблему нашел, но до конца не добил</b>"
+            )
+            verify_report = self._build_agentic_verify_report_text(
+                profile=profile,
+                boundary_root=boundary_root,
+                results=final_results,
+                failed_step=final_failed_step,
+                logs_result=final_logs,
+            )
+            await query.message.reply_text(
+                f"{header}\n\n{verify_report}",
+                parse_mode="HTML",
+            )
+
+            if rollback_report and change_guard:
+                await query.message.reply_text(
+                    change_guard.format_report_html(rollback_report),
+                    parse_mode="HTML",
+                )
+
+            if audit_logger:
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request="button:resolve",
+                    workspace_root=str(profile.root_path),
+                    matched_playbook=None,
+                    read_only=False,
+                    success=success,
+                    mode="agentic_button",
+                    checkpoint_created=bool(checkpoint),
+                    rollback_triggered=bool(
+                        rollback_report and rollback_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        rollback_report and rollback_report.rollback_succeeded
+                    ),
+                    workspace_changed=current_workspace != profile.root_path,
+                )
+        except Exception as e:
+            if checkpoint and change_guard:
+                rollback_report = await change_guard.rollback(
+                    checkpoint,
+                    reason=f"resolve error: {type(e).__name__}",
+                )
+            try:
+                await status_msg.edit_text(
+                    "❌ <b>Не удалось разобраться автоматически</b>\n\n"
+                    f"Проект: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+                    f"Ошибка: <code>{escape_html(str(e))}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            if audit_logger:
+                await audit_logger.log_automation_run(
+                    user_id=user_id,
+                    request="button:resolve",
+                    workspace_root=str(profile.root_path),
+                    matched_playbook=None,
+                    read_only=False,
+                    success=False,
+                    mode="agentic_button",
+                    checkpoint_created=bool(checkpoint),
+                    rollback_triggered=bool(
+                        rollback_report and rollback_report.rollback_triggered
+                    ),
+                    rollback_succeeded=bool(
+                        rollback_report and rollback_report.rollback_succeeded
+                    ),
+                    workspace_changed=current_workspace != profile.root_path,
+                )
 
     async def _run_agentic_background_action(
         self,
@@ -4105,7 +4374,9 @@ class MessageOrchestrator:
             return message_text
 
         try:
-            transcript = await get_youtube_transcript(video_id)
+            transcript = await get_youtube_transcript(
+                video_id, proxy_url=self.settings.youtube_proxy_url
+            )
             logger.info(
                 "YouTube transcript extracted",
                 video_id=video_id,
@@ -4125,4 +4396,9 @@ class MessageOrchestrator:
                 video_id=video_id,
                 error=str(e),
             )
-            return message_text
+            return (
+                f"{message_text}\n\n"
+                f"[Не удалось получить субтитры напрямую ({type(e).__name__}). "
+                f"Используй WebFetch чтобы открыть https://www.youtube.com/watch?v={video_id} "
+                f"и извлечь содержание видео из страницы.]"
+            )
