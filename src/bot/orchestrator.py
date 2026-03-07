@@ -876,24 +876,9 @@ class MessageOrchestrator:
         return InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                    InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
-                    InlineKeyboardButton("🧵 Задачи", callback_data="act:jobs"),
-                ],
-                [
-                    InlineKeyboardButton("🩺 Диагностика", callback_data="act:doctor"),
-                    InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent"),
                     InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-                ],
-                [
-                    InlineKeyboardButton("📡 Запущено", callback_data="act:running"),
-                    InlineKeyboardButton("📊 Статистика", callback_data="act:stats"),
+                    InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
                     InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new"),
-                ],
-                [
-                    InlineKeyboardButton("🔇 Коротко", callback_data="act:v0"),
-                    InlineKeyboardButton("🔉 Нормально", callback_data="act:v1"),
-                    InlineKeyboardButton("🔊 Подробно", callback_data="act:v2"),
                 ],
             ]
         )
@@ -905,34 +890,10 @@ class MessageOrchestrator:
         _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
             self._get_agentic_workspace_profile(context)
         )
+        del profile
         rows: List[List[str]] = [
-            ["🎛️ Панель", "📂 Статус", "📡 Запущено"],
-            ["📁 Проекты", "🧵 Задачи", "🕘 Недавнее"],
-            ["✅ Проверить", "🩺 Диагностика", "🆕 Новая сессия"],
+            ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"],
         ]
-
-        primary_service = self._select_agentic_primary_service(profile)
-        if primary_service:
-            service_row: List[str] = []
-            if primary_service.command_for("status"):
-                service_row.append("📟 Сервис")
-            if primary_service.command_for("logs"):
-                service_row.append("📜 Логи")
-            if primary_service.command_for("restart"):
-                service_row.append("🔄 Рестарт")
-            if service_row:
-                rows.append(service_row)
-
-        if profile:
-            operator_row: List[str] = []
-            if "start" in profile.commands:
-                operator_row.append("▶️ Запуск")
-            if "dev" in profile.commands:
-                operator_row.append("🛠️ Разработка")
-            if "deploy" in profile.commands:
-                operator_row.append("🚀 Деплой")
-            if operator_row:
-                rows.append(operator_row)
 
         return ReplyKeyboardMarkup(
             rows,
@@ -954,52 +915,15 @@ class MessageOrchestrator:
         """Map reply-keyboard button text to an internal action."""
         normalized = message_text.strip()
         action = {
-            "🎛️ Панель": "panel",
             "📂 Статус": "status",
-            "📡 Запущено": "running",
-            "📁 Проекты": "projects",
-            "🧵 Задачи": "jobs",
-            "🕘 Недавнее": "recent",
             "✅ Проверить": "verify",
-            "🩺 Диагностика": "doctor",
             "🆕 Новая сессия": "new",
-            "▶️ Запуск": "start",
-            "🛠️ Разработка": "dev",
-            "🚀 Деплой": "deploy",
-            "🎛️ Panel": "panel",
             "📂 Status": "status",
-            "📡 Running": "running",
-            "📁 Projects": "projects",
-            "🧵 Jobs": "jobs",
-            "🕘 Recent": "recent",
             "✅ Verify": "verify",
-            "🩺 Doctor": "doctor",
             "🆕 New": "new",
-            "▶️ Start": "start",
-            "🛠️ Dev": "dev",
-            "🚀 Deploy": "deploy",
         }.get(normalized)
         if action:
             return action
-
-        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        primary_service = self._select_agentic_primary_service(profile)
-        if not primary_service:
-            return None
-
-        service_actions = {
-            "📟 Сервис": "status",
-            "📜 Логи": "logs",
-            "🔄 Рестарт": "restart",
-            "📟 Service": "status",
-            "📜 Logs": "logs",
-            "🔄 Restart": "restart",
-        }
-        service_action = service_actions.get(normalized)
-        if service_action and primary_service.command_for(service_action):
-            return f"svc:{primary_service.key}:{service_action}"
         return None
 
     def _get_agentic_workspace_profile(
@@ -1054,105 +978,14 @@ class MessageOrchestrator:
         self, profile: Optional[Any]
     ) -> InlineKeyboardMarkup:
         """Build a persistent control panel for agentic mode."""
+        del profile
         rows = [
             [
-                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
-                InlineKeyboardButton("🧵 Задачи", callback_data="act:jobs"),
-            ],
-            [
-                InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent"),
                 InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-                InlineKeyboardButton("📡 Запущено", callback_data="act:running"),
-            ],
-            [
-                InlineKeyboardButton("📊 Статистика", callback_data="act:stats"),
-                InlineKeyboardButton("🩺 Диагностика", callback_data="act:doctor"),
-            ],
-        ]
-
-        if profile:
-            action_row = [InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new")]
-            if profile.has_git_repo:
-                action_row.insert(
-                    0, InlineKeyboardButton("🧾 Ревью", callback_data="act:review")
-                )
-            rows.append(action_row)
-
-            dynamic_row = []
-            if "install" in profile.commands:
-                dynamic_row.append(
-                    InlineKeyboardButton("📦 Подготовка", callback_data="act:setup")
-                )
-            if "test" in profile.commands:
-                dynamic_row.append(
-                    InlineKeyboardButton("🧪 Тесты", callback_data="act:test")
-                )
-            if "lint" in profile.commands or "format" in profile.commands:
-                dynamic_row.append(
-                    InlineKeyboardButton("🧹 Качество", callback_data="act:quality")
-                )
-            if dynamic_row:
-                rows.append(dynamic_row[:3])
-            if self._build_agentic_verify_steps(profile):
-                rows.append([InlineKeyboardButton("✅ Проверить", callback_data="act:verify")])
-            operator_row = []
-            if "health" in profile.commands:
-                operator_row.append(
-                    InlineKeyboardButton("❤️ Проверка", callback_data="act:health")
-                )
-            if "build" in profile.commands:
-                operator_row.append(
-                    InlineKeyboardButton("🏗️ Сборка", callback_data="act:build")
-                )
-            if operator_row:
-                rows.append(operator_row[:3])
-            primary_service = self._select_agentic_primary_service(profile)
-            if primary_service:
-                service_row = []
-                for action_key, label in (
-                    ("status", "📟 Сервис"),
-                    ("logs", "📜 Логи"),
-                    ("restart", "🔄 Рестарт"),
-                ):
-                    if primary_service.command_for(action_key):
-                        service_row.append(
-                            InlineKeyboardButton(
-                                label,
-                                callback_data=f"act:svc:{primary_service.key}:{action_key}",
-                            )
-                        )
-                if service_row:
-                    rows.append(service_row[:3])
-            if profile.services:
-                rows.append(
-                    [InlineKeyboardButton("🧩 Сервисы", callback_data="act:services")]
-                )
-            background_row = []
-            if "start" in profile.commands:
-                background_row.append(
-                    InlineKeyboardButton("▶️ Запуск", callback_data="act:start")
-                )
-            if "dev" in profile.commands:
-                background_row.append(
-                    InlineKeyboardButton("🛠️ Разработка", callback_data="act:dev")
-                )
-            if "deploy" in profile.commands:
-                background_row.append(
-                    InlineKeyboardButton("🚀 Деплой", callback_data="act:deploy")
-                )
-            if background_row:
-                rows.append(background_row[:3])
-        else:
-            rows.append([InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new")])
-
-        rows.append(
-            [
-                InlineKeyboardButton("🔇 Коротко", callback_data="act:v0"),
-                InlineKeyboardButton("🔉 Нормально", callback_data="act:v1"),
-                InlineKeyboardButton("🔊 Подробно", callback_data="act:v2"),
+                InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
+                InlineKeyboardButton("🆕 Новая сессия", callback_data="act:new"),
             ]
-        )
+        ]
         return InlineKeyboardMarkup(rows)
 
     async def _build_agentic_status_text(
@@ -3360,7 +3193,7 @@ class MessageOrchestrator:
 
         if not context.user_data.get("agentic_reply_keyboard_ready"):
             await update.message.reply_text(
-                "⌨️ Quick buttons are now pinned below.",
+                "⌨️ Основные кнопки теперь закреплены внизу.",
                 reply_markup=self._build_agentic_reply_keyboard(context),
                 reply_to_message_id=update.message.message_id,
             )

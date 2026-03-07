@@ -249,12 +249,7 @@ async def test_agentic_start_shows_persistent_reply_keyboard(agentic_settings, d
         for row in markup.keyboard
         for button in row
     ]
-    assert "🎛️ Панель" in labels
-    assert "📁 Проекты" in labels
-    assert "🧵 Задачи" in labels
-    assert "📡 Запущено" in labels
-    assert "🩺 Диагностика" in labels
-    assert "✅ Проверить" in labels
+    assert labels == ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"]
     assert "Alice" in call_kwargs.args[0]
     assert context.user_data["agentic_reply_keyboard_ready"] is True
 
@@ -351,39 +346,18 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
     ]
     assert response_calls
     assert response_calls[-1].kwargs.get("reply_markup") is not None
-    assert "Quick buttons" in response_calls[-1].args[0]
+    assert "Основные кнопки" in response_calls[-1].args[0]
 
 
 async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps):
     """Reply-keyboard button text should run a local action instead of Claude."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
-    query_running_result = SimpleNamespace(
-        success=True,
-        stdout_text="claude-bot.service loaded active running Claude Bot\n",
-        stderr_text="",
-        timed_out=False,
-        error=None,
-    )
-    query_failed_result = SimpleNamespace(
-        success=True,
-        stdout_text="",
-        stderr_text="",
-        timed_out=False,
-        error=None,
-    )
-    orchestrator._list_agentic_running_systemd_units = AsyncMock(
-        return_value=query_running_result
-    )
-    orchestrator._list_agentic_failed_systemd_units = AsyncMock(
-        return_value=query_failed_result
-    )
-
     claude_integration = AsyncMock()
 
     update = MagicMock()
     update.effective_user.id = 123
-    update.message.text = "📡 Запущено"
+    update.message.text = "📂 Статус"
     update.message.reply_text = AsyncMock()
 
     context = MagicMock()
@@ -400,7 +374,7 @@ async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps)
 
     claude_integration.run_command.assert_not_called()
     update.message.reply_text.assert_called_once()
-    assert "Запущенные сервисы" in update.message.reply_text.call_args.args[0]
+    assert "Статус" in update.message.reply_text.call_args.args[0]
 
 
 async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):
@@ -914,11 +888,7 @@ workspaces:
 
     markup = orchestrator._build_agentic_control_panel_markup(profile)
     labels = [button.text for row in markup.inline_keyboard for button in row]
-    assert "✅ Проверить" in labels
-    assert "📟 Сервис" in labels
-    assert "📜 Логи" in labels
-    assert "🔄 Рестарт" in labels
-    assert "🧩 Сервисы" in labels
+    assert labels == ["📂 Статус", "✅ Проверить", "🆕 Новая сессия"]
 
     query = MagicMock()
     query.data = "act:services"
