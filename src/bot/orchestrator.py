@@ -41,6 +41,7 @@ from .agentic.context import (
     VerifyReport,
     VerifyStep,
 )
+from .agentic.panel_builder import PanelBuilder
 from .agentic.shell_executor import ShellExecutor
 from .agentic.resolve_runner import ResolveRunner
 from .agentic.service_controller import ServiceController
@@ -169,6 +170,7 @@ class MessageOrchestrator:
         self.verify = VerifyPipeline(self.shell)
         self.services = ServiceController(self.shell)
         self.resolver = ResolveRunner(self.verify)
+        self.panel = PanelBuilder(self.verify, self.shell, self.services)
         # Track active Claude tasks per user for interrupt/cancel
         self._active_tasks: Dict[int, _ActiveTask] = {}
         # Queue of messages received while a task is running
@@ -871,34 +873,13 @@ class MessageOrchestrator:
 
     def _build_agentic_start_keyboard(self) -> InlineKeyboardMarkup:
         """Return the default control buttons shown in agentic mode."""
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-                    InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
-                    InlineKeyboardButton("🛠 Разберись", callback_data="act:resolve"),
-                ],
-            ]
-        )
+        return self.panel.build_start_keyboard()
 
     def _build_agentic_reply_keyboard(
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> ReplyKeyboardMarkup:
         """Return a persistent bottom keyboard for the most common actions."""
-        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        del profile
-        rows: List[List[str]] = [
-            ["📂 Статус", "✅ Проверить", "🛠 Разберись"],
-        ]
-
-        return ReplyKeyboardMarkup(
-            rows,
-            resize_keyboard=True,
-            is_persistent=True,
-            input_field_placeholder="Напиши задачу или нажми кнопку ниже",
-        )
+        return self.panel.build_reply_keyboard()
 
     @staticmethod
     def _mark_agentic_reply_keyboard_ready(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -911,18 +892,7 @@ class MessageOrchestrator:
         context: ContextTypes.DEFAULT_TYPE,
     ) -> Optional[str]:
         """Map reply-keyboard button text to an internal action."""
-        normalized = message_text.strip()
-        action = {
-            "📂 Статус": "status",
-            "✅ Проверить": "verify",
-            "🛠 Разберись": "resolve",
-            "📂 Status": "status",
-            "✅ Verify": "verify",
-            "Resolve": "resolve",
-        }.get(normalized)
-        if action:
-            return action
-        return None
+        return self.panel.map_reply_action(message_text)
 
     def _get_agentic_workspace_profile(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -1000,269 +970,59 @@ class MessageOrchestrator:
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> InlineKeyboardMarkup:
         """Build the current control panel markup for reply messages."""
-        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        return self._build_agentic_control_panel_markup(profile)
+        return self.panel.build_control_panel_markup()
 
     def _format_agentic_relative_path(self, path: Path, boundary_root: Path) -> str:
         """Format a workspace-relative path for Telegram output."""
-        try:
-            relative = path.relative_to(boundary_root)
-            return "/" if str(relative) == "." else relative.as_posix()
-        except ValueError:
-            return str(path)
+        return self.panel.format_relative_path(path, boundary_root)
 
     def _build_agentic_control_panel_markup(
         self, profile: Optional[Any]
     ) -> InlineKeyboardMarkup:
         """Build a persistent control panel for agentic mode."""
-        del profile
-        rows = [
-            [
-                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-                InlineKeyboardButton("✅ Проверить", callback_data="act:verify"),
-                InlineKeyboardButton("🛠 Разберись", callback_data="act:resolve"),
-            ]
-        ]
-        return InlineKeyboardMarkup(rows)
+        return self.panel.build_control_panel_markup()
 
     async def _build_agentic_status_text(
         self, context: ContextTypes.DEFAULT_TYPE, user_id: int
     ) -> str:
         """Build a short human-readable status summary."""
-        current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
+        ctx = self._build_workspace_context(context)
         session_id = context.user_data.get("claude_session_id")
-        session_status = "активна" if session_id else "нет"
-
-        claude_integration = context.bot_data.get("claude_integration")
-        if not session_id and claude_integration:
-            existing = await claude_integration._find_resumable_session(
-                user_id, current_workspace
-            )
-            if existing:
-                session_status = f"можно восстановить {existing.session_id[:8]}..."
-
-        task_parts = []
         active = self._active_tasks.get(user_id)
+        active_elapsed = None
+        queue_size = 0
         if active and not active.task.done():
-            elapsed = int(time.time() - active.started_at)
-            task_parts.append(f"задача выполняется {elapsed}с")
+            active_elapsed = int(time.time() - active.started_at)
             queue_size = len(self._pending_messages.get(user_id, []))
-            if queue_size:
-                task_parts.append(f"в очереди {queue_size}")
-
-        project_label = (
-            profile.display_name
-            if profile and profile.display_name
-            else self._format_agentic_relative_path(current_workspace, boundary_root)
+        return await self.panel.build_status_text(
+            ctx, user_id, session_id, active_elapsed, queue_size
         )
-        project_path = self._format_agentic_relative_path(current_workspace, boundary_root)
-        verify_steps = self.verify.build_steps(profile) if profile else []
-        verify_status = "доступна" if verify_steps else "не настроена"
-        primary_service = self.verify.select_primary_service(profile)
-
-        lines = [
-            "<b>Статус</b>",
-            "",
-            f"📦 Активный проект: <code>{escape_html(project_label)}</code>",
-            f"📂 Путь: <code>{escape_html(project_path)}</code>",
-            f"🤖 Сессия: <code>{escape_html(session_status)}</code>",
-            f"✅ Полная проверка: <code>{escape_html(verify_status)}</code>",
-        ]
-        if primary_service:
-            lines.append(
-                f"🧩 Основной сервис: <code>{escape_html(primary_service.display_name)}</code>"
-            )
-        if task_parts:
-            lines.append(f"⚙️ Выполнение: <code>{escape_html(' · '.join(task_parts))}</code>")
-        operator_runtime = self._get_agentic_operator_runtime(context)
-        if operator_runtime:
-            latest_job = operator_runtime.get_latest_job(current_workspace)
-            if latest_job:
-                lines.append(
-                    f"🧵 Задача: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>"
-                )
-        if project_automation and profile and current_workspace != boundary_root:
-            lines.extend(
-                [
-                    "",
-                    "Можешь просто написать задачу обычным текстом. Бот выполнит ее в этом проекте.",
-                ]
-            )
-        return "\n".join(lines)
 
     async def _build_agentic_panel_text(
         self, context: ContextTypes.DEFAULT_TYPE, user_id: int
     ) -> str:
         """Build the main control panel text for agentic mode."""
-        _current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        lines = ["<b>Панель управления</b>", ""]
-        if profile:
-            lines.append(
-                f"📦 Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>"
-            )
-            lines.append(
-                f"🧱 Стек: <code>{escape_html(', '.join(profile.stacks))}</code>"
-            )
-        lines.append("🛡️ Автопилот: <code>включен</code>")
-        lines.append(
-            f"🔊 Режим ответа: <code>{escape_html({0: 'коротко', 1: 'нормально', 2: 'подробно'}[self._get_verbose_level(context)])}</code>"
-        )
-
-        claude_integration = context.bot_data.get("claude_integration")
+        ctx = self._build_workspace_context(context)
         session_id = context.user_data.get("claude_session_id")
-        session_text = "нет"
-        if session_id:
-            session_text = f"активна {session_id[:8]}..."
-        elif claude_integration:
-            existing = await claude_integration._find_resumable_session(
-                user_id, current_workspace
-            )
-            if existing:
-                session_text = f"можно восстановить {existing.session_id[:8]}..."
-        lines.append(f"🤖 Сессия: <code>{escape_html(session_text)}</code>")
-
-        if profile and project_automation:
-            playbooks = ", ".join(
-                playbook.slug for playbook in project_automation.list_playbooks(profile)
-            )
-            lines.append(
-                f"🧭 Сценарии: <code>{escape_html(playbooks or 'нет')}</code>"
-            )
-            operator_commands = ", ".join(
-                key for key, _command in project_automation.list_operator_commands(profile)
-            )
-            if operator_commands:
-                lines.append(
-                    f"🧰 Операции: <code>{escape_html(operator_commands)}</code>"
-                )
-            if profile.services:
-                service_names = ", ".join(
-                    service.display_name for service in profile.services
-                )
-                lines.append(
-                    f"🧩 Сервисы: <code>{escape_html(service_names)}</code>"
-                )
-            if profile.operator_notes:
-                note_preview = profile.operator_notes[:160]
-                if len(profile.operator_notes) > 160:
-                    note_preview += "..."
-                lines.extend(
-                    [
-                        "",
-                        f"📝 Заметки: {escape_html(note_preview)}",
-                    ]
-                )
-        operator_runtime = self._get_agentic_operator_runtime(context)
-        if operator_runtime:
-            latest_job = operator_runtime.get_latest_job(current_workspace)
-            if latest_job:
-                lines.extend(
-                    [
-                        "",
-                        f"🧵 Последняя задача: <code>{escape_html(self._format_agentic_job_status(latest_job, boundary_root))}</code>",
-                    ]
-                )
-
-        lines.extend(
-            [
-                "",
-                "Используй кнопки ниже, чтобы посмотреть проект, переключить workspace, запустить сценарий или фоновую операцию.",
-            ]
+        return await self.panel.build_panel_text(
+            ctx, user_id, session_id, self._get_verbose_level(context)
         )
-        return "\n".join(lines)
 
     async def _build_agentic_recent_text(
         self, context: ContextTypes.DEFAULT_TYPE, user_id: int
     ) -> str:
         """Build a compact recent activity view for the control panel."""
-        storage = context.bot_data.get("storage")
-        if not storage:
-            return "Хранилище недоступно."
-
-        current_dir, _current_workspace, boundary_root, _project_automation, _profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        audit_entries = await storage.audit.get_user_audit_log(user_id, limit=10)
-        messages = await storage.messages.get_user_messages(user_id, limit=4)
-        command_entries = [
-            entry for entry in audit_entries if entry.event_type == "command"
-        ][:4]
-        automation_entries = [
-            entry for entry in audit_entries if entry.event_type == "automation_run"
-        ][:4]
-
-        lines = ["<b>Недавняя активность</b>"]
-        if automation_entries:
-            lines.extend(["", "<b>Автопилот</b>"])
-            for entry in automation_entries:
-                details = (entry.event_data or {}).get("details", {})
-                playbook = escape_html(str(details.get("playbook", "general")))
-                workspace = escape_html(
-                    self._format_agentic_relative_path(
-                        Path(str(details.get("workspace_root", current_dir))),
-                        boundary_root,
-                    )
-                )
-                result = "✅" if entry.success else "⚠️"
-                lines.append(
-                    f"{result} <code>{playbook}</code> · <code>{workspace}</code>"
-                )
-
-        if command_entries:
-            lines.extend(["", "<b>Команды</b>"])
-            for entry in command_entries:
-                details = (entry.event_data or {}).get("details", {})
-                command_name = escape_html(str(details.get("command", "command")))
-                lines.append(f"• <code>{command_name}</code>")
-
-        if messages:
-            lines.extend(["", "<b>Запросы</b>"])
-            for message in messages:
-                preview = escape_html(" ".join(message.prompt.split())[:72])
-                lines.append(f"• {preview}")
-
-        if len(lines) == 1:
-            lines.extend(["", "Пока недавней активности нет."])
-
-        lines.append("")
-        lines.append(
-            f"Текущий проект: <code>{escape_html(self._format_agentic_relative_path(_current_workspace, boundary_root))}</code>"
-        )
-        return "\n".join(lines)
+        ctx = self._build_workspace_context(context)
+        return await self.panel.build_recent_text(ctx, user_id)
 
     def _format_agentic_job_status(self, job: Any, boundary_root: Path) -> str:
         """Build a compact one-line status for a persisted operator job."""
-        workspace = self._format_agentic_relative_path(job.workspace_root, boundary_root)
-        status = f"{job.status} {job.action_key}"
-        verification_label = self._format_agentic_job_verification(job)
-        if verification_label:
-            status += f" · {verification_label}"
-        return f"{workspace} · {status} · {job.job_id[:8]}"
+        return self.panel.format_job_status(job, boundary_root)
 
     @staticmethod
     def _format_agentic_job_verification(job: Any) -> Optional[str]:
         """Return a compact verification label for background jobs."""
-        if not getattr(job, "verification_command", None):
-            return None
-
-        status = getattr(job, "verification_status", None) or "pending"
-        label = {
-            "pending": "проверка ожидается",
-            "running": "идет проверка",
-            "passed": "проверка пройдена",
-            "failed": "проверка не пройдена",
-        }.get(status, f"проверка {status}")
-
-        attempts = getattr(job, "verification_attempts", 0) or 0
-        if attempts and status in {"running", "passed", "failed"}:
-            label += f" ({attempts}x)"
-        return label
+        return PanelBuilder.format_job_verification(job)
 
     async def _build_agentic_jobs_text(
         self,
@@ -1270,107 +1030,8 @@ class MessageOrchestrator:
         header: Optional[str] = None,
     ) -> tuple[str, InlineKeyboardMarkup]:
         """Render recent background workspace jobs and management buttons."""
-        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        operator_runtime = self._get_agentic_operator_runtime(context)
-        if not operator_runtime:
-            return "Фоновые задачи недоступны.", self._build_agentic_start_keyboard()
-
-        jobs = operator_runtime.list_jobs(limit=8)
-        current_jobs = operator_runtime.list_jobs(workspace_root=current_workspace, limit=4)
-
-        lines = ["<b>Фоновые задачи</b>"]
-        if header:
-            lines.extend(["", header])
-
-        if current_jobs:
-            lines.extend(["", "<b>Текущий проект</b>"])
-            for job in current_jobs:
-                lines.append(
-                    f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
-                )
-        if jobs:
-            other_jobs = [job for job in jobs if job.workspace_root != current_workspace][:4]
-            if other_jobs:
-                lines.extend(["", "<b>Недавние</b>"])
-                for job in other_jobs:
-                    lines.append(
-                        f"• <code>{escape_html(self._format_agentic_job_status(job, boundary_root))}</code>"
-                    )
-        if len(lines) == 1:
-            lines.extend(["", "Фоновых задач пока нет."])
-
-        latest_job = current_jobs[0] if current_jobs else None
-        if latest_job:
-            lines.extend(
-                [
-                    "",
-                    "<b>Последняя задача</b>",
-                    f"Действие: <code>{escape_html(latest_job.action_key)}</code>",
-                    f"Статус: <code>{escape_html(latest_job.status)}</code>",
-                ]
-            )
-            if latest_job.exit_code is not None:
-                lines.append(f"Код выхода: <code>{latest_job.exit_code}</code>")
-            if latest_job.verification_command:
-                verify_status = self._format_agentic_job_verification(latest_job)
-                if verify_status:
-                    lines.append(f"Проверка: <code>{escape_html(verify_status)}</code>")
-                if latest_job.verification_exit_code is not None:
-                    lines.append(
-                        f"Код проверки: <code>{latest_job.verification_exit_code}</code>"
-                    )
-                if latest_job.verification_error:
-                    lines.append(
-                        f"Ошибка проверки: <code>{escape_html(latest_job.verification_error)}</code>"
-                    )
-            log_tail = operator_runtime.read_log_tail(latest_job, limit=500)
-            if log_tail:
-                lines.extend(
-                    [
-                        "",
-                        "<b>Последние логи</b>",
-                        f"<pre>{escape_html(log_tail)}</pre>",
-                    ]
-                )
-
-        keyboard_rows: List[list] = []
-        if latest_job and latest_job.is_active:
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        f"🛑 Остановить {latest_job.action_key}",
-                        callback_data=f"act:stop:{latest_job.job_id}",
-                    )
-                ]
-            )
-
-        if profile:
-            action_row = []
-            for key, label in (
-                ("start", "▶️ Запуск"),
-                ("dev", "🛠️ Разработка"),
-                ("deploy", "🚀 Деплой"),
-            ):
-                if key in profile.commands:
-                    action_row.append(
-                        InlineKeyboardButton(label, callback_data=f"act:{key}")
-                    )
-            if action_row:
-                keyboard_rows.append(action_row[:3])
-
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton("🔄 Обновить", callback_data="act:jobs"),
-                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-            ]
-        )
-        keyboard_rows.append(
-            [InlineKeyboardButton("📁 Проекты", callback_data="act:projects")]
-        )
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        ctx = self._build_workspace_context(context)
+        return await self.panel.build_jobs_text(ctx, header)
 
     async def _build_agentic_services_text(
         self,
@@ -1378,74 +1039,8 @@ class MessageOrchestrator:
         header: Optional[str] = None,
     ) -> tuple[str, InlineKeyboardMarkup]:
         """Render managed service definitions for the current workspace."""
-        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        if not profile or not profile.services:
-            return (
-                "Для этого проекта управляемые сервисы не настроены.",
-                self._build_agentic_control_panel_markup(profile),
-            )
-
-        lines = [
-            "<b>Управляемые сервисы</b>",
-            "",
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
-            "Действия запуска и рестарта автоматически выполняют проверку и прикладывают логи при ошибке.",
-        ]
-        if header:
-            lines.extend(["", header])
-
-        for service in profile.services:
-            actions = ", ".join(service.available_actions) or "none"
-            lines.extend(
-                [
-                    "",
-                    f"• <b>{escape_html(service.display_name)}</b> · <code>{escape_html(service.service_type)}</code>",
-                    f"  действия: <code>{escape_html(actions)}</code>",
-                ]
-            )
-
-        keyboard_rows: List[list] = []
-        for service in profile.services:
-            inspect_row = []
-            lifecycle_row = []
-            for action_key in ("status", "health", "logs"):
-                if service.command_for(action_key):
-                    inspect_row.append(
-                        InlineKeyboardButton(
-                            self.services.format_action_label(
-                                service, action_key
-                            ),
-                            callback_data=f"act:svc:{service.key}:{action_key}",
-                        )
-                    )
-            for action_key in ("restart", "start", "stop"):
-                if service.command_for(action_key):
-                    lifecycle_row.append(
-                        InlineKeyboardButton(
-                            self.services.format_action_label(
-                                service, action_key
-                            ),
-                            callback_data=f"act:svc:{service.key}:{action_key}",
-                        )
-                    )
-            if inspect_row:
-                keyboard_rows.append(inspect_row[:3])
-            if lifecycle_row:
-                keyboard_rows.append(lifecycle_row[:3])
-
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton("🔄 Обновить", callback_data="act:services"),
-                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-            ]
-        )
-        keyboard_rows.append(
-            [InlineKeyboardButton("📁 Проекты", callback_data="act:projects")]
-        )
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        ctx = self._build_workspace_context(context)
+        return await self.panel.build_services_text(ctx, header)
 
     async def _build_agentic_running_services_text(
         self,
@@ -1453,168 +1048,15 @@ class MessageOrchestrator:
         header: Optional[str] = None,
     ) -> tuple[str, InlineKeyboardMarkup]:
         """Render a live view of managed and system-level running services."""
-        _current_dir, current_workspace, boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-
-        lines = [
-            "<b>Запущенные сервисы</b>",
-            "",
-            f"Проект: <code>{escape_html(self._format_agentic_relative_path(current_workspace, boundary_root))}</code>",
-        ]
-        if header:
-            lines.extend(["", header])
-
-        if profile and profile.services:
-            lines.extend(["", "<b>Управляемые сервисы</b>"])
-            for service in profile.services:
-                command = service.health_command or service.status_command
-                if not command:
-                    lines.append(
-                        f"• <code>{escape_html(service.display_name)}</code>: <code>нет live-проверки</code>"
-                    )
-                    continue
-                result = await self.shell.execute(
-                    workspace_root=profile.root_path,
-                    command=command,
-                    timeout_seconds=45,
-                )
-                state = "ok" if result.success else "ошибка"
-                if result.timed_out:
-                    state = "таймаут"
-                lines.append(
-                    f"• <code>{escape_html(service.display_name)}</code>: <code>{escape_html(state)}</code>"
-                )
-                summary = self.shell.summarize(result)
-                if summary and summary != "нет вывода":
-                    lines.append(f"  <code>{escape_html(summary)}</code>")
-        else:
-            lines.extend(["", "Для этого проекта управляемые сервисы не настроены."])
-
-        running_units_result = await self.services.list_running_units(
-            current_workspace
-        )
-        running_units = self.services.parse_systemd_units(running_units_result)
-        lines.extend(["", "<b>Системные сервисы сервера</b>"])
-        if running_units:
-            for unit in running_units:
-                lines.append(f"• <code>{escape_html(unit)}</code>")
-        else:
-            summary = self.shell.summarize(running_units_result)
-            label = "список systemd недоступен"
-            if running_units_result.success:
-                label = "запущенные сервисы не найдены"
-            lines.append(f"<code>{escape_html(label)}</code>")
-            if summary and summary not in {"нет вывода", label}:
-                lines.append(f"<code>{escape_html(summary)}</code>")
-
-        failed_units_result = await self.services.list_failed_units(
-            current_workspace
-        )
-        failed_units = self.services.parse_systemd_units(failed_units_result, limit=6)
-        if failed_units:
-            lines.extend(["", "<b>Сервисы с ошибками</b>"])
-            for unit in failed_units:
-                lines.append(f"• <code>{escape_html(unit)}</code>")
-
-        keyboard_rows = [
-            [
-                InlineKeyboardButton("🔄 Обновить", callback_data="act:running"),
-                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-            ],
-            [
-                InlineKeyboardButton("🧩 Сервисы", callback_data="act:services"),
-                InlineKeyboardButton("📁 Проекты", callback_data="act:projects"),
-            ],
-        ]
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        ctx = self._build_workspace_context(context)
+        return await self.panel.build_running_services_text(ctx, header)
 
     async def _build_agentic_workspace_catalog(
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> tuple[str, InlineKeyboardMarkup]:
         """Build the workspace catalog view used by /repo and control buttons."""
-        current_dir, current_workspace, boundary_root, project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
-        if project_automation:
-            summaries = project_automation.list_workspace_summaries(boundary_root)
-            if summaries:
-                lines: List[str] = ["<b>Проекты</b>", ""]
-                for summary in summaries:
-                    lines.extend(
-                        project_automation.describe_workspace_summary_lines(
-                            summary, current_workspace=current_workspace
-                        )
-                    )
-                lines.extend(
-                    [
-                        "",
-                        "Автопилот умеет выбирать проект по имени, алиасу или относительному пути.",
-                    ]
-                )
-
-                keyboard_rows: List[list] = []
-                for i in range(0, len(summaries), 2):
-                    row = []
-                    for j in range(2):
-                        if i + j < len(summaries):
-                            summary = summaries[i + j]
-                            row.append(
-                                InlineKeyboardButton(
-                                    summary.button_label,
-                                    callback_data=f"cd:{summary.relative_path}",
-                                )
-                            )
-                    keyboard_rows.append(row)
-
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton("🔄 Обновить", callback_data="act:projects"),
-                        InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-                        InlineKeyboardButton("📂 Статус", callback_data="act:status"),
-                    ]
-                )
-                keyboard_rows.append(
-                    [InlineKeyboardButton("🕘 Недавнее", callback_data="act:recent")]
-                )
-                return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
-
-        lines = ["<b>Проекты</b>", ""]
-        try:
-            entries = sorted(
-                [
-                    d
-                    for d in boundary_root.iterdir()
-                    if d.is_dir() and not d.name.startswith(".")
-                ],
-                key=lambda d: d.name.casefold(),
-            )
-        except OSError as e:
-            return f"Ошибка чтения проекта: {escape_html(str(e))}", self._build_agentic_start_keyboard()
-
-        keyboard_rows: List[list] = []
-        for entry in entries:
-            marker = " ◀" if entry == current_workspace else ""
-            lines.append(f"• <code>{escape_html(entry.name)}</code>{marker}")
-        for i in range(0, len(entries), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(entries):
-                    row.append(
-                        InlineKeyboardButton(
-                            entries[i + j].name,
-                            callback_data=f"cd:{entries[i + j].name}",
-                        )
-                    )
-            keyboard_rows.append(row)
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton("🔄 Обновить", callback_data="act:projects"),
-                InlineKeyboardButton("🎛️ Панель", callback_data="act:panel"),
-            ]
-        )
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        ctx = self._build_workspace_context(context)
+        return await self.panel.build_workspace_catalog(ctx)
 
     async def _run_agentic_playbook_action(
         self,
