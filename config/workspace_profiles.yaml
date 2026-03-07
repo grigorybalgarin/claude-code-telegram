@@ -11,6 +11,12 @@ workspaces:
       This is the Telegram bot itself.
       Prefer small coherent changes, preserve the systemd deploy workflow under ops/server,
       keep logs redacted, and avoid widening runtime permissions.
+    commands:
+      install: make install
+      dev: make dev
+      test: make test
+      lint: make lint
+      format: make format
 
   - path: FreelanceAggregator
     name: FreelanceAggregator
@@ -20,8 +26,13 @@ workspaces:
       - fa
     priority: 90
     notes: |
-      Treat this workspace as a product repository first:
-      inspect existing build and verification commands before editing.
+      This is a script-based Python product with a Telegram bot and FastAPI web panel.
+      Prefer the existing run.sh/main.py workflow and keep the web panel + bot startup path intact.
+    commands:
+      install: pip install -r requirements.txt
+      dev: ./run.sh
+      start: python main.py
+      health: python -m py_compile main.py bot.py web.py
 
   - path: Gr_dev
     name: Gr_dev
@@ -30,11 +41,40 @@ workspaces:
       - gr-dev
       - grdev
     priority: 80
+    notes: |
+      This workspace is an umbrella repo with several subprojects.
+      Prefer routing into the specific subproject when the request mentions freelance-aggregator,
+      portfolio-site, github-profile, or resume-bot.
 
-  - path: MacProjects/Poolych
-    name: Poolych
+  - path: Gr_dev/freelance-aggregator
+    name: Gr_dev Freelance Aggregator
     aliases:
+      - gr freelance
+      - gr aggregator
+      - gr freelance aggregator
+    priority: 85
+    notes: |
+      This is the nested freelance aggregator inside the Gr_dev umbrella repository.
+      Use the existing Python entrypoint and keep changes scoped to this subproject.
+    commands:
+      install: pip install -r requirements.txt
+      start: python main.py
+      health: python -m py_compile main.py bot.py web.py
+
+  - path: MacProjects/Poolbill
+    name: Poolbill
+    aliases:
+      - poolbill
       - poolych
       - billiards
       - pool game
     priority: 70
+    notes: |
+      This is a Node monorepo with server, client, and bot workspaces.
+      Prefer root workspace commands unless the request explicitly targets server, client, or bot.
+    commands:
+      dev: npm run dev
+      build: npm run build
+      typecheck: npm run typecheck
+      test: npm run test
+      health: npm run typecheck

@@ -897,6 +897,17 @@ class MessageOrchestrator:
                 )
             if dynamic_row:
                 rows.append(dynamic_row[:3])
+            operator_row = []
+            if "health" in profile.commands:
+                operator_row.append(
+                    InlineKeyboardButton("❤️ Health", callback_data="act:health")
+                )
+            if "build" in profile.commands:
+                operator_row.append(
+                    InlineKeyboardButton("🏗️ Build", callback_data="act:build")
+                )
+            if operator_row:
+                rows.append(operator_row[:3])
         else:
             rows.append([InlineKeyboardButton("🆕 New", callback_data="act:new")])
 
@@ -965,6 +976,13 @@ class MessageOrchestrator:
             lines.append(
                 f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
             )
+            operator_commands = ", ".join(
+                key for key, _command in project_automation.list_operator_commands(profile)
+            )
+            if operator_commands:
+                lines.append(
+                    f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
+                )
         return "\n".join(lines)
 
     async def _build_agentic_panel_text(
@@ -1007,6 +1025,13 @@ class MessageOrchestrator:
             lines.append(
                 f"🧭 Playbooks: <code>{escape_html(playbooks or 'none')}</code>"
             )
+            operator_commands = ", ".join(
+                key for key, _command in project_automation.list_operator_commands(profile)
+            )
+            if operator_commands:
+                lines.append(
+                    f"🧰 Ops: <code>{escape_html(operator_commands)}</code>"
+                )
             if profile.operator_notes:
                 note_preview = profile.operator_notes[:160]
                 if len(profile.operator_notes) > 160:
@@ -1350,6 +1375,107 @@ class MessageOrchestrator:
                         guard_report and guard_report.rollback_succeeded
                     ),
                     workspace_changed=current_workspace != profile.root_path,
+                )
+
+    @staticmethod
+    def _tail_command_output(text: str, limit: int = 900) -> str:
+        """Keep only the tail of command output for Telegram summaries."""
+        normalized = text.strip()
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[-limit:]
+
+    async def _run_agentic_command_action(
+        self,
+        query: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        command_key: str,
+    ) -> None:
+        """Run a direct workspace command for safe operator actions."""
+        user_id = query.from_user.id
+        _current_dir, _current_workspace, boundary_root, project_automation, profile = (
+            self._get_agentic_workspace_profile(context)
+        )
+        if not project_automation or not profile:
+            await query.edit_message_text("Project automation is not available.")
+            return
+
+        command = profile.commands.get(command_key)
+        if not command:
+            await query.answer("Command is not available in this workspace.", show_alert=True)
+            return
+
+        title = {
+            "health": "Health Check",
+            "build": "Build",
+        }.get(command_key, command_key.title())
+        status_msg = await query.message.reply_text(
+            "▶️ <b>Running Command</b>\n\n"
+            f"Action: <code>{escape_html(title)}</code>\n"
+            f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>\n"
+            f"Command: <code>{escape_html(command)}</code>",
+            parse_mode="HTML",
+        )
+
+        success = False
+        timed_out = False
+        stdout_text = ""
+        stderr_text = ""
+        returncode = -1
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "/bin/sh",
+                "-lc",
+                command,
+                cwd=profile.root_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                timed_out = True
+                process.kill()
+                stdout, stderr = await process.communicate()
+            returncode = process.returncode if process.returncode is not None else -1
+            stdout_text = self._tail_command_output(
+                _redact_secrets(stdout.decode("utf-8", errors="replace"))
+            )
+            stderr_text = self._tail_command_output(
+                _redact_secrets(stderr.decode("utf-8", errors="replace"))
+            )
+            success = not timed_out and returncode == 0
+
+            lines = [
+                f"✅ <b>{escape_html(title)}</b>" if success else f"❌ <b>{escape_html(title)}</b>",
+                "",
+                f"Workspace: <code>{escape_html(self._format_agentic_relative_path(profile.root_path, boundary_root))}</code>",
+                f"Command: <code>{escape_html(command)}</code>",
+                f"Exit code: <code>{returncode}</code>",
+            ]
+            if timed_out:
+                lines.append("Timed out after <code>120s</code>.")
+            if stdout_text:
+                lines.extend(["", "<b>stdout</b>", f"<pre>{escape_html(stdout_text)}</pre>"])
+            if stderr_text:
+                lines.extend(["", "<b>stderr</b>", f"<pre>{escape_html(stderr_text)}</pre>"])
+            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            await status_msg.edit_text(
+                "❌ <b>Command Failed</b>\n\n"
+                f"Action: <code>{escape_html(title)}</code>\n"
+                f"Error: <code>{escape_html(str(e))}</code>",
+                parse_mode="HTML",
+            )
+        finally:
+            audit_logger = context.bot_data.get("audit_logger")
+            if audit_logger:
+                await audit_logger.log_command(
+                    user_id=user_id,
+                    command=f"workspace_{command_key}",
+                    args=[command],
+                    success=success,
                 )
 
     def _format_verbose_progress(
@@ -2723,6 +2849,9 @@ class MessageOrchestrator:
 
         elif action in {"doctor", "review", "setup", "test", "quality"}:
             await self._run_agentic_playbook_action(query, context, action)
+
+        elif action in {"health", "build"}:
+            await self._run_agentic_command_action(query, context, action)
 
         elif action.startswith("v"):
             level = int(action[1])

@@ -96,6 +96,28 @@ def test_detects_node_workspace_from_subdirectory(tmp_path):
     assert profile.commands["build"] == "pnpm run build"
 
 
+def test_list_workspace_summaries_includes_nested_requirements_project(tmp_path):
+    """Requirements-only Python projects should be discovered as nested workspaces."""
+    container_root = tmp_path / "Gr_dev"
+    container_root.mkdir()
+    (container_root / ".git").mkdir()
+
+    nested_root = container_root / "freelance-aggregator"
+    nested_root.mkdir()
+    (nested_root / "requirements.txt").write_text(
+        "fastapi==0.115.0\nuvicorn==0.30.6\n",
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager()
+    summaries = manager.list_workspace_summaries(tmp_path)
+
+    assert "Gr_dev" in [summary.relative_path for summary in summaries]
+    assert "Gr_dev/freelance-aggregator" in [
+        summary.relative_path for summary in summaries
+    ]
+
+
 def test_build_playbook_prompt_includes_detected_commands_and_extra_note(tmp_path):
     """Generated prompts should include the profile and operator note."""
     (tmp_path / "pyproject.toml").write_text(
@@ -293,6 +315,43 @@ workspaces:
     assert profile.sort_priority == 50
     assert summaries[0].display_name == "ClaudeBot"
     assert "telegram bot" in summaries[0].aliases
+
+
+def test_list_operator_commands_uses_configured_overrides(tmp_path):
+    """Operator command list should expose explicit health/build/start/dev/deploy actions."""
+    workspace_root = tmp_path / "Poolbill"
+    workspace_root.mkdir()
+    (workspace_root / "package.json").write_text(
+        json.dumps({"name": "poolbill", "scripts": {"test": "vitest run"}}),
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_path / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: Poolbill
+    name: Poolbill
+    commands:
+      health: npm run typecheck
+      build: npm run build
+      start: npm run start
+      dev: npm run dev
+      deploy: ./deploy.sh
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+    profile = manager.build_profile(workspace_root, tmp_path)
+
+    assert manager.list_operator_commands(profile) == [
+        ("health", "npm run typecheck"),
+        ("build", "npm run build"),
+        ("start", "npm run start"),
+        ("dev", "npm run dev"),
+        ("deploy", "./deploy.sh"),
+    ]
 
 
 def test_build_automation_plan_routes_to_workspace_alias(tmp_path):

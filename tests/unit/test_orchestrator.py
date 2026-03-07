@@ -704,6 +704,63 @@ async def test_agentic_quick_action_panel_renders_control_panel(
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is not None
 
 
+async def test_agentic_quick_action_health_runs_workspace_command(
+    agentic_settings, tmp_dir
+):
+    """Health quick action should execute the configured workspace health command."""
+    orchestrator = MessageOrchestrator(agentic_settings, {})
+
+    workspace_root = tmp_dir / "FreelanceAggregator"
+    workspace_root.mkdir()
+    for filename in ("main.py", "bot.py", "web.py"):
+        (workspace_root / filename).write_text("print('ok')\n", encoding="utf-8")
+    (workspace_root / "requirements.txt").write_text(
+        "fastapi==0.115.0\n",
+        encoding="utf-8",
+    )
+
+    profiles_path = tmp_dir / "workspace_profiles.yaml"
+    profiles_path.write_text(
+        """
+workspaces:
+  - path: FreelanceAggregator
+    name: FreelanceAggregator
+    commands:
+      health: python3 -m py_compile main.py bot.py web.py
+        """.strip(),
+        encoding="utf-8",
+    )
+    manager = ProjectAutomationManager(workspace_profiles_path=profiles_path)
+
+    status_msg = AsyncMock()
+    status_msg.edit_text = AsyncMock()
+
+    query = MagicMock()
+    query.data = "act:health"
+    query.from_user.id = 123
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    query.message.reply_text = AsyncMock(return_value=status_msg)
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": workspace_root}
+    context.bot_data = {
+        "features": SimpleNamespace(get_project_automation=lambda: manager),
+        "audit_logger": None,
+    }
+
+    await orchestrator._agentic_quick_action(update, context)
+
+    query.message.reply_text.assert_awaited_once()
+    status_msg.edit_text.assert_awaited_once()
+    result_text = status_msg.edit_text.call_args.args[0]
+    assert "Health Check" in result_text
+    assert "Exit code: <code>0</code>" in result_text
+
+
 async def test_agentic_callback_switches_nested_workspace_and_keeps_markup(
     agentic_settings, tmp_dir
 ):

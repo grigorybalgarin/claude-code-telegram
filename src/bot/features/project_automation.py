@@ -92,6 +92,7 @@ class ProjectAutomationManager:
     _ROOT_MARKERS = (
         ".git",
         "pyproject.toml",
+        "requirements.txt",
         "package.json",
         "Cargo.toml",
         "go.mod",
@@ -248,7 +249,7 @@ class ProjectAutomationManager:
                     if len(candidates) >= max_candidates:
                         break
 
-                if depth < max_depth and not looks_like_workspace:
+                if depth < max_depth and (depth == 1 or not looks_like_workspace):
                     queue.append(resolved)
 
         return candidates
@@ -372,6 +373,15 @@ class ProjectAutomationManager:
             available.append(self._PLAYBOOKS["review"])
 
         return available
+
+    def list_operator_commands(self, profile: ProjectProfile) -> List[tuple[str, str]]:
+        """Return explicit operator-facing commands worth surfacing in the UI."""
+        commands: List[tuple[str, str]] = []
+        for key in ("health", "build", "start", "dev", "deploy"):
+            command = profile.commands.get(key)
+            if command:
+                commands.append((key, command))
+        return commands
 
     def list_workspace_summaries(self, boundary_root: Path) -> List[WorkspaceSummary]:
         """Return discovered workspaces with compact profile metadata."""
