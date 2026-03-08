@@ -768,6 +768,30 @@ class TestPanelBuilder:
         assert "зависла" in text
         assert "self-review" in text
 
+    async def test_build_status_text_uses_diagnosis_aware_recommendation(self, tmp_dir):
+        builder = self._make_builder()
+        ctx = self._make_ctx(tmp_dir)
+
+        text = await builder.build_status_text(
+            ctx,
+            user_id=1,
+            session_id=None,
+            last_verify={
+                "success": False,
+                "failed_step": "health",
+                "steps_total": 2,
+                "steps_passed": 1,
+                "problem_type": "service",
+                "short_cause": "Connection refused",
+                "confidence": 0.8,
+                "timestamp": 1.0,
+            },
+        )
+
+        assert "Оперативная оценка" in text
+        assert "Connection refused" in text
+        assert "ручной анализ" in text
+
     async def test_build_recent_text_surfaces_ops_incidents_and_improvements(self, tmp_dir):
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir, with_storage=True)
@@ -812,15 +836,39 @@ class TestPanelBuilder:
             ]
 
         ctx.storage.operations.get_recent = AsyncMock(side_effect=get_recent)
+        ctx.storage.operations.get_workspace_state = AsyncMock(
+            return_value={
+                "verify": {
+                    "success": False,
+                    "created_at": "2026-03-08 10:00:00",
+                    "details": {
+                        "success": False,
+                        "failed_step": "health",
+                        "problem_type": "service",
+                        "short_cause": "Service unhealthy",
+                    },
+                },
+                "resolve": None,
+                "deploy": None,
+            }
+        )
 
         text = await builder.build_recent_text(ctx, user_id=1)
 
+        assert "Сейчас" in text
+        assert "verify ✗" in text
+        assert "→" in text
         assert "Операции проекта" in text
         assert "Инциденты" in text
         assert "Улучшения" in text
         assert "Система" in text
         assert "Service unhealthy" in text
         assert "cleanup" in text
+
+    def test_seconds_ago_accepts_iso_timestamp_string(self):
+        seconds = PanelBuilder._seconds_ago("2026-03-08 10:00:00")
+        assert isinstance(seconds, int)
+        assert seconds >= 0
 
     async def test_build_panel_text(self, tmp_dir):
         builder = self._make_builder()

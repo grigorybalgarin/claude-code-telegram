@@ -6,7 +6,9 @@ Receives pre-resolved workspace context and returns structured output that
 the orchestrator sends to Telegram.
 """
 
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from telegram import (
@@ -176,6 +178,13 @@ class PanelBuilder:
         active_incident = await self._get_active_incident(ctx)
         pending_improvements = await self._get_pending_improvements(ctx)
         system_summary = await self._get_system_summary(ctx)
+        snapshot, diagnosis, _plan = self._build_operational_snapshot(
+            ctx,
+            last_verify=last_verify,
+            last_resolve=last_resolve,
+            last_deploy=last_deploy,
+            active_incident=active_incident,
+        )
 
         lines = [
             "<b>Статус</b>",
@@ -260,6 +269,19 @@ class PanelBuilder:
                 ]
             )
 
+        if snapshot and (snapshot.unresolved_issues or diagnosis):
+            lines.extend(
+                [
+                    "",
+                    f"{snapshot.health_emoji()} <b>Оперативная оценка:</b> "
+                    f"{escape_html(self._format_health_label(snapshot.overall_health))}",
+                ]
+            )
+            if diagnosis and diagnosis.short_cause:
+                lines.append(f"• {escape_html(diagnosis.short_cause)}")
+            for issue in snapshot.unresolved_issues[:2]:
+                lines.append(f"• {escape_html(issue)}")
+
         if pending_improvements:
             count = len(pending_improvements)
             top = pending_improvements[0]
@@ -276,9 +298,11 @@ class PanelBuilder:
             lines.extend(["", "<b>Системный контур</b>", *system_summary])
 
         # Suggested next action based on operational state
-        suggested = self._suggest_from_ops_state(
-            last_verify, last_resolve, last_deploy
-        )
+        suggested = None
+        if snapshot and snapshot.suggested_action:
+            reason = getattr(snapshot.suggested_action, "reason", "")
+            if reason:
+                suggested = reason
         if not suggested and active_incident:
             suggested = "Есть активный инцидент — открой разбор"
         if not suggested and ctx.operator_runtime:
@@ -431,8 +455,36 @@ class PanelBuilder:
         automation_entries = [
             entry for entry in audit_entries if entry.event_type == "automation_run"
         ][:4]
+        workspace_state = await self._get_workspace_state(ctx)
+        active_incident = await self._get_active_incident(ctx)
+        snapshot, diagnosis, _plan = self._build_operational_snapshot(
+            ctx,
+            last_verify=workspace_state.get("verify"),
+            last_resolve=workspace_state.get("resolve"),
+            last_deploy=workspace_state.get("deploy"),
+            active_incident=active_incident,
+        )
 
         lines = ["<b>\u041d\u0435\u0434\u0430\u0432\u043d\u044f\u044f \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u044c</b>"]
+        if snapshot:
+            lines.extend(["", "<b>Сейчас</b>"])
+            status_parts: List[str] = [snapshot.health_emoji()]
+            if snapshot.last_verify_success is True:
+                status_parts.append("verify ✓")
+            elif snapshot.last_verify_success is False:
+                status_parts.append("verify ✗")
+            if snapshot.last_deploy_success is True:
+                status_parts.append("deploy ✓")
+            elif snapshot.last_deploy_success is False:
+                status_parts.append("deploy ✗")
+            if snapshot.active_incident:
+                status_parts.append("есть инцидент")
+            lines.append(" ".join(status_parts))
+            if diagnosis and diagnosis.short_cause:
+                lines.append(f"• {escape_html(diagnosis.short_cause)}")
+            if snapshot.suggested_action and getattr(snapshot.suggested_action, "reason", ""):
+                lines.append(f"→ {escape_html(snapshot.suggested_action.reason)}")
+
         if automation_entries:
             lines.extend(["", "<b>\u0410\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442</b>"])
             for entry in automation_entries:
@@ -501,6 +553,21 @@ class PanelBuilder:
             return await ctx.storage.operations.get_recent(str(ctx.current_workspace), limit=4)
         except Exception:
             return []
+
+    async def _get_workspace_state(self, ctx: AgenticWorkspaceContext) -> Dict[str, Optional[Dict[str, Any]]]:
+        if not ctx.storage or not hasattr(ctx.storage, "operations"):
+            return {}
+        try:
+            raw_state = await ctx.storage.operations.get_workspace_state(
+                str(ctx.current_workspace)
+            )
+        except Exception:
+            return {}
+
+        return {
+            key: self._normalize_operation_state(row)
+            for key, row in raw_state.items()
+        }
 
     async def _get_active_incidents(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
         if not ctx.storage or not hasattr(ctx.storage, "incidents"):
@@ -615,20 +682,239 @@ class PanelBuilder:
             return f"{icon} <code>{escape_html(label)}</code> · {escape_html(str(summary))} · {ago}"
         return f"{icon} <code>{escape_html(label)}</code> · {ago}"
 
+    def _build_operational_snapshot(
+        self,
+        ctx: AgenticWorkspaceContext,
+        *,
+        last_verify: Optional[Dict[str, Any]],
+        last_resolve: Optional[Dict[str, Any]],
+        last_deploy: Optional[Dict[str, Any]],
+        active_incident: Optional[Dict[str, Any]],
+    ) -> tuple[Optional[Any], Optional[Any], Optional[Any]]:
+        """Build a presentation-friendly operational snapshot and recommendation."""
+        from .digest import build_operational_snapshot, suggest_next_action
+        from .remediation_planner import build_remediation_plan
+
+        workspace_state = {
+            "verify": last_verify,
+            "resolve": last_resolve,
+            "deploy": last_deploy,
+        }
+        incident_obj = self._coerce_incident_for_snapshot(active_incident)
+        profile = ctx.profile
+        display_name = (
+            profile.display_name
+            if profile and profile.display_name
+            else self.format_relative_path(ctx.current_workspace, ctx.boundary_root)
+        )
+        snapshot = build_operational_snapshot(
+            workspace_path=str(ctx.current_workspace),
+            display_name=display_name,
+            workspace_state=workspace_state,
+            active_incident=incident_obj,
+            service_healthy=None,
+        )
+
+        diagnosis = self._build_diagnosis_from_state(
+            ctx,
+            last_verify=last_verify,
+            last_resolve=last_resolve,
+            last_deploy=last_deploy,
+            active_incident=active_incident,
+        )
+
+        plan = None
+        if diagnosis and profile:
+            ops_config = getattr(profile, "operations", None)
+            runbook_hints = getattr(ops_config, "runbook_hints", None) if ops_config else None
+            topology = getattr(ops_config, "topology", None) if ops_config else None
+            plan = build_remediation_plan(
+                diagnosis,
+                runbook_hints,
+                operations_config=ops_config,
+                topology=topology,
+            )
+            snapshot.suggested_action = suggest_next_action(
+                snapshot,
+                diagnosis=diagnosis,
+                remediation_plan=plan,
+                topology=topology,
+            )
+        return snapshot, diagnosis, plan
+
+    def _build_diagnosis_from_state(
+        self,
+        ctx: AgenticWorkspaceContext,
+        *,
+        last_verify: Optional[Dict[str, Any]],
+        last_resolve: Optional[Dict[str, Any]],
+        last_deploy: Optional[Dict[str, Any]],
+        active_incident: Optional[Dict[str, Any]],
+    ) -> Optional[Any]:
+        """Reconstruct a lightweight diagnosis from persisted operation details."""
+        from .problem_classifier import ProblemDiagnosis, ProblemType
+
+        source: Optional[Dict[str, Any]] = None
+        fallback_type = ProblemType.UNKNOWN
+        failed_label = ""
+
+        if last_verify and not last_verify.get("success"):
+            source = last_verify
+            failed_label = str(source.get("failed_step") or "")
+        elif last_resolve and not last_resolve.get("success"):
+            source = last_resolve
+            failed_label = str(source.get("failed_step") or source.get("error") or "resolve")
+        elif last_deploy and not last_deploy.get("success"):
+            source = last_deploy
+            fallback_type = ProblemType.DEPLOY
+            failed_label = str(source.get("failed_stage") or "deploy")
+        elif active_incident:
+            details = active_incident.get("details", {})
+            if isinstance(details, dict):
+                source = details
+                failed_label = str(
+                    details.get("failed_step")
+                    or details.get("failed_stage")
+                    or active_incident.get("state")
+                    or "incident"
+                )
+
+        if not source:
+            return None
+
+        ptype = self._parse_problem_type(source.get("problem_type"), fallback_type)
+        label = self._problem_label(ptype)
+        short_cause = str(
+            source.get("short_cause")
+            or source.get("last_error")
+            or source.get("error")
+            or ""
+        )
+        confidence_raw = source.get("confidence")
+        try:
+            confidence = float(confidence_raw) if confidence_raw is not None else 0.6
+        except (TypeError, ValueError):
+            confidence = 0.6
+
+        profile = ctx.profile
+        ops = getattr(profile, "operations", None) if profile else None
+        critical_steps = set(getattr(ops, "critical_steps", ()) or ())
+        runbook_hints = getattr(ops, "runbook_hints", {}) or {}
+        runbook_hint = (
+            str(runbook_hints.get(ptype.value) or runbook_hints.get(failed_label) or "")
+        )
+
+        return ProblemDiagnosis(
+            problem_type=ptype,
+            label=label,
+            failed_step_label=failed_label,
+            short_cause=short_cause,
+            safe_to_autofix=ptype in {
+                ProblemType.CODE,
+                ProblemType.CONFIG,
+                ProblemType.DEPENDENCY,
+                ProblemType.DEPLOY,
+            },
+            confidence=confidence,
+            is_critical_step=failed_label in critical_steps,
+            runbook_hint=runbook_hint,
+        )
+
+    @staticmethod
+    def _coerce_incident_for_snapshot(active_incident: Optional[Dict[str, Any]]) -> Optional[Any]:
+        if not active_incident:
+            return None
+
+        from .ops_model import IncidentState, Severity
+
+        state_raw = str(active_incident.get("state") or "").lower()
+        severity_raw = str(active_incident.get("severity") or "").lower()
+
+        try:
+            state = IncidentState(state_raw)
+        except ValueError:
+            state = None
+        try:
+            severity = Severity(severity_raw)
+        except ValueError:
+            severity = None
+
+        return SimpleNamespace(state=state, severity=severity)
+
+    @staticmethod
+    def _parse_problem_type(value: Any, fallback: Any) -> Any:
+        from .problem_classifier import ProblemType
+
+        if value:
+            try:
+                return ProblemType(str(value))
+            except ValueError:
+                pass
+        return fallback
+
+    @staticmethod
+    def _problem_label(problem_type: Any) -> str:
+        labels = {
+            "code": "Ошибка в коде",
+            "config": "Проблема конфигурации",
+            "dependency": "Проблема зависимостей",
+            "service": "Проблема сервиса",
+            "deploy": "Проблема сборки/деплоя",
+            "environment": "Проблема окружения сервера",
+            "unknown": "Неизвестная проблема",
+        }
+        key = getattr(problem_type, "value", "unknown")
+        return labels.get(str(key), "Неизвестная проблема")
+
+    @staticmethod
+    def _normalize_operation_state(operation: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not operation or not isinstance(operation, dict):
+            return None
+
+        details = operation.get("details")
+        if isinstance(details, dict):
+            normalized = dict(details)
+            if "success" not in normalized and "success" in operation:
+                normalized["success"] = operation.get("success")
+            if "timestamp" not in normalized and operation.get("created_at") is not None:
+                normalized["timestamp"] = PanelBuilder._timestamp_from_value(
+                    operation.get("created_at")
+                )
+            return normalized
+
+        return operation
+
+    @staticmethod
+    def _format_health_label(severity: Any) -> str:
+        value = getattr(severity, "value", "")
+        return {
+            "critical": "критичная проблема",
+            "degraded": "есть деградация",
+            "warning": "есть предупреждения",
+            "info": "явных проблем не видно",
+        }.get(str(value), "состояние неизвестно")
+
     @staticmethod
     def _seconds_ago(timestamp: Any) -> int:
         import time as _time
-        from datetime import datetime as _datetime
-
-        if isinstance(timestamp, _datetime):
-            ts = timestamp.timestamp()
-        elif isinstance(timestamp, (int, float)):
-            ts = float(timestamp)
-        else:
-            ts = 0.0
+        ts = PanelBuilder._timestamp_from_value(timestamp)
         if ts <= 0:
             return 0
         return max(0, int(_time.time() - ts))
+
+    @staticmethod
+    def _timestamp_from_value(timestamp: Any) -> float:
+        if isinstance(timestamp, datetime):
+            return timestamp.timestamp()
+        if isinstance(timestamp, (int, float)):
+            return float(timestamp)
+        if isinstance(timestamp, str):
+            normalized = timestamp.strip().replace("Z", "+00:00")
+            try:
+                return datetime.fromisoformat(normalized).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
 
     async def build_jobs_text(
         self,
