@@ -355,6 +355,27 @@ def _start_workspace_monitor(
 
         monitor.set_save_callback(_save)
 
+    if storage and hasattr(storage, "incidents"):
+        async def _save_incident(incident: Any) -> None:
+            await storage.incidents.upsert(
+                incident_id=incident.incident_id,
+                workspace_path=incident.workspace_path,
+                state=incident.state.value,
+                severity=incident.severity.value,
+                dedup_key=incident.dedup_key,
+                detected_at=incident.detected_at,
+                healed_at=incident.healed_at,
+                heal_attempts=incident.heal_attempts,
+                suppressed_count=incident.suppressed_count,
+                details=incident.to_dict(),
+            )
+
+        async def _load_incidents(workspace_paths: list[str]) -> list[dict[str, Any]]:
+            return await storage.incidents.list_active(workspace_paths)
+
+        monitor.set_incident_callback(_save_incident)
+        monitor.set_active_incidents_loader(_load_incidents)
+
     log.info(
         "Workspace monitor configured",
         profiles=len(profiles_to_monitor),
@@ -402,6 +423,37 @@ def _start_maintenance_loop(
             await storage.operations.save(**kwargs)
 
         loop.set_save_callback(_save)
+
+    if storage and hasattr(storage, "improvements"):
+        async def _save_improvement(candidate: Any) -> None:
+            await storage.improvements.upsert(
+                improvement_id=candidate.improvement_id,
+                improvement_type=candidate.improvement_type.value,
+                description=candidate.description,
+                category=candidate.category or None,
+                confidence=candidate.confidence,
+                priority=candidate.priority,
+                safe_to_auto_apply=candidate.safe_to_auto_apply,
+                status=candidate.status,
+                details={
+                    "source_incidents": list(candidate.source_incident_ids),
+                    "requires_user_approval": candidate.requires_user_approval,
+                    "suggested_change": candidate.suggested_change,
+                    "created_at": candidate.created_at,
+                },
+            )
+
+        async def _load_improvements(limit: int) -> list[dict[str, Any]]:
+            return await storage.improvements.list_pending(limit=limit)
+
+        loop.set_improvement_save_callback(_save_improvement)
+        loop.set_improvement_load_callback(_load_improvements)
+
+    if storage:
+        async def _cleanup(days: int) -> dict[str, int]:
+            return await storage.cleanup_old_data(days=days)
+
+        loop.set_cleanup_callback(_cleanup)
 
     # Wire notification
     if notification_service:

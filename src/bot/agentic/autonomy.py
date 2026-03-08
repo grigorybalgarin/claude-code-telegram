@@ -23,6 +23,9 @@ logger = structlog.get_logger()
 # Callback types
 NotifyCallback = Callable[[str], Coroutine[Any, Any, None]]
 SaveCallback = Callable[..., Coroutine[Any, Any, None]]
+SaveImprovementCallback = Callable[[ImprovementCandidate], Coroutine[Any, Any, None]]
+LoadImprovementsCallback = Callable[[int], Coroutine[Any, Any, List[Dict[str, Any]]]]
+CleanupCallback = Callable[[int], Coroutine[Any, Any, Dict[str, int]]]
 
 
 class AutonomyTracker:
@@ -226,7 +229,7 @@ class ImprovementBacklog:
     def __init__(self) -> None:
         self._items: List[ImprovementCandidate] = []
 
-    def add(self, candidate: ImprovementCandidate) -> None:
+    def add(self, candidate: ImprovementCandidate) -> ImprovementCandidate:
         # Deduplicate by description similarity
         for existing in self._items:
             if (
@@ -236,8 +239,20 @@ class ImprovementBacklog:
             ):
                 existing.priority = max(existing.priority, candidate.priority)
                 existing.confidence = max(existing.confidence, candidate.confidence)
-                return
+                if candidate.source_incident_ids:
+                    existing.source_incident_ids = list({
+                        *existing.source_incident_ids,
+                        *candidate.source_incident_ids,
+                    })
+                if candidate.suggested_change and not existing.suggested_change:
+                    existing.suggested_change = candidate.suggested_change
+                return existing
         self._items.append(candidate)
+        return candidate
+
+    def restore(self, candidates: List[ImprovementCandidate]) -> None:
+        """Restore persisted candidates without deduping away their IDs."""
+        self._items = list(candidates)
 
     def get_pending(self, limit: int = 10) -> List[ImprovementCandidate]:
         pending = [i for i in self._items if i.status == "pending"]
@@ -305,7 +320,13 @@ class MaintenanceLoop:
             Callable[..., Coroutine[Any, Any, List[Dict]]]
         ] = None
         self._save_callback: Optional[SaveCallback] = None
+        self._save_improvement_callback: Optional[SaveImprovementCallback] = None
+        self._load_improvements_callback: Optional[LoadImprovementsCallback] = None
+        self._cleanup_callback: Optional[CleanupCallback] = None
         self.last_review_at: float = 0.0
+        self.last_cleanup_at: float = 0.0
+        self.cleanup_interval_seconds: float = 86400.0
+        self.cleanup_retention_days: int = 30
 
     def set_notify_callback(self, callback: NotifyCallback) -> None:
         self._on_notify = callback
@@ -318,9 +339,25 @@ class MaintenanceLoop:
     def set_save_callback(self, callback: SaveCallback) -> None:
         self._save_callback = callback
 
+    def set_improvement_save_callback(
+        self,
+        callback: SaveImprovementCallback,
+    ) -> None:
+        self._save_improvement_callback = callback
+
+    def set_improvement_load_callback(
+        self,
+        callback: LoadImprovementsCallback,
+    ) -> None:
+        self._load_improvements_callback = callback
+
+    def set_cleanup_callback(self, callback: CleanupCallback) -> None:
+        self._cleanup_callback = callback
+
     async def start(self) -> None:
         if self._running:
             return
+        await self._restore_backlog()
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Maintenance loop started")
@@ -366,9 +403,11 @@ class MaintenanceLoop:
 
         candidates = self.review.review_incidents(recent_ops)
         for candidate in candidates:
-            self.backlog.add(candidate)
+            persisted = self.backlog.add(candidate)
+            await self._persist_improvement(persisted)
 
         self.last_review_at = time.time()
+        await self._maybe_cleanup()
 
         if candidates:
             logger.info(
@@ -394,6 +433,91 @@ class MaintenanceLoop:
                     pass
 
         return candidates
+
+    async def _restore_backlog(self) -> None:
+        """Reload pending improvement backlog from persistent storage."""
+        if not self._load_improvements_callback:
+            return
+
+        try:
+            rows = await self._load_improvements_callback(50)
+        except Exception:
+            logger.warning("Failed to restore improvement backlog")
+            return
+
+        restored: List[ImprovementCandidate] = []
+        for row in rows:
+            try:
+                improvement_type = ImprovementType(str(row["improvement_type"]))
+            except (KeyError, ValueError):
+                continue
+
+            details = row.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+
+            restored.append(
+                ImprovementCandidate(
+                    improvement_id=str(row["improvement_id"]),
+                    improvement_type=improvement_type,
+                    description=str(row["description"]),
+                    source_incident_ids=list(details.get("source_incidents", [])),
+                    category=str(row.get("category") or ""),
+                    confidence=float(row.get("confidence") or 0.5),
+                    priority=int(row.get("priority") or 0),
+                    safe_to_auto_apply=bool(row.get("safe_to_auto_apply")),
+                    requires_user_approval=bool(
+                        details.get("requires_user_approval", True)
+                    ),
+                    suggested_change=str(details.get("suggested_change") or ""),
+                    status=str(row.get("status") or "pending"),
+                    created_at=float(details.get("created_at") or time.time()),
+                )
+            )
+
+        if restored:
+            self.backlog.restore(restored)
+            logger.info("Restored improvement backlog", count=len(restored))
+
+    async def _persist_improvement(self, candidate: ImprovementCandidate) -> None:
+        if not self._save_improvement_callback:
+            return
+        try:
+            await self._save_improvement_callback(candidate)
+        except Exception:
+            logger.warning(
+                "Failed to persist improvement candidate",
+                improvement_id=candidate.improvement_id,
+            )
+
+    async def _maybe_cleanup(self) -> None:
+        """Run periodic retention cleanup for persistent operational state."""
+        if not self._cleanup_callback:
+            return
+
+        now = time.time()
+        if self.last_cleanup_at and (
+            now - self.last_cleanup_at < self.cleanup_interval_seconds
+        ):
+            return
+
+        try:
+            counts = await self._cleanup_callback(self.cleanup_retention_days)
+        except Exception:
+            logger.warning("Maintenance cleanup failed")
+            return
+
+        self.last_cleanup_at = now
+        if self._save_callback:
+            try:
+                await self._save_callback(
+                    workspace_path="__system__",
+                    operation_type="maintenance_cleanup",
+                    success=True,
+                    details=counts,
+                )
+            except Exception:
+                logger.warning("Failed to persist maintenance cleanup summary")
 
     def get_digest(self) -> str:
         """Generate a short maintenance digest."""

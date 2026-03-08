@@ -1,10 +1,11 @@
 """Tests for persistent workspace operator background jobs."""
 
 import asyncio
+import json
 
 import pytest
 
-from src.bot.features.operator_runtime import WorkspaceOperatorRuntime
+from src.bot.features.operator_runtime import OperatorJob, WorkspaceOperatorRuntime
 
 
 async def _wait_for_terminal_status(
@@ -170,3 +171,49 @@ async def test_launch_job_blocks_second_active_job_in_same_workspace(tmp_path):
     stopped = await runtime.stop_job(job.job_id)
     if stopped.is_active:
         await _wait_for_terminal_status(runtime, job.job_id)
+
+
+@pytest.mark.asyncio
+async def test_set_reconcile_callback_reports_preexisting_stale_jobs(tmp_path):
+    """Stale jobs detected before callback wiring should still be persisted."""
+    state_root = tmp_path / "operator_runtime"
+    jobs_root = state_root / "jobs"
+    logs_root = state_root / "logs"
+    workspace_root = tmp_path / "workspace"
+    jobs_root.mkdir(parents=True)
+    logs_root.mkdir(parents=True)
+    workspace_root.mkdir()
+
+    job = OperatorJob(
+        job_id="stale-job-1",
+        workspace_root=workspace_root,
+        action_key="deploy",
+        title="Deploy",
+        command="echo deploy",
+        status="running",
+        created_at="2026-03-08T00:00:00+00:00",
+        log_path=logs_root / "stale-job-1.log",
+        pid=999999,
+        started_at="2026-03-08T00:00:01+00:00",
+    )
+    (jobs_root / "stale-job-1.json").write_text(
+        json.dumps(job.to_dict()),
+        encoding="utf-8",
+    )
+
+    runtime = WorkspaceOperatorRuntime(state_root)
+    stale = runtime.get_job(job.job_id)
+    assert stale is not None
+    assert stale.status == "stale"
+
+    reconciled: list[OperatorJob] = []
+
+    async def capture(job: OperatorJob) -> None:
+        reconciled.append(job)
+
+    runtime.set_reconcile_callback(capture)
+    await asyncio.sleep(0.05)
+
+    assert len(reconciled) == 1
+    assert reconciled[0].job_id == job.job_id
+    assert reconciled[0].status == "stale"

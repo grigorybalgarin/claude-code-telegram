@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Awaitable, Callable, Iterable, Optional
 
 import structlog
 
@@ -143,7 +143,18 @@ class WorkspaceOperatorRuntime:
         self.logs_root = self.state_root / "logs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
+        self._reconcile_callback: Optional[Callable[[OperatorJob], Awaitable[None]]] = None
         self.reconcile_jobs()
+
+    def set_reconcile_callback(
+        self,
+        callback: Callable[[OperatorJob], Awaitable[None]],
+    ) -> None:
+        """Persist or report stale job recovery events."""
+        self._reconcile_callback = callback
+        for job in self.list_jobs():
+            if job.status == "stale":
+                self._schedule_reconcile_callback(job)
 
     async def launch_job(
         self,
@@ -314,8 +325,9 @@ class WorkspaceOperatorRuntime:
             return compact
         return compact[-limit:]
 
-    def reconcile_jobs(self) -> None:
+    def reconcile_jobs(self) -> list[OperatorJob]:
         """Refresh persisted job states after restarts or abrupt exits."""
+        reconciled: list[OperatorJob] = []
         for path in self.jobs_root.glob("*.json"):
             job = self._read_job(path)
             if not job.is_active:
@@ -324,12 +336,15 @@ class WorkspaceOperatorRuntime:
                 continue
             refreshed = replace(
                 job,
-                status="stopped" if job.stop_requested_at else "unknown",
+                status="stopped" if job.stop_requested_at else "stale",
                 finished_at=job.finished_at or self._now(),
                 verification_error=job.verification_error or job.error,
-                error=job.error or "process not running",
+                error=job.error or "process not running after restart/reconcile",
             )
             self._write_job(refreshed)
+            reconciled.append(refreshed)
+            self._schedule_reconcile_callback(refreshed)
+        return reconciled
 
     @staticmethod
     def _is_process_alive(pid: int) -> bool:
@@ -361,3 +376,12 @@ class WorkspaceOperatorRuntime:
             encoding="utf-8",
         )
         temp_path.replace(path)
+
+    def _schedule_reconcile_callback(self, job: OperatorJob) -> None:
+        if not self._reconcile_callback:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._reconcile_callback(job))

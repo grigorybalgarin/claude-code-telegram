@@ -90,6 +90,29 @@ class FeatureRegistry:
             self.features["workspace_operator"] = WorkspaceOperatorRuntime(
                 state_root=state_root
             )
+            if self.storage and hasattr(self.storage, "operations"):
+                async def _persist_reconciled_job(job: Any) -> None:
+                    await self.storage.operations.save(
+                        workspace_path=str(job.workspace_root),
+                        operation_type="operator_job_stale",
+                        success=False,
+                        correlation_id=job.job_id,
+                        details={
+                            "job_id": job.job_id,
+                            "action_key": job.action_key,
+                            "title": job.title,
+                            "status": job.status,
+                            "previous_pid": job.pid,
+                            "verification_status": job.verification_status,
+                            "error": job.error,
+                            "finished_at": job.finished_at,
+                            "log_path": str(job.log_path),
+                        },
+                    )
+
+                self.features["workspace_operator"].set_reconcile_callback(
+                    _persist_reconciled_job
+                )
             logger.info(
                 "Workspace operator runtime enabled",
                 state_root=str(state_root),

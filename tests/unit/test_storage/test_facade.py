@@ -260,6 +260,9 @@ class TestStorageFacade:
         # Cleanup old data
         result = await storage.cleanup_old_data(days=30)
         assert result["sessions_cleaned"] == 1
+        assert "operations_cleaned" in result
+        assert "incidents_cleaned" in result
+        assert "improvements_cleaned" in result
 
         # Verify session is inactive
         session = await storage.sessions.get_session("cleanup-session")

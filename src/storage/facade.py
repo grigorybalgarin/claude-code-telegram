@@ -22,6 +22,8 @@ from .repositories import (
     AnalyticsRepository,
     AuditLogRepository,
     CostTrackingRepository,
+    ImprovementBacklogRepository,
+    IncidentRepository,
     MessageRepository,
     OperationsRepository,
     ProjectThreadRepository,
@@ -48,6 +50,8 @@ class Storage:
         self.costs = CostTrackingRepository(self.db_manager)
         self.analytics = AnalyticsRepository(self.db_manager)
         self.operations = OperationsRepository(self.db_manager)
+        self.incidents = IncidentRepository(self.db_manager)
+        self.improvements = ImprovementBacklogRepository(self.db_manager)
 
     async def initialize(self):
         """Initialize storage system."""
@@ -278,16 +282,22 @@ class Storage:
 
         sessions_cleaned = await self.sessions.cleanup_old_sessions(days)
         operations_cleaned = await self.operations.cleanup_old_operations(days)
+        incidents_cleaned = await self.incidents.cleanup_old_incidents(days)
+        improvements_cleaned = await self.improvements.cleanup_old_improvements(days)
 
         logger.info(
             "Data cleanup complete",
             sessions_cleaned=sessions_cleaned,
             operations_cleaned=operations_cleaned,
+            incidents_cleaned=incidents_cleaned,
+            improvements_cleaned=improvements_cleaned,
         )
 
         return {
             "sessions_cleaned": sessions_cleaned,
             "operations_cleaned": operations_cleaned,
+            "incidents_cleaned": incidents_cleaned,
+            "improvements_cleaned": improvements_cleaned,
         }
 
     async def get_user_dashboard(self, user_id: int) -> Dict[str, Any]:

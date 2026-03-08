@@ -1019,3 +1019,240 @@ class OperationsRepository:
                 )
             rows = await cursor.fetchall()
             return {row["operation_type"]: row["cnt"] for row in rows}
+
+
+class IncidentRepository:
+    """Persistent incident lifecycle data."""
+
+    _ACTIVE_STATES = ("detected", "investigating", "healing")
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+
+    @staticmethod
+    def _serialize_timestamp(value: Optional[float]) -> Optional[str]:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value, UTC).isoformat()
+
+    async def upsert(
+        self,
+        *,
+        incident_id: str,
+        workspace_path: str,
+        state: str,
+        severity: str,
+        dedup_key: Optional[str] = None,
+        detected_at: Optional[float] = None,
+        healed_at: Optional[float] = None,
+        heal_attempts: int = 0,
+        suppressed_count: int = 0,
+        details: Optional[Dict] = None,
+    ) -> None:
+        """Insert or update a persisted incident."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO incidents
+                (
+                    incident_id, workspace_path, state, severity, dedup_key,
+                    detected_at, healed_at, heal_attempts, suppressed_count, details
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(incident_id) DO UPDATE SET
+                    state = excluded.state,
+                    severity = excluded.severity,
+                    dedup_key = excluded.dedup_key,
+                    detected_at = COALESCE(excluded.detected_at, incidents.detected_at),
+                    healed_at = excluded.healed_at,
+                    heal_attempts = excluded.heal_attempts,
+                    suppressed_count = excluded.suppressed_count,
+                    details = excluded.details,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    incident_id,
+                    workspace_path,
+                    state,
+                    severity,
+                    dedup_key,
+                    self._serialize_timestamp(detected_at),
+                    self._serialize_timestamp(healed_at),
+                    heal_attempts,
+                    suppressed_count,
+                    json.dumps(details) if details else None,
+                ),
+            )
+            await conn.commit()
+
+    async def list_active(
+        self,
+        workspace_paths: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        """Return active incidents, optionally filtered by workspace."""
+        async with self.db.get_connection() as conn:
+            params: List[object] = list(self._ACTIVE_STATES)
+            query = (
+                """
+                SELECT incident_id, workspace_path, state, severity, dedup_key,
+                       detected_at, healed_at, heal_attempts, suppressed_count,
+                       details, created_at, updated_at
+                FROM incidents
+                WHERE state IN (?, ?, ?)
+                """
+            )
+            if workspace_paths:
+                placeholders = ",".join("?" for _ in workspace_paths)
+                query += f" AND workspace_path IN ({placeholders})"
+                params.extend(workspace_paths)
+            query += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            return [self._decode_row(row) for row in rows]
+
+    async def cleanup_old_incidents(self, retention_days: int = 30) -> int:
+        """Delete resolved incidents older than retention_days."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                DELETE FROM incidents
+                WHERE state NOT IN (?, ?, ?)
+                  AND updated_at < datetime('now', ?)
+                """,
+                (*self._ACTIVE_STATES, f"-{retention_days} days"),
+            )
+            await conn.commit()
+            return cursor.rowcount or 0
+
+    async def count_incidents(self) -> int:
+        """Return total number of persisted incidents."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM incidents")
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    @staticmethod
+    def _decode_row(row: object) -> Dict:
+        result = dict(row)
+        for key in ("detected_at", "healed_at"):
+            if isinstance(result.get(key), datetime):
+                result[key] = result[key].timestamp()
+        if result.get("details"):
+            try:
+                result["details"] = json.loads(result["details"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return result
+
+
+class ImprovementBacklogRepository:
+    """Persistent improvement backlog storage."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+
+    async def upsert(
+        self,
+        *,
+        improvement_id: str,
+        improvement_type: str,
+        description: str,
+        category: Optional[str] = None,
+        confidence: float = 0.5,
+        priority: int = 0,
+        safe_to_auto_apply: bool = False,
+        status: str = "pending",
+        details: Optional[Dict] = None,
+    ) -> None:
+        """Insert or update an improvement candidate."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO improvement_backlog
+                (
+                    improvement_id, improvement_type, description, category,
+                    confidence, priority, safe_to_auto_apply, status, details
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(improvement_id) DO UPDATE SET
+                    improvement_type = excluded.improvement_type,
+                    description = excluded.description,
+                    category = excluded.category,
+                    confidence = excluded.confidence,
+                    priority = excluded.priority,
+                    safe_to_auto_apply = excluded.safe_to_auto_apply,
+                    status = excluded.status,
+                    details = excluded.details
+                """,
+                (
+                    improvement_id,
+                    improvement_type,
+                    description,
+                    category,
+                    confidence,
+                    priority,
+                    int(safe_to_auto_apply),
+                    status,
+                    json.dumps(details) if details else None,
+                ),
+            )
+            await conn.commit()
+
+    async def list_pending(self, limit: int = 20) -> List[Dict]:
+        """Return pending improvements ordered by priority."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT improvement_id, improvement_type, description, category,
+                       confidence, priority, safe_to_auto_apply, status, details,
+                       created_at
+                FROM improvement_backlog
+                WHERE status = 'pending'
+                ORDER BY priority DESC, confidence DESC, created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [self._decode_row(row) for row in rows]
+
+    async def cleanup_old_improvements(self, retention_days: int = 30) -> int:
+        """Delete non-pending backlog items older than retention_days."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                DELETE FROM improvement_backlog
+                WHERE status != 'pending'
+                  AND created_at < datetime('now', ?)
+                """,
+                (f"-{retention_days} days",),
+            )
+            await conn.commit()
+            return cursor.rowcount or 0
+
+    async def count_improvements(self, status: Optional[str] = None) -> int:
+        """Return number of improvement candidates."""
+        async with self.db.get_connection() as conn:
+            if status:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM improvement_backlog WHERE status = ?",
+                    (status,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM improvement_backlog"
+                )
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    @staticmethod
+    def _decode_row(row: object) -> Dict:
+        result = dict(row)
+        if result.get("details"):
+            try:
+                result["details"] = json.loads(result["details"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return result

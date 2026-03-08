@@ -17,6 +17,8 @@ from src.storage.models import (
 from src.storage.repositories import (
     AnalyticsRepository,
     AuditLogRepository,
+    ImprovementBacklogRepository,
+    IncidentRepository,
     MessageRepository,
     ProjectThreadRepository,
     SessionRepository,
@@ -76,6 +78,18 @@ async def analytics_repo(db_manager):
 async def project_thread_repo(db_manager):
     """Create project thread repository."""
     return ProjectThreadRepository(db_manager)
+
+
+@pytest.fixture
+async def incident_repo(db_manager):
+    """Create incident repository."""
+    return IncidentRepository(db_manager)
+
+
+@pytest.fixture
+async def improvement_repo(db_manager):
+    """Create improvement backlog repository."""
+    return ImprovementBacklogRepository(db_manager)
 
 
 class TestUserRepository:
@@ -535,3 +549,120 @@ class TestAnalyticsRepository:
         assert stats["overall"]["total_sessions"] >= 1
         assert stats["overall"]["total_messages"] >= 3
         assert stats["overall"]["total_cost"] >= 0.3
+
+
+class TestIncidentRepository:
+    """Test persistent incident lifecycle storage."""
+
+    async def test_upsert_and_list_active(self, incident_repo):
+        """Active incidents should be queryable by workspace."""
+        await incident_repo.upsert(
+            incident_id="inc-1",
+            workspace_path="/srv/app",
+            state="detected",
+            severity="warning",
+            dedup_key="/srv/app:service:health",
+            detected_at=123.0,
+            heal_attempts=1,
+            details={"last_error": "Connection refused"},
+        )
+
+        rows = await incident_repo.list_active(["/srv/app"])
+
+        assert len(rows) == 1
+        assert rows[0]["incident_id"] == "inc-1"
+        assert rows[0]["state"] == "detected"
+        assert rows[0]["details"]["last_error"] == "Connection refused"
+
+    async def test_cleanup_old_incidents(self, incident_repo, db_manager):
+        """Resolved incidents older than retention window are removed."""
+        await incident_repo.upsert(
+            incident_id="old-inc",
+            workspace_path="/srv/app",
+            state="healed",
+            severity="warning",
+            detected_at=100.0,
+            healed_at=120.0,
+        )
+        await incident_repo.upsert(
+            incident_id="active-inc",
+            workspace_path="/srv/app",
+            state="detected",
+            severity="critical",
+            detected_at=200.0,
+        )
+
+        async with db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE incidents
+                SET updated_at = datetime('now', '-45 days')
+                WHERE incident_id = ?
+                """,
+                ("old-inc",),
+            )
+            await conn.commit()
+
+        cleaned = await incident_repo.cleanup_old_incidents(retention_days=30)
+
+        assert cleaned == 1
+        assert await incident_repo.count_incidents() == 1
+        active = await incident_repo.list_active(["/srv/app"])
+        assert len(active) == 1
+        assert active[0]["incident_id"] == "active-inc"
+
+
+class TestImprovementBacklogRepository:
+    """Test persistent self-improvement backlog storage."""
+
+    async def test_upsert_and_list_pending(self, improvement_repo):
+        """Pending improvements should be ordered by priority."""
+        await improvement_repo.upsert(
+            improvement_id="imp-1",
+            improvement_type="runbook_hint",
+            description="Add runbook hint for repeated service failures",
+            category="service",
+            confidence=0.8,
+            priority=5,
+            safe_to_auto_apply=False,
+            status="pending",
+            details={"source_incidents": ["inc-1"]},
+        )
+
+        rows = await improvement_repo.list_pending()
+
+        assert len(rows) == 1
+        assert rows[0]["improvement_id"] == "imp-1"
+        assert rows[0]["details"]["source_incidents"] == ["inc-1"]
+
+    async def test_cleanup_old_improvements(self, improvement_repo, db_manager):
+        """Old non-pending improvements are removed, pending ones stay."""
+        await improvement_repo.upsert(
+            improvement_id="imp-old",
+            improvement_type="classifier_rule",
+            description="Tweak classifier confidence",
+            status="applied",
+        )
+        await improvement_repo.upsert(
+            improvement_id="imp-pending",
+            improvement_type="test_gap",
+            description="Add stale recovery tests",
+            status="pending",
+        )
+
+        async with db_manager.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE improvement_backlog
+                SET created_at = datetime('now', '-45 days')
+                WHERE improvement_id = ?
+                """,
+                ("imp-old",),
+            )
+            await conn.commit()
+
+        cleaned = await improvement_repo.cleanup_old_improvements(retention_days=30)
+
+        assert cleaned == 1
+        assert await improvement_repo.count_improvements() == 1
+        assert await improvement_repo.count_improvements(status="pending") == 1

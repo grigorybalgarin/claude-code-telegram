@@ -114,6 +114,12 @@ class WorkspaceMonitor:
         self._on_save_operation: Optional[
             Callable[..., Coroutine[Any, Any, None]]
         ] = None
+        self._on_save_incident: Optional[
+            Callable[[Incident], Coroutine[Any, Any, None]]
+        ] = None
+        self._load_active_incidents: Optional[
+            Callable[[List[str]], Coroutine[Any, Any, List[Dict[str, Any]]]]
+        ] = None
 
         # Profiles to monitor (set externally)
         self._profiles: List[Any] = []
@@ -130,9 +136,22 @@ class WorkspaceMonitor:
     ) -> None:
         self._on_save_operation = callback
 
+    def set_incident_callback(
+        self,
+        callback: Callable[[Incident], Coroutine[Any, Any, None]],
+    ) -> None:
+        self._on_save_incident = callback
+
+    def set_active_incidents_loader(
+        self,
+        callback: Callable[[List[str]], Coroutine[Any, Any, List[Dict[str, Any]]]],
+    ) -> None:
+        self._load_active_incidents = callback
+
     async def start(self) -> None:
         if self._running:
             return
+        await self._restore_active_incidents()
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info("Workspace monitor started", profiles=len(self._profiles))
@@ -218,6 +237,69 @@ class WorkspaceMonitor:
                 await self._on_new_failure(health, profile, report)
             elif health.active_incident and health.active_incident.is_active:
                 await self._try_auto_heal(health, profile)
+
+    async def _restore_active_incidents(self) -> None:
+        """Restore active incidents after bot restart."""
+        if not self._load_active_incidents or not self._profiles:
+            return
+
+        workspace_paths = [
+            str(getattr(profile, "root_path", ""))
+            for profile in self._profiles
+            if getattr(profile, "root_path", None)
+        ]
+        if not workspace_paths:
+            return
+
+        try:
+            rows = await self._load_active_incidents(workspace_paths)
+        except Exception:
+            logger.warning("Failed to restore active incidents from storage")
+            return
+
+        restored = 0
+        for row in rows:
+            workspace_path = row.get("workspace_path")
+            state_value = row.get("state")
+            severity_value = row.get("severity")
+            if not workspace_path or not state_value or not severity_value:
+                continue
+            try:
+                state = IncidentState(state_value)
+                severity = Severity(severity_value)
+            except ValueError:
+                continue
+            details = row.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+            incident = Incident(
+                incident_id=str(row["incident_id"]),
+                workspace_path=str(workspace_path),
+                state=state,
+                severity=severity,
+                detected_at=float(row.get("detected_at") or 0.0),
+                healed_at=float(row["healed_at"]) if row.get("healed_at") else None,
+                heal_attempts=int(row.get("heal_attempts") or 0),
+                dedup_key=str(row.get("dedup_key") or ""),
+                suppressed_count=int(row.get("suppressed_count") or 0),
+                last_error=str(details.get("last_error") or ""),
+            )
+            health = self._health.setdefault(
+                str(workspace_path),
+                WorkspaceHealth(
+                    workspace_path=str(workspace_path),
+                    healthy=False,
+                    consecutive_failures=max(1, incident.heal_attempts or 1),
+                ),
+            )
+            health.healthy = False
+            health.active_incident = incident
+            if incident.dedup_key:
+                self._recent_dedup_keys[incident.dedup_key] = time.time()
+            restored += 1
+
+        if restored:
+            logger.info("Restored active incidents", count=restored)
 
     # ------------------------------------------------------------------
     # State transitions
@@ -485,6 +567,14 @@ class WorkspaceMonitor:
             except Exception:
                 logger.warning(
                     "Failed to persist incident",
+                    incident_id=incident.incident_id,
+                )
+        if self._on_save_incident:
+            try:
+                await self._on_save_incident(incident)
+            except Exception:
+                logger.warning(
+                    "Failed to persist incident state",
                     incident_id=incident.incident_id,
                 )
 
