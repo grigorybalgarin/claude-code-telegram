@@ -1671,3 +1671,659 @@ class TestMonitoringIncidentLifecycle:
             i.state in {IncidentState.DETECTED, IncidentState.HEALING}
             for i in incidents
         )
+
+
+# =============================================================================
+# Remediation Planner
+# =============================================================================
+
+
+class TestRemediationPlanner:
+    """Tests for runbook-driven remediation planning."""
+
+    def test_code_problem_safe_auto_resolve(self):
+        """Code problems are safe to auto-resolve by default."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка в коде",
+            failed_step_label="lint",
+            short_cause="SyntaxError",
+            safe_to_autofix=True,
+            confidence=0.8,
+        )
+        plan = build_remediation_plan(diag)
+        assert plan.safe_auto_resolve is True
+        assert plan.caution_level == CautionLevel.NONE
+
+    def test_service_problem_high_caution(self):
+        """Service problems get high caution by default."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.SERVICE,
+            label="Проблема сервиса",
+            failed_step_label="health",
+            short_cause="Connection refused",
+            safe_to_autofix=False,
+            confidence=0.7,
+        )
+        plan = build_remediation_plan(diag)
+        assert plan.safe_auto_resolve is False
+        assert plan.caution_level == CautionLevel.HIGH
+
+    def test_environment_problem_blocks_auto(self):
+        """Environment problems block auto-resolve."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.ENVIRONMENT,
+            label="Проблема окружения",
+            failed_step_label="disk",
+            short_cause="no space left",
+            safe_to_autofix=False,
+            confidence=0.9,
+        )
+        plan = build_remediation_plan(diag)
+        assert plan.safe_auto_resolve is False
+        assert plan.caution_level == CautionLevel.BLOCK
+
+    def test_runbook_hint_in_framing(self):
+        """Runbook hint appears in resolve prompt framing."""
+        from src.bot.agentic.remediation_planner import build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка в коде",
+            failed_step_label="test",
+            short_cause="FAILED",
+            safe_to_autofix=True,
+            confidence=0.8,
+        )
+        hints = {"code": "Запусти make test локально перед деплоем"}
+        plan = build_remediation_plan(diag, runbook_hints=hints)
+        assert "make test" in plan.resolve_framing
+        assert plan.runbook_note == "Запусти make test локально перед деплоем"
+
+    def test_caution_keyword_raises_level(self):
+        """Runbook hints with caution keywords raise the caution level."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка",
+            failed_step_label="test",
+            short_cause="Error",
+            safe_to_autofix=True,
+            confidence=0.8,
+        )
+        hints = {"code": "Осторожно! Проверь вручную перед правкой"}
+        plan = build_remediation_plan(diag, runbook_hints=hints)
+        assert plan.caution_level.value in ("high", "block")
+        assert plan.safe_auto_resolve is False
+
+    def test_low_confidence_raises_caution(self):
+        """Low confidence raises caution level."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка",
+            failed_step_label="test",
+            short_cause="Error",
+            safe_to_autofix=True,
+            confidence=0.3,
+        )
+        plan = build_remediation_plan(diag)
+        assert plan.caution_level != CautionLevel.NONE
+        assert plan.confidence_note != ""
+
+    def test_critical_step_raises_caution(self):
+        """Critical step raises caution level from NONE to LOW."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка",
+            failed_step_label="health",
+            short_cause="Error",
+            safe_to_autofix=True,
+            confidence=0.8,
+            is_critical_step=True,
+        )
+        plan = build_remediation_plan(diag)
+        assert plan.caution_level == CautionLevel.LOW
+        assert "критичный" in plan.resolve_framing.lower()
+
+    def test_runbook_hint_from_step_label(self):
+        """Runbook hint matched by step label when type doesn't match."""
+        from src.bot.agentic.remediation_planner import build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.UNKNOWN,
+            label="Неизвестная проблема",
+            failed_step_label="health",
+            short_cause="exit 1",
+            safe_to_autofix=False,
+        )
+        hints = {"health": "Запусти systemctl status"}
+        plan = build_remediation_plan(diag, runbook_hints=hints)
+        assert plan.runbook_note == "Запусти systemctl status"
+
+    def test_safe_keyword_lowers_caution(self):
+        """Runbook hints with safe keywords can lower caution."""
+        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.SERVICE,
+            label="Проблема сервиса",
+            failed_step_label="health",
+            short_cause="inactive",
+            safe_to_autofix=False,
+            confidence=0.8,
+        )
+        hints = {"service": "Просто перезапусти: systemctl restart"}
+        plan = build_remediation_plan(diag, runbook_hints=hints)
+        # HIGH (service default) lowered to MODERATE by safe keyword
+        assert plan.caution_level == CautionLevel.MODERATE
+
+
+# =============================================================================
+# Summary Formatter
+# =============================================================================
+
+
+class TestSummaryFormatter:
+    """Tests for unified summary formatting."""
+
+    def test_verify_success_short(self):
+        """Success summaries are short."""
+        from src.bot.agentic.summary_formatter import format_verify_summary
+
+        step = VerifyStep(label="test", command="pytest")
+        result = ShellActionResult(
+            command="pytest", returncode=0,
+            success=True, timed_out=False,
+            stdout_text="5 passed", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)],
+            failed_step=None,
+            logs_result=None,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.UNKNOWN,
+            label="", failed_step_label="",
+            short_cause="", safe_to_autofix=False,
+        )
+        text = format_verify_summary(report, diag, "/test")
+        assert "Все проверки пройдены" in text
+        assert len(text.splitlines()) <= 3
+
+    def test_verify_failure_has_structure(self):
+        """Failure summary has all required sections."""
+        from src.bot.agentic.summary_formatter import format_verify_summary
+
+        step = VerifyStep(label="lint", command="flake8")
+        result = ShellActionResult(
+            command="flake8", returncode=1,
+            success=False, timed_out=False,
+            stdout_text="E501: line too long", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)],
+            failed_step=step, logs_result=None,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка в коде",
+            failed_step_label="lint",
+            short_cause="E501: line too long",
+            safe_to_autofix=True,
+            confidence=0.8,
+        )
+        text = format_verify_summary(report, diag, "/test")
+        assert "Что не так" in text
+        assert "Причина" in text
+        assert "Прогресс" in text
+        assert "Следующий шаг" in text
+
+    def test_verify_failure_with_plan_shows_confidence(self):
+        """Low confidence plan adds confidence note."""
+        from src.bot.agentic.remediation_planner import build_remediation_plan
+        from src.bot.agentic.summary_formatter import format_verify_summary
+
+        step = VerifyStep(label="test", command="pytest")
+        result = ShellActionResult(
+            command="pytest", returncode=1,
+            success=False, timed_out=False,
+            stdout_text="Error", stderr_text="",
+        )
+        report = VerifyReport(
+            results=[(step, result)],
+            failed_step=step, logs_result=None,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.UNKNOWN,
+            label="Неизвестная проблема",
+            failed_step_label="test",
+            short_cause="Error",
+            safe_to_autofix=False,
+            confidence=0.2,
+        )
+        plan = build_remediation_plan(diag)
+        text = format_verify_summary(report, diag, "/test", plan=plan)
+        assert "Точность" in text
+
+    def test_resolve_success_summary(self):
+        """Resolve success summary is concise."""
+        from src.bot.agentic.summary_formatter import format_resolve_summary
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка в коде",
+            failed_step_label="test",
+            short_cause="AssertionError",
+            safe_to_autofix=True,
+        )
+        text = format_resolve_summary(diag, True, 1, False, None, 3, 3)
+        assert "Исправлено" in text
+        assert "Что было" in text
+        assert "Результат" in text
+
+    def test_resolve_rollback_summary(self):
+        """Resolve rollback summary mentions rollback."""
+        from src.bot.agentic.summary_formatter import format_resolve_summary
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Ошибка в коде",
+            failed_step_label="test",
+            short_cause="Error",
+            safe_to_autofix=True,
+        )
+        text = format_resolve_summary(diag, False, 2, True, None, 1, 3)
+        assert "Откат" in text
+        assert "Осталось" in text
+
+    def test_service_success_short(self):
+        """Service success summary is short."""
+        from src.bot.agentic.summary_formatter import format_service_summary
+
+        result = ShellActionResult(
+            command="systemctl restart", returncode=0,
+            success=True, timed_out=False,
+            stdout_text="", stderr_text="",
+        )
+        text = format_service_summary("TestApp", "restart", True, result, True)
+        assert "выполнено" in text
+        assert len(text.splitlines()) <= 2
+
+    def test_service_failure_informative(self):
+        """Service failure summary explains what went wrong."""
+        from src.bot.agentic.summary_formatter import format_service_summary
+
+        result = ShellActionResult(
+            command="systemctl restart", returncode=1,
+            success=False, timed_out=False,
+            stdout_text="", stderr_text="",
+            error="permission denied",
+        )
+        text = format_service_summary("TestApp", "restart", False, result, False)
+        assert "не удалось" in text
+        assert "permission denied" in text
+
+    def test_diagnosis_summary_with_plan(self):
+        """Diagnosis summary includes caution from plan."""
+        from src.bot.agentic.remediation_planner import build_remediation_plan
+        from src.bot.agentic.summary_formatter import format_diagnosis_summary
+
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.ENVIRONMENT,
+            label="Проблема окружения",
+            failed_step_label="disk",
+            short_cause="no space left",
+            safe_to_autofix=False,
+            confidence=0.9,
+        )
+        plan = build_remediation_plan(diag)
+        text = format_diagnosis_summary(diag, plan)
+        assert "осторожность" in text.lower()
+
+
+# =============================================================================
+# Enhanced Profile Validation
+# =============================================================================
+
+
+class TestEnhancedProfileValidation:
+    """Tests for stronger policy/profile validation."""
+
+    def _make_pa(self, overrides):
+        from src.bot.features.project_automation import ProjectAutomationManager
+
+        pa = ProjectAutomationManager.__new__(ProjectAutomationManager)
+        pa._workspace_overrides = overrides
+        return pa
+
+    def test_monitoring_without_verify_path(self):
+        """Warns when monitoring enabled but no verify/health commands."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(monitoring_interval_seconds=300),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("мониторинг" in w for w in warnings)
+
+    def test_critical_step_unknown_command(self):
+        """Warns when critical step doesn't match any command."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {"test": "pytest", "lint": "flake8"},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(
+                    critical_steps=("health", "nonexistent"),
+                ),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("nonexistent" in w for w in warnings)
+            assert any("health" in w for w in warnings)
+
+    def test_runbook_invalid_key(self):
+        """Warns when runbook key is not a valid problem type or command."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {"test": "pytest"},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(
+                    runbook_hints={"invalid_key": "some hint"},
+                ),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("invalid_key" in w for w in warnings)
+
+    def test_runbook_empty_hint(self):
+        """Warns when runbook hint value is empty."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(
+                    runbook_hints={"code": "  "},
+                ),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("пуста" in w for w in warnings)
+
+    def test_empty_operations_config_warning(self):
+        """Warns about empty operations config."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("пустой" in w for w in warnings)
+
+    def test_duplicate_alias_is_error(self):
+        """Duplicate aliases across profiles are errors."""
+        pa = self._make_pa({
+            "project1": {
+                "display_name": "P1",
+                "aliases": ("bot",),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+            },
+            "project2": {
+                "display_name": "P2",
+                "aliases": ("bot",),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+            },
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "project1").mkdir()
+            (root / "project2").mkdir()
+            warnings = pa.validate_profiles(root)
+            errors = [w for w in warnings if w.startswith("[error]")]
+            assert any("bot" in w for w in errors)
+
+    def test_verify_after_restart_without_health(self):
+        """Warns about verify_after_restart without health command."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(
+                    self_heal_restart=True,
+                    self_heal_verify_after_restart=True,
+                ),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            assert any("verify_after_restart" in w for w in warnings)
+
+    def test_valid_runbook_key_no_warning(self):
+        """Valid runbook keys (problem types + commands) produce no warnings."""
+        from src.bot.features.project_automation import OperationConfig
+
+        pa = self._make_pa({
+            "test_project": {
+                "display_name": "Test",
+                "aliases": (),
+                "operator_notes": "",
+                "commands": {"health": "echo ok"},
+                "services": (),
+                "sort_priority": 0,
+                "operations": OperationConfig(
+                    runbook_hints={
+                        "service": "check logs",
+                        "health": "run systemctl status",
+                    },
+                ),
+            }
+        })
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "test_project").mkdir()
+            warnings = pa.validate_profiles(root)
+            runbook_warns = [w for w in warnings if "runbook" in w]
+            assert len(runbook_warns) == 0
+
+
+# =============================================================================
+# Suggested Next Action with Diagnosis
+# =============================================================================
+
+
+class TestSuggestedNextAction:
+    """Tests for smarter suggested next action."""
+
+    def test_low_confidence_suggests_manual(self):
+        """Low confidence diagnosis suggests manual check instead of resolve."""
+        from src.bot.agentic.digest import suggest_next_action
+        from src.bot.agentic.ops_model import OperationalSnapshot, SuggestedActionType
+
+        snap = OperationalSnapshot(
+            workspace_path="/test",
+            display_name="Test",
+            last_verify_success=False,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.UNKNOWN,
+            label="Неизвестная",
+            failed_step_label="test",
+            short_cause="",
+            safe_to_autofix=False,
+            confidence=0.2,
+        )
+        action = suggest_next_action(snap, diagnosis=diag)
+        assert action is not None
+        assert action.action_type == SuggestedActionType.MANUAL_CHECK
+
+    def test_service_problem_suggests_manual(self):
+        """Service problems suggest manual check."""
+        from src.bot.agentic.digest import suggest_next_action
+        from src.bot.agentic.ops_model import OperationalSnapshot, SuggestedActionType
+
+        snap = OperationalSnapshot(
+            workspace_path="/test",
+            display_name="Test",
+            last_verify_success=False,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.SERVICE,
+            label="Сервис",
+            failed_step_label="health",
+            short_cause="down",
+            safe_to_autofix=False,
+            confidence=0.7,
+        )
+        action = suggest_next_action(snap, diagnosis=diag)
+        assert action is not None
+        assert action.action_type == SuggestedActionType.MANUAL_CHECK
+
+    def test_code_problem_suggests_resolve(self):
+        """Code problems still suggest resolve."""
+        from src.bot.agentic.digest import suggest_next_action
+        from src.bot.agentic.ops_model import OperationalSnapshot, SuggestedActionType
+
+        snap = OperationalSnapshot(
+            workspace_path="/test",
+            display_name="Test",
+            last_verify_success=False,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.CODE,
+            label="Код",
+            failed_step_label="lint",
+            short_cause="E501",
+            safe_to_autofix=True,
+            confidence=0.9,
+        )
+        action = suggest_next_action(snap, diagnosis=diag)
+        assert action is not None
+        assert action.action_type == SuggestedActionType.RESOLVE
+
+    def test_plan_blocks_auto_resolve(self):
+        """Remediation plan blocking auto-resolve suggests manual."""
+        from src.bot.agentic.digest import suggest_next_action
+        from src.bot.agentic.ops_model import OperationalSnapshot, SuggestedActionType
+        from src.bot.agentic.remediation_planner import build_remediation_plan
+
+        snap = OperationalSnapshot(
+            workspace_path="/test",
+            display_name="Test",
+            last_verify_success=False,
+        )
+        diag = ProblemDiagnosis(
+            problem_type=ProblemType.ENVIRONMENT,
+            label="Окружение",
+            failed_step_label="disk",
+            short_cause="no space",
+            safe_to_autofix=False,
+            confidence=0.9,
+        )
+        plan = build_remediation_plan(diag)
+        action = suggest_next_action(snap, diagnosis=diag, remediation_plan=plan)
+        assert action is not None
+        assert action.action_type == SuggestedActionType.MANUAL_CHECK
+
+    def test_everything_ok(self):
+        """All ok suggests nothing to do."""
+        from src.bot.agentic.digest import suggest_next_action
+        from src.bot.agentic.ops_model import OperationalSnapshot, SuggestedActionType
+
+        snap = OperationalSnapshot(
+            workspace_path="/test",
+            display_name="Test",
+            last_verify_success=True,
+            service_healthy=True,
+        )
+        action = suggest_next_action(snap)
+        assert action is not None
+        assert action.action_type == SuggestedActionType.NONE

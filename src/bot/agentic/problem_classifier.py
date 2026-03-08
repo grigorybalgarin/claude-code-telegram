@@ -4,9 +4,14 @@ Used by verify and resolve flows to produce human-readable summaries
 that answer: what's wrong, what was done, what's ok now, what remains.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .remediation_planner import RemediationPlan  # noqa: F401
 
 from .context import ShellActionResult, VerifyReport, VerifyStep
 
@@ -249,45 +254,15 @@ def format_verify_summary(
     report: VerifyReport,
     diagnosis: ProblemDiagnosis,
     rel_path: str,
+    plan: Optional["RemediationPlan"] = None,
 ) -> str:
-    """Format a human-readable verify summary answering the 4 questions."""
-    total = len(report.results)
-    passed = sum(1 for _, r in report.results if r.success)
+    """Format a human-readable verify summary.
 
-    if report.success:
-        return (
-            f"Все проверки пройдены ({passed}/{total})\n"
-            f"Проект: {rel_path}"
-        )
+    Delegates to summary_formatter for unified output structure.
+    """
+    from .summary_formatter import format_verify_summary as _fmt
 
-    critical_marker = " [критичный]" if diagnosis.is_critical_step else ""
-    lines = [
-        f"<b>{diagnosis.label}</b>",
-        "",
-        f"<b>Что не так:</b> шаг '{diagnosis.failed_step_label}'{critical_marker} не прошел",
-    ]
-    if diagnosis.short_cause:
-        lines.append(f"<b>Причина:</b> {diagnosis.short_cause}")
-    lines.append(f"<b>Прогресс:</b> {passed}/{total} шагов пройдено")
-
-    if diagnosis.safe_to_autofix:
-        lines.append(
-            "\n<b>Следующий шаг:</b> нажми «Разберись» для автоматического исправления"
-        )
-    elif diagnosis.problem_type == ProblemType.ENVIRONMENT:
-        lines.append(
-            "\n<b>Внимание:</b> проблема в серверном окружении, "
-            "автоматическое исправление может быть рискованным"
-        )
-    elif diagnosis.problem_type == ProblemType.SERVICE:
-        lines.append(
-            "\n<b>Следующий шаг:</b> проверь логи сервиса и его состояние"
-        )
-
-    if diagnosis.runbook_hint:
-        lines.append(f"\n💡 <b>Подсказка:</b> {diagnosis.runbook_hint}")
-
-    return "\n".join(lines)
+    return _fmt(report, diagnosis, rel_path, plan=plan)
 
 
 def format_resolve_summary(
@@ -298,44 +273,15 @@ def format_resolve_summary(
     error: Optional[str],
     passed: int,
     total: int,
+    plan: Optional["RemediationPlan"] = None,
 ) -> str:
-    """Format a human-readable resolve summary answering the 4 questions."""
-    lines: List[str] = []
+    """Format a human-readable resolve summary.
 
-    if success:
-        lines.append(f"<b>Исправлено</b> (попыток: {attempts})")
-        lines.append("")
-        lines.append(f"<b>Что было:</b> {diagnosis.label} "
-                      f"на шаге '{diagnosis.failed_step_label}'")
-        if diagnosis.short_cause:
-            lines.append(f"<b>Причина:</b> {diagnosis.short_cause}")
-        lines.append(f"<b>Результат:</b> все проверки пройдены ({passed}/{total})")
-    elif rollback:
-        lines.append(f"<b>Откат выполнен</b> (попыток: {attempts})")
-        lines.append("")
-        lines.append(f"<b>Что было:</b> {diagnosis.label} "
-                      f"на шаге '{diagnosis.failed_step_label}'")
-        lines.append("<b>Что сделано:</b> автоматическое исправление не помогло, "
-                      "изменения откачены")
-        lines.append(f"<b>Осталось:</b> проблема '{diagnosis.failed_step_label}' "
-                      "все еще требует внимания")
-    elif error:
-        lines.append("<b>Не удалось разобраться</b>")
-        lines.append("")
-        lines.append(f"<b>Ошибка:</b> {error}")
-        if diagnosis.failed_step_label:
-            lines.append(f"<b>Шаг:</b> {diagnosis.failed_step_label}")
-    else:
-        lines.append(f"<b>Не добил</b> (попыток: {attempts})")
-        lines.append("")
-        lines.append(f"<b>Что было:</b> {diagnosis.label} "
-                      f"на шаге '{diagnosis.failed_step_label}'")
-        lines.append("<b>Что сделано:</b> Claude попытался исправить, "
-                      "но проверка все еще не проходит")
-        lines.append(f"<b>Прогресс:</b> {passed}/{total} шагов проходят")
-        lines.append("<b>Осталось:</b> требуется ручной разбор")
+    Delegates to summary_formatter for unified output structure.
+    """
+    from .summary_formatter import format_resolve_summary as _fmt
 
-    return "\n".join(lines)
+    return _fmt(diagnosis, success, attempts, rollback, error, passed, total, plan=plan)
 
 
 def format_service_summary(
@@ -346,31 +292,13 @@ def format_service_summary(
     checks_ok: bool,
     checks: Optional[list] = None,
 ) -> str:
-    """Format a human-readable service action summary."""
-    if success:
-        lines = [
-            f"<b>{service_name}: {action} выполнено</b>",
-        ]
-        if checks:
-            passed = sum(1 for _, r in checks if r.success)
-            lines.append(f"Проверки: {passed}/{len(checks)} ок")
-        return "\n".join(lines)
+    """Format a human-readable service action summary.
 
-    lines = [
-        f"<b>{service_name}: {action} не удалось</b>",
-        "",
-    ]
-    if main_result.success and not checks_ok:
-        lines.append("<b>Что не так:</b> команда выполнена, "
-                      "но пост-проверка не прошла")
-    elif main_result.timed_out:
-        lines.append("<b>Что не так:</b> превышено время ожидания")
-    elif main_result.error:
-        lines.append(f"<b>Что не так:</b> {main_result.error}")
-    else:
-        lines.append(f"<b>Что не так:</b> код выхода {main_result.returncode}")
+    Delegates to summary_formatter for unified output structure.
+    """
+    from .summary_formatter import format_service_summary as _fmt
 
-    return "\n".join(lines)
+    return _fmt(service_name, action, success, main_result, checks_ok, checks)
 
 
 def _collect_output(

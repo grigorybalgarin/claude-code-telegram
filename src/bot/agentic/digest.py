@@ -73,8 +73,16 @@ def build_operational_snapshot(
     return snap
 
 
-def suggest_next_action(snapshot: OperationalSnapshot) -> Optional[SuggestedAction]:
-    """Determine the most useful next step based on current state."""
+def suggest_next_action(
+    snapshot: OperationalSnapshot,
+    diagnosis: Optional[Any] = None,
+    remediation_plan: Optional[Any] = None,
+) -> Optional[SuggestedAction]:
+    """Determine the most useful next step based on current state.
+
+    Enhanced version: considers diagnosis type, confidence, caution level,
+    and runbook hints when available.
+    """
     # Active incident takes priority
     if snapshot.active_incident:
         inc = snapshot.active_incident
@@ -86,6 +94,22 @@ def suggest_next_action(snapshot: OperationalSnapshot) -> Optional[SuggestedActi
                     reason="Инцидент эскалирован, требуется ручной разбор",
                 )
             if state in (IncidentState.DETECTED, IncidentState.INVESTIGATING):
+                # Check if remediation plan says caution
+                if remediation_plan:
+                    from .remediation_planner import CautionLevel
+
+                    if remediation_plan.caution_level == CautionLevel.BLOCK:
+                        return SuggestedAction(
+                            action_type=SuggestedActionType.MANUAL_CHECK,
+                            reason="Инцидент требует ручного разбора (авто-исправление не рекомендуется)",
+                        )
+                    if remediation_plan.caution_level == CautionLevel.HIGH:
+                        hint = remediation_plan.next_step_hint or "проверь вручную"
+                        return SuggestedAction(
+                            action_type=SuggestedActionType.MANUAL_CHECK,
+                            reason=f"Инцидент: {hint}",
+                        )
+
                 return SuggestedAction(
                     action_type=SuggestedActionType.RESOLVE,
                     reason="Обнаружен активный инцидент",
@@ -100,8 +124,24 @@ def suggest_next_action(snapshot: OperationalSnapshot) -> Optional[SuggestedActi
             auto_executable=True,
         )
 
-    # Last verify failed
+    # Last verify failed — use diagnosis for smarter suggestion
     if snapshot.last_verify_success is False:
+        if diagnosis:
+            confidence = getattr(diagnosis, "confidence", 1.0)
+            needs_caution = getattr(diagnosis, "needs_caution", False)
+
+            if needs_caution or confidence < 0.4:
+                return SuggestedAction(
+                    action_type=SuggestedActionType.MANUAL_CHECK,
+                    reason="Проверка не прошла — рекомендуется ручной анализ",
+                )
+
+            if remediation_plan and not remediation_plan.safe_auto_resolve:
+                return SuggestedAction(
+                    action_type=SuggestedActionType.MANUAL_CHECK,
+                    reason="Проверка не прошла — автоматическое исправление не рекомендуется",
+                )
+
         return SuggestedAction(
             action_type=SuggestedActionType.RESOLVE,
             reason="Последняя проверка не прошла",

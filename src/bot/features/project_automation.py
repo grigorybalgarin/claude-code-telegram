@@ -257,30 +257,49 @@ class ProjectAutomationManager:
         - Operations config references valid commands
         - Deploy command exists if deploy_rollback_safe is set
         - Self-heal requires a service with restart + health
+        - Monitoring requires verify/health path
+        - Critical steps reference existing commands
+        - Runbook hints use valid problem type keys
+        - No empty/contradictory operations config
         """
         warnings: List[str] = []
         if not self._workspace_overrides:
             return warnings
+
+        _VALID_RUNBOOK_KEYS = {
+            "code", "config", "dependency", "service",
+            "deploy", "environment", "unknown",
+        }
 
         seen_aliases: dict[str, str] = {}
         for rel_path, override in self._workspace_overrides.items():
             full_path = boundary_root / rel_path
             profile_name = str(override.get("display_name") or rel_path)
 
+            # Path existence
             if not full_path.is_dir():
                 warnings.append(
                     f"[warn] {profile_name}: путь '{rel_path}' не найден"
                 )
 
+            # Duplicate aliases
             for alias in override.get("aliases") or ():
                 alias_lower = str(alias).lower()
                 if alias_lower in seen_aliases:
                     warnings.append(
-                        f"[warn] {profile_name}: алиас '{alias}' "
+                        f"[error] {profile_name}: алиас '{alias}' "
                         f"уже используется в '{seen_aliases[alias_lower]}'"
                     )
                 else:
                     seen_aliases[alias_lower] = profile_name
+
+            # Alias collides with display_name of another profile
+            name_lower = profile_name.lower()
+            if name_lower in seen_aliases and seen_aliases[name_lower] != profile_name:
+                warnings.append(
+                    f"[warn] {profile_name}: имя совпадает с алиасом "
+                    f"профиля '{seen_aliases[name_lower]}'"
+                )
 
             services = override.get("services")
             if services:
@@ -295,11 +314,16 @@ class ProjectAutomationManager:
             ops = override.get("operations")
             if isinstance(ops, OperationConfig):
                 commands = override.get("commands") or {}
-                if ops.deploy_rollback_safe and not commands.get("deploy"):
-                    warnings.append(
-                        f"[warn] {profile_name}: deploy_rollback_safe=true, "
-                        f"но команда deploy не задана"
-                    )
+
+                # Deploy rollback without deploy command or git
+                if ops.deploy_rollback_safe:
+                    if not commands.get("deploy"):
+                        warnings.append(
+                            f"[warn] {profile_name}: deploy_rollback_safe=true, "
+                            f"но команда deploy не задана"
+                        )
+
+                # Self-heal requires restart + health
                 if ops.self_heal_restart:
                     has_restart = False
                     has_health = False
@@ -321,6 +345,73 @@ class ProjectAutomationManager:
                             f"[warn] {profile_name}: self_heal_restart=true, "
                             f"но нет health/status команды для проверки"
                         )
+
+                    # verify_after_restart without health makes no sense
+                    if ops.self_heal_verify_after_restart and not commands.get("health"):
+                        if not has_health:
+                            warnings.append(
+                                f"[warn] {profile_name}: "
+                                f"self_heal_verify_after_restart=true, "
+                                f"но нет health команды для верификации"
+                            )
+
+                # Monitoring without verify/health path
+                if ops.monitoring_interval_seconds > 0:
+                    has_any_check = bool(
+                        commands.get("health")
+                        or commands.get("test")
+                        or commands.get("lint")
+                        or commands.get("build")
+                    )
+                    if not has_any_check and not services:
+                        warnings.append(
+                            f"[warn] {profile_name}: мониторинг включен "
+                            f"(interval={ops.monitoring_interval_seconds}s), "
+                            f"но нет verify/health команд"
+                        )
+
+                # Critical steps reference existing commands
+                if ops.critical_steps:
+                    known_labels = set(commands.keys())
+                    if services:
+                        known_labels.update(
+                            getattr(s, "key", "") for s in services
+                        )
+                    for step in ops.critical_steps:
+                        if step not in known_labels:
+                            warnings.append(
+                                f"[warn] {profile_name}: критичный шаг "
+                                f"'{step}' не соответствует ни одной команде"
+                            )
+
+                # Runbook hints use valid keys
+                if ops.runbook_hints:
+                    for key in ops.runbook_hints:
+                        if key not in _VALID_RUNBOOK_KEYS and key not in (commands or {}):
+                            warnings.append(
+                                f"[warn] {profile_name}: runbook ключ "
+                                f"'{key}' не является типом проблемы "
+                                f"и не совпадает с командой"
+                            )
+                        if not ops.runbook_hints[key].strip():
+                            warnings.append(
+                                f"[warn] {profile_name}: runbook подсказка "
+                                f"для '{key}' пуста"
+                            )
+
+                # Empty operations config (all defaults, nothing useful)
+                if (
+                    not ops.critical_steps
+                    and not ops.diagnose_commands
+                    and not ops.self_heal_restart
+                    and not ops.deploy_rollback_safe
+                    and not ops.monitoring_interval_seconds
+                    and not ops.runbook_hints
+                ):
+                    warnings.append(
+                        f"[warn] {profile_name}: operations блок пустой — "
+                        f"рассмотри его удаление или заполнение"
+                    )
 
         for warning in warnings:
             log_fn = logger.error if warning.startswith("[error]") else logger.warning

@@ -1,19 +1,17 @@
 """Autonomous resolve: diagnose, fix, and re-verify a workspace."""
 
-import asyncio
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Optional
+from typing import Callable, Coroutine, Optional
 
 import structlog
 
 from .context import (
     AgenticWorkspaceContext,
     ResolveResult,
-    ShellActionResult,
     VerifyReport,
-    VerifyStep,
 )
 from .problem_classifier import ProblemDiagnosis, ProblemType, classify_problem
+from .remediation_planner import RemediationPlan, build_remediation_plan
 from .shell_executor import ShellExecutor
 from .verify_pipeline import VerifyPipeline
 
@@ -278,6 +276,16 @@ class ResolveRunner:
             diagnosis.problem_type if diagnosis else ProblemType.UNKNOWN, ""
         )
 
+        # Build remediation plan for policy-aware framing
+        ops_config = getattr(ctx.profile, "operations", None)
+        runbook_hints = getattr(ops_config, "runbook_hints", None) if ops_config else None
+        plan: Optional[RemediationPlan] = None
+        remediation_context = ""
+        if diagnosis:
+            plan = build_remediation_plan(diagnosis, runbook_hints)
+            if plan.resolve_framing:
+                remediation_context = plan.resolve_framing + "\n"
+
         # Logs from the failing step if available
         logs_context = ""
         if report.logs_result:
@@ -299,17 +307,12 @@ class ResolveRunner:
         if ctx.profile.has_git_repo:
             git_context = self._get_git_context(ctx.profile.root_path)
 
-        # Runbook hint from operations config
-        runbook_context = ""
-        if diagnosis and diagnosis.runbook_hint:
-            runbook_context = f"Подсказка из runbook: {diagnosis.runbook_hint}\n"
-
         if is_retry:
             user_request = (
                 "Предыдущая попытка исправления не помогла.\n"
                 f"{passing_context}"
                 f"{diagnosis_context}"
-                f"{runbook_context}"
+                f"{remediation_context}"
                 f"Шаг проверки '{failed_step.label}' все еще не проходит.\n"
                 f"Команда: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
@@ -327,7 +330,7 @@ class ResolveRunner:
                 "Разберись с проблемой в проекте и исправь ее.\n"
                 f"{passing_context}"
                 f"{diagnosis_context}"
-                f"{runbook_context}"
+                f"{remediation_context}"
                 f"Сейчас не проходит шаг проверки '{failed_step.label}'.\n"
                 f"Команда шага: {failed_step.command}\n"
                 f"Вывод ошибки:\n{failure_output}\n"
