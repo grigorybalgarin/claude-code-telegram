@@ -720,6 +720,108 @@ class TestPanelBuilder:
         assert "30" in text
         assert "\u043e\u0447\u0435\u0440\u0435\u0434\u0438" in text
 
+    async def test_build_status_text_surfaces_incident_backlog_and_stale_job(self, tmp_dir):
+        builder = self._make_builder()
+        ctx = self._make_ctx(tmp_dir, with_storage=True)
+        ctx.storage.incidents.list_active = AsyncMock(
+            return_value=[
+                {
+                    "severity": "critical",
+                    "state": "healing",
+                    "details": {"last_error": "Connection refused"},
+                }
+            ]
+        )
+        ctx.storage.improvements.list_pending = AsyncMock(
+            return_value=[
+                {"description": "Добавить runbook hint для сервиса"},
+            ]
+        )
+
+        async def get_recent(workspace_path, limit=10):
+            if workspace_path == "__system__":
+                return [
+                    {
+                        "operation_type": "self_review",
+                        "details": {"candidates": 2},
+                        "created_at": 1.0,
+                    }
+                ]
+            return []
+
+        ctx.storage.operations.get_recent = AsyncMock(side_effect=get_recent)
+        ctx.operator_runtime = MagicMock()
+        ctx.operator_runtime.get_latest_job.return_value = SimpleNamespace(
+            workspace_root=tmp_dir,
+            status="stale",
+            action_key="deploy",
+            job_id="abcdef123456",
+            verification_command=None,
+        )
+
+        text = await builder.build_status_text(ctx, user_id=1, session_id=None)
+
+        assert "Активный инцидент" in text
+        assert "Connection refused" in text
+        assert "Backlog улучшений" in text
+        assert "runbook hint" in text
+        assert "зависла" in text
+        assert "self-review" in text
+
+    async def test_build_recent_text_surfaces_ops_incidents_and_improvements(self, tmp_dir):
+        builder = self._make_builder()
+        ctx = self._make_ctx(tmp_dir, with_storage=True)
+        ctx.storage.audit.get_user_audit_log = AsyncMock(return_value=[])
+        ctx.storage.messages.get_user_messages = AsyncMock(return_value=[])
+        ctx.storage.incidents.list_active = AsyncMock(
+            return_value=[
+                {
+                    "severity": "warning",
+                    "state": "detected",
+                    "details": {"short_cause": "Service unhealthy"},
+                }
+            ]
+        )
+        ctx.storage.improvements.list_pending = AsyncMock(
+            return_value=[
+                {"description": "Уточнить remediation policy"},
+            ]
+        )
+
+        async def get_recent(workspace_path, limit=10):
+            if workspace_path == "__system__":
+                return [
+                    {
+                        "operation_type": "maintenance_cleanup",
+                        "details": {
+                            "sessions_cleaned": 1,
+                            "operations_cleaned": 2,
+                            "incidents_cleaned": 3,
+                            "improvements_cleaned": 4,
+                        },
+                        "created_at": 1.0,
+                    }
+                ]
+            return [
+                {
+                    "operation_type": "verify",
+                    "success": False,
+                    "details": {"failed_step": "health"},
+                    "created_at": 1.0,
+                }
+            ]
+
+        ctx.storage.operations.get_recent = AsyncMock(side_effect=get_recent)
+
+        text = await builder.build_recent_text(ctx, user_id=1)
+
+        assert "Операции проекта" in text
+        assert "Инциденты" in text
+        assert "Улучшения" in text
+        assert "Система" in text
+        assert "Service unhealthy" in text
+        assert "cleanup" in text
+
     async def test_build_panel_text(self, tmp_dir):
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir)

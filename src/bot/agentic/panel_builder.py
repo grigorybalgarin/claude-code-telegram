@@ -173,6 +173,9 @@ class PanelBuilder:
         verify_steps = self.verify.build_steps(profile) if profile else []
         verify_status = "доступна" if verify_steps else "не настроена"
         primary_service = self.verify.select_primary_service(profile)
+        active_incident = await self._get_active_incident(ctx)
+        pending_improvements = await self._get_pending_improvements(ctx)
+        system_summary = await self._get_system_summary(ctx)
 
         lines = [
             "<b>Статус</b>",
@@ -195,6 +198,10 @@ class PanelBuilder:
                 lines.append(
                     f"\U0001f9f5 Задача: <code>{escape_html(self.format_job_status(latest_job, ctx.boundary_root))}</code>"
                 )
+                if latest_job.status == "stale":
+                    lines.append(
+                        "⚠️ <b>Внимание:</b> последняя фоновая задача зависла после рестарта или завершилась вне контроля бота."
+                    )
 
         # Last verify/resolve/deploy results
         if last_verify or last_resolve or last_deploy:
@@ -244,10 +251,40 @@ class PanelBuilder:
                     d_label += " · откат"
             lines.append(f"Деплой: <code>{d_label}</code> · {ago_text}")
 
+        if active_incident:
+            lines.extend(
+                [
+                    "",
+                    "<b>Активный инцидент</b>",
+                    self._format_incident_line(active_incident),
+                ]
+            )
+
+        if pending_improvements:
+            count = len(pending_improvements)
+            top = pending_improvements[0]
+            description = escape_html(str(top.get("description") or "есть предложения"))
+            lines.extend(
+                [
+                    "",
+                    f"🔧 <b>Backlog улучшений:</b> <code>{count}</code>",
+                    f"• {description}",
+                ]
+            )
+
+        if system_summary:
+            lines.extend(["", "<b>Системный контур</b>", *system_summary])
+
         # Suggested next action based on operational state
         suggested = self._suggest_from_ops_state(
             last_verify, last_resolve, last_deploy
         )
+        if not suggested and active_incident:
+            suggested = "Есть активный инцидент — открой разбор"
+        if not suggested and ctx.operator_runtime:
+            latest_job = ctx.operator_runtime.get_latest_job(ctx.current_workspace)
+            if latest_job and latest_job.status == "stale":
+                suggested = "Проверь зависшую задачу и при необходимости запусти проверку заново"
         if suggested:
             lines.append("")
             lines.append(f"💡 <b>Рекомендация:</b> {suggested}")
@@ -425,6 +462,29 @@ class PanelBuilder:
                 preview = escape_html(" ".join(message.prompt.split())[:72])
                 lines.append(f"\u2022 {preview}")
 
+        workspace_ops = await self._get_workspace_ops(ctx)
+        if workspace_ops:
+            lines.extend(["", "<b>\u041e\u043f\u0435\u0440\u0430\u0446\u0438\u0438 \u043f\u0440\u043e\u0435\u043a\u0442\u0430</b>"])
+            for op in workspace_ops:
+                lines.append(self._format_operation_line(op))
+
+        incidents = await self._get_active_incidents(ctx)
+        if incidents:
+            lines.extend(["", "<b>\u0418\u043d\u0446\u0438\u0434\u0435\u043d\u0442\u044b</b>"])
+            for incident in incidents[:3]:
+                lines.append(self._format_incident_line(incident))
+
+        pending_improvements = await self._get_pending_improvements(ctx)
+        if pending_improvements:
+            lines.extend(["", "<b>\u0423\u043b\u0443\u0447\u0448\u0435\u043d\u0438\u044f</b>"])
+            for item in pending_improvements[:3]:
+                description = escape_html(str(item.get("description") or ""))
+                lines.append(f"\u2022 {description}")
+
+        system_summary = await self._get_system_summary(ctx)
+        if system_summary:
+            lines.extend(["", "<b>\u0421\u0438\u0441\u0442\u0435\u043c\u0430</b>", *system_summary])
+
         if len(lines) == 1:
             lines.extend(["", "\u041f\u043e\u043a\u0430 \u043d\u0435\u0434\u0430\u0432\u043d\u0435\u0439 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u0438 \u043d\u0435\u0442."])
 
@@ -433,6 +493,142 @@ class PanelBuilder:
             f"\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u043f\u0440\u043e\u0435\u043a\u0442: <code>{escape_html(self.format_relative_path(ctx.current_workspace, ctx.boundary_root))}</code>"
         )
         return "\n".join(lines)
+
+    async def _get_workspace_ops(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+        if not ctx.storage or not hasattr(ctx.storage, "operations"):
+            return []
+        try:
+            return await ctx.storage.operations.get_recent(str(ctx.current_workspace), limit=4)
+        except Exception:
+            return []
+
+    async def _get_active_incidents(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+        if not ctx.storage or not hasattr(ctx.storage, "incidents"):
+            return []
+        try:
+            return await ctx.storage.incidents.list_active([str(ctx.current_workspace)], limit=3)
+        except Exception:
+            return []
+
+    async def _get_active_incident(self, ctx: AgenticWorkspaceContext) -> Optional[Dict[str, Any]]:
+        incidents = await self._get_active_incidents(ctx)
+        return incidents[0] if incidents else None
+
+    async def _get_pending_improvements(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+        if not ctx.storage or not hasattr(ctx.storage, "improvements"):
+            return []
+        try:
+            return await ctx.storage.improvements.list_pending(limit=5)
+        except Exception:
+            return []
+
+    async def _get_system_summary(self, ctx: AgenticWorkspaceContext) -> List[str]:
+        if not ctx.storage or not hasattr(ctx.storage, "operations"):
+            return []
+        try:
+            ops = await ctx.storage.operations.get_recent("__system__", limit=6)
+        except Exception:
+            return []
+
+        lines: List[str] = []
+        self_review = next(
+            (op for op in ops if op.get("operation_type") == "self_review"),
+            None,
+        )
+        cleanup = next(
+            (op for op in ops if op.get("operation_type") == "maintenance_cleanup"),
+            None,
+        )
+
+        if self_review:
+            details = self_review.get("details", {}) if isinstance(self_review, dict) else {}
+            candidates = details.get("candidates", 0) if isinstance(details, dict) else 0
+            ago = self._format_ago(self._seconds_ago(self_review.get("created_at")))
+            lines.append(f"🧠 self-review: <code>{candidates}</code> кандидатов · {ago}")
+        if cleanup:
+            details = cleanup.get("details", {}) if isinstance(cleanup, dict) else {}
+            if isinstance(details, dict):
+                cleaned = sum(
+                    int(details.get(key, 0))
+                    for key in (
+                        "sessions_cleaned",
+                        "operations_cleaned",
+                        "incidents_cleaned",
+                        "improvements_cleaned",
+                    )
+                )
+            else:
+                cleaned = 0
+            ago = self._format_ago(self._seconds_ago(cleanup.get("created_at")))
+            lines.append(f"🧹 cleanup: <code>{cleaned}</code> записей · {ago}")
+        return lines
+
+    def _format_incident_line(self, incident: Dict[str, Any]) -> str:
+        severity = str(incident.get("severity") or "warning")
+        state = str(incident.get("state") or "detected")
+        details = incident.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        cause = (
+            details.get("short_cause")
+            or details.get("last_error")
+            or "требует внимания"
+        )
+        severity_emoji = {
+            "critical": "🔴",
+            "degraded": "🟠",
+            "warning": "⚠️",
+            "info": "ℹ️",
+        }.get(severity, "⚠️")
+        return (
+            f"{severity_emoji} <code>{escape_html(state)}</code> · "
+            f"{escape_html(str(cause)[:120])}"
+        )
+
+    def _format_operation_line(self, operation: Dict[str, Any]) -> str:
+        op_type = str(operation.get("operation_type") or "operation")
+        success = bool(operation.get("success"))
+        details = operation.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        icon = "✅" if success else "⚠️"
+        label = {
+            "verify": "проверка",
+            "resolve": "разбор",
+            "deploy": "деплой",
+            "operator_job_stale": "stale job",
+            "incident_detected": "инцидент",
+            "incident_healed": "восстановление",
+            "incident_escalated": "эскалация",
+            "heal_attempted": "автовосстановление",
+            "heal_failed": "ошибка починки",
+        }.get(op_type, op_type)
+        summary = (
+            details.get("failed_step")
+            or details.get("failed_stage")
+            or details.get("problem_type")
+            or details.get("action_key")
+            or ""
+        )
+        ago = self._format_ago(self._seconds_ago(operation.get("created_at")))
+        if summary:
+            return f"{icon} <code>{escape_html(label)}</code> · {escape_html(str(summary))} · {ago}"
+        return f"{icon} <code>{escape_html(label)}</code> · {ago}"
+
+    @staticmethod
+    def _seconds_ago(timestamp: Any) -> int:
+        import time as _time
+        from datetime import datetime as _datetime
+
+        if isinstance(timestamp, _datetime):
+            ts = timestamp.timestamp()
+        elif isinstance(timestamp, (int, float)):
+            ts = float(timestamp)
+        else:
+            ts = 0.0
+        if ts <= 0:
+            return 0
+        return max(0, int(_time.time() - ts))
 
     async def build_jobs_text(
         self,
