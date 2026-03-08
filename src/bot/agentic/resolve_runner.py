@@ -38,8 +38,7 @@ _TYPE_GUIDANCE = {
         "Не делай опасных инфраструктурных изменений.\n"
     ),
     ProblemType.DEPLOY: (
-        "   Это проблема сборки/деплоя. Проверь build-конфиг, "
-        "типы, импорты.\n"
+        "   Это проблема сборки/деплоя. Проверь build-конфиг, " "типы, импорты.\n"
     ),
     ProblemType.ENVIRONMENT: (
         "   Это проблема серверного окружения. Объясни причину и "
@@ -256,9 +255,7 @@ class ResolveRunner:
         # Context from passing steps
         passing_context = ""
         passing_steps = [
-            (step, result)
-            for step, result in report.results
-            if result.success
+            (step, result) for step, result in report.results if result.success
         ]
         if passing_steps:
             passed_labels = ", ".join(step.label for step, _ in passing_steps)
@@ -278,7 +275,9 @@ class ResolveRunner:
 
         # Build remediation plan for policy-aware framing
         ops_config = getattr(ctx.profile, "operations", None)
-        runbook_hints = getattr(ops_config, "runbook_hints", None) if ops_config else None
+        runbook_hints = (
+            getattr(ops_config, "runbook_hints", None) if ops_config else None
+        )
         plan: Optional[RemediationPlan] = None
         remediation_context = ""
         if diagnosis:
@@ -290,9 +289,7 @@ class ResolveRunner:
         logs_context = ""
         if report.logs_result:
             log_text = (
-                report.logs_result.stdout_text
-                or report.logs_result.stderr_text
-                or ""
+                report.logs_result.stdout_text or report.logs_result.stderr_text or ""
             )
             if log_text:
                 logs_context = f"\nЛоги сервиса:\n{log_text}\n"

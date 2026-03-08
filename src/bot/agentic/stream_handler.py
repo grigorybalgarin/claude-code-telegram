@@ -192,9 +192,7 @@ class StreamHandler:
                     if draft_streamer:
                         icon = _tool_icon(name)
                         line = (
-                            f"{icon} {name}: {detail}"
-                            if detail
-                            else f"{icon} {name}"
+                            f"{icon} {name}: {detail}" if detail else f"{icon} {name}"
                         )
                         await draft_streamer.append_tool(line)
 
@@ -275,9 +273,7 @@ class StreamHandler:
                         media.append(
                             InputMediaPhoto(
                                 media=fh,
-                                caption=(
-                                    caption if use_caption and idx == 0 else None
-                                ),
+                                caption=(caption if use_caption and idx == 0 else None),
                                 parse_mode=(
                                     caption_parse_mode
                                     if use_caption and idx == 0

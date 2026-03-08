@@ -12,7 +12,6 @@ from src.bot.features.video_handler import (
     get_youtube_transcript,
 )
 
-
 # --- extract_youtube_id tests ---
 
 
@@ -121,9 +120,7 @@ class TestGetYoutubeTranscript:
         assert result.duration_text == "0:05"
         assert "testVID12345" in result.title
 
-        mock_ytt.fetch.assert_called_once_with(
-            "testVID12345", languages=("ru", "en")
-        )
+        mock_ytt.fetch.assert_called_once_with("testVID12345", languages=("ru", "en"))
 
     async def test_get_youtube_transcript_language_fallback(self):
         """Falls back to any available language when ru/en are unavailable."""
@@ -137,9 +134,7 @@ class TestGetYoutubeTranscript:
         mock_available.language_code = "fr"
 
         mock_transcript_list = MagicMock()
-        mock_transcript_list.__iter__ = MagicMock(
-            return_value=iter([mock_available])
-        )
+        mock_transcript_list.__iter__ = MagicMock(return_value=iter([mock_available]))
 
         mock_ytt = MagicMock()
         # First fetch (ru, en) raises, second fetch (fr) succeeds
@@ -161,9 +156,7 @@ class TestGetYoutubeTranscript:
         mock_ytt = MagicMock()
         mock_ytt.fetch = MagicMock(side_effect=Exception("No transcripts"))
         mock_ytt.list = MagicMock(
-            return_value=MagicMock(
-                __iter__=MagicMock(return_value=iter([]))
-            )
+            return_value=MagicMock(__iter__=MagicMock(return_value=iter([])))
         )
 
         with pytest.MonkeyPatch.context() as mp:

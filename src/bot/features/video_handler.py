@@ -10,19 +10,11 @@ logger = structlog.get_logger(__name__)
 
 # YouTube URL patterns
 _YOUTUBE_PATTERNS = [
-    re.compile(
-        r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"
-    ),
-    re.compile(
-        r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})"
-    ),
+    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"),
+    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})"),
     re.compile(r"(?:https?://)?youtu\.be/([a-zA-Z0-9_-]{11})"),
-    re.compile(
-        r"(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})"
-    ),
-    re.compile(
-        r"(?:https?://)?(?:m\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"
-    ),
+    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})"),
+    re.compile(r"(?:https?://)?(?:m\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"),
 ]
 
 

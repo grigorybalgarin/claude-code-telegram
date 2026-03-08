@@ -125,13 +125,9 @@ async def test_maintenance_loop_persists_candidates_and_runs_cleanup():
     assert persisted_improvements
     assert cleanup_calls == [30]
     assert any(
-        item["operation_type"] == "maintenance_cleanup"
-        for item in saved_operations
+        item["operation_type"] == "maintenance_cleanup" for item in saved_operations
     )
-    assert any(
-        item["operation_type"] == "self_review"
-        for item in saved_operations
-    )
+    assert any(item["operation_type"] == "self_review" for item in saved_operations)
 
 
 @pytest.mark.asyncio

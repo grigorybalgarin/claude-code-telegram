@@ -367,7 +367,11 @@ class AuditLogger:
         """Log a high-level autopilot run with guard outcomes."""
         verification_results = verification_results or []
         failed_verification = next(
-            (item.get("command") for item in verification_results if not item.get("success")),
+            (
+                item.get("command")
+                for item in verification_results
+                if not item.get("success")
+            ),
             None,
         )
 

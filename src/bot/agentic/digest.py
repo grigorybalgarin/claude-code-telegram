@@ -213,7 +213,10 @@ def format_operational_digest(
             if isinstance(state, IncidentState):
                 lines.append(f"  Инцидент: {state.value}")
 
-        if snap.suggested_action and snap.suggested_action.action_type != SuggestedActionType.NONE:
+        if (
+            snap.suggested_action
+            and snap.suggested_action.action_type != SuggestedActionType.NONE
+        ):
             lines.append(f"  → {snap.suggested_action.reason}")
 
         if snap.unresolved_issues:
@@ -224,8 +227,14 @@ def format_operational_digest(
 
     # Recent incidents summary
     if recent_incidents:
-        healed = [i for i in recent_incidents if i.get("operation_type") == "incident_healed"]
-        escalated = [i for i in recent_incidents if i.get("operation_type") == "incident_escalated"]
+        healed = [
+            i for i in recent_incidents if i.get("operation_type") == "incident_healed"
+        ]
+        escalated = [
+            i
+            for i in recent_incidents
+            if i.get("operation_type") == "incident_escalated"
+        ]
         if healed:
             lines.append(f"Восстановлено инцидентов: {len(healed)}")
         if escalated:

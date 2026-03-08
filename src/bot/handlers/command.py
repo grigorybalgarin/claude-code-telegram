@@ -90,7 +90,9 @@ def _format_automation_status(details: dict[str, Any]) -> str:
     return "completed"
 
 
-def _format_workspace_value(workspace_root: Optional[str], approved_directory: Path) -> str:
+def _format_workspace_value(
+    workspace_root: Optional[str], approved_directory: Path
+) -> str:
     """Format workspace path from stored audit details."""
     if not workspace_root:
         return "?"
@@ -959,9 +961,13 @@ async def show_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
-        _current_dir, _boundary_root, project_automation, summaries, current_workspace = (
-            _get_workspace_catalog(settings, context)
-        )
+        (
+            _current_dir,
+            _boundary_root,
+            project_automation,
+            summaries,
+            current_workspace,
+        ) = _get_workspace_catalog(settings, context)
         if not project_automation or not summaries:
             await update.message.reply_text(
                 "📁 <b>No Projects Found</b>\n\n"
@@ -1101,7 +1107,9 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             user_id, profile.root_path if profile else current_dir
         )
         if resumable:
-            session_line = f"🔄 resumable <code>{escape_html(resumable.session_id[:8])}...</code>"
+            session_line = (
+                f"🔄 resumable <code>{escape_html(resumable.session_id[:8])}...</code>"
+            )
 
     storage_ok = await storage.health_check() if storage else False
     mem0_status = "disabled"
@@ -1124,7 +1132,11 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         lines.append(
             f"📦 Workspace root: <code>{escape_html(_format_relative_path(profile.root_path, settings.approved_directory))}</code>"
         )
-        lines.extend(project_automation.describe_profile_lines(profile, settings.approved_directory))
+        lines.extend(
+            project_automation.describe_profile_lines(
+                profile, settings.approved_directory
+            )
+        )
         playbooks = ", ".join(
             playbook.slug for playbook in project_automation.list_playbooks(profile)
         )
@@ -1188,7 +1200,9 @@ async def recent_activity_command(
     current_dir = _get_current_directory(settings, context)
     messages = await storage.messages.get_user_messages(user_id, limit=5)
     audit_entries = await storage.audit.get_user_audit_log(user_id, limit=10)
-    command_entries = [entry for entry in audit_entries if entry.event_type == "command"][:5]
+    command_entries = [
+        entry for entry in audit_entries if entry.event_type == "command"
+    ][:5]
     automation_entries = [
         entry for entry in audit_entries if entry.event_type == "automation_run"
     ][:5]
@@ -1647,9 +1661,11 @@ async def run_playbook_command(
             prompt=prompt,
             working_directory=profile.root_path,
             user_id=user_id,
-            session_id=context.user_data.get("claude_session_id")
-            if current_dir == profile.root_path
-            else None,
+            session_id=(
+                context.user_data.get("claude_session_id")
+                if current_dir == profile.root_path
+                else None
+            ),
         )
         context.user_data["claude_session_id"] = claude_response.session_id
 

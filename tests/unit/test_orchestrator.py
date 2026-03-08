@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.bot.agentic.stream_handler import _redact_secrets
 from src.bot.features.operator_runtime import WorkspaceOperatorRuntime
 from src.bot.features.project_automation import ProjectAutomationManager
-from src.bot.agentic.stream_handler import _redact_secrets
 from src.bot.orchestrator import MessageOrchestrator
 from src.config import create_test_config
 
@@ -246,9 +246,7 @@ async def test_agentic_start_shows_persistent_reply_keyboard(agentic_settings, d
     markup = call_kwargs.kwargs["reply_markup"]
     assert markup is not None
     labels = [
-        getattr(button, "text", button)
-        for row in markup.keyboard
-        for button in row
+        getattr(button, "text", button) for row in markup.keyboard for button in row
     ]
     assert labels == ["📂 Статус", "✅ Проверить", "🛠 Разберись"]
     assert "Alice" in call_kwargs.args[0]
@@ -269,7 +267,10 @@ async def test_agentic_new_resets_session(agentic_settings, deps):
 
     assert context.user_data["claude_session_id"] is None
     update.message.reply_text.assert_called_once()
-    assert update.message.reply_text.call_args.args[0] == "Сессия сброшена. Что делаем дальше?"
+    assert (
+        update.message.reply_text.call_args.args[0]
+        == "Сессия сброшена. Что делаем дальше?"
+    )
     assert update.message.reply_text.call_args.kwargs["reply_markup"] is not None
 
 
@@ -294,7 +295,9 @@ async def test_agentic_status_compact(agentic_settings, deps):
     assert call_args.kwargs["reply_markup"] is not None
 
 
-async def test_agentic_status_auto_selects_preferred_workspace(agentic_settings, tmp_dir):
+async def test_agentic_status_auto_selects_preferred_workspace(
+    agentic_settings, tmp_dir
+):
     """Status should auto-select the preferred workspace when user is still at root."""
     orchestrator = MessageOrchestrator(agentic_settings, {})
 
@@ -427,7 +430,9 @@ async def test_agentic_text_routes_reply_keyboard_action(agentic_settings, deps)
     assert "Статус" in update.message.reply_text.call_args.args[0]
 
 
-async def test_agentic_text_uses_autopilot_workspace_and_prompt(agentic_settings, tmp_dir):
+async def test_agentic_text_uses_autopilot_workspace_and_prompt(
+    agentic_settings, tmp_dir
+):
     """Agentic text should route through autopilot when project automation is available."""
     orchestrator = MessageOrchestrator(agentic_settings, {})
 
@@ -565,7 +570,9 @@ async def test_agentic_text_switches_workspace_and_resumes_session(
 
     await orchestrator.agentic_text(update, context)
 
-    claude_integration._find_resumable_session.assert_awaited_once_with(123, target_root)
+    claude_integration._find_resumable_session.assert_awaited_once_with(
+        123, target_root
+    )
     kwargs = claude_integration.run_command.call_args.kwargs
     assert kwargs["working_directory"] == target_root
     assert kwargs["session_id"] == "session-resumed"
@@ -897,7 +904,7 @@ workspaces:
     assert job is not None
     assert job.action_key == "start"
     assert job.is_active is True
-    assert job.verification_command == 'python3 -c "print(\'healthy\')"'
+    assert job.verification_command == "python3 -c \"print('healthy')\""
     assert job.verification_mode == "while_running"
 
     stopped = await operator_runtime.stop_job(job.job_id)
@@ -977,7 +984,9 @@ workspaces:
     assert "выполнено" in result_text
 
 
-async def test_agentic_service_restart_runs_post_checks_and_logs(agentic_settings, tmp_dir):
+async def test_agentic_service_restart_runs_post_checks_and_logs(
+    agentic_settings, tmp_dir
+):
     """Lifecycle service actions should auto-run follow-up checks and attach logs on failure."""
     orchestrator = MessageOrchestrator(agentic_settings, {})
 
@@ -1092,7 +1101,7 @@ workspaces:
 
     job = operator_runtime.get_latest_job(workspace_root)
     assert job is not None
-    assert job.verification_command == 'python3 -c "print(\'service healthy\')"'
+    assert job.verification_command == "python3 -c \"print('service healthy')\""
     assert job.verification_mode == "while_running"
 
     stopped = await operator_runtime.stop_job(job.job_id)
@@ -1239,7 +1248,9 @@ workspaces:
     assert "ssh.service" in text
 
 
-def test_format_agentic_job_status_includes_health_state(agentic_settings, deps, tmp_dir):
+def test_format_agentic_job_status_includes_health_state(
+    agentic_settings, deps, tmp_dir
+):
     """Compact job status should include health verification state when available."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
@@ -1575,6 +1586,7 @@ class TestRedactSecrets:
     def test_summarize_tool_input_bash_redacts(self, agentic_settings, deps):
         """_summarize_tool_input applies redaction to Bash commands."""
         from src.bot.agentic.stream_handler import StreamHandler
+
         result = StreamHandler.summarize_tool_input(
             "Bash",
             {"command": "curl --token=mysupersecrettoken123 https://api.example.com"},
@@ -1585,6 +1597,7 @@ class TestRedactSecrets:
     def test_summarize_tool_input_non_bash_unchanged(self, agentic_settings, deps):
         """Non-Bash tools don't go through redaction."""
         from src.bot.agentic.stream_handler import StreamHandler
+
         result = StreamHandler.summarize_tool_input(
             "Read", {"file_path": "/home/user/.env"}
         )
@@ -1662,7 +1675,7 @@ class TestTypingHeartbeat:
         orchestrator = MessageOrchestrator(agentic_settings, deps)
 
         progress_msg = AsyncMock()
-        tool_log: list = []  # type: ignore[type-arg]
+        tool_log: list[str] = []
         callback = orchestrator.stream.make_stream_callback(
             verbose_level=1,
             progress_msg=progress_msg,

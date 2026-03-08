@@ -246,7 +246,9 @@ async def validate_file_upload(
         return False, error_message
 
     # Check file size limits
-    max_file_size_mb = getattr(settings, "max_upload_file_size_mb", 10) if settings else 10
+    max_file_size_mb = (
+        getattr(settings, "max_upload_file_size_mb", 10) if settings else 10
+    )
     max_file_size = max_file_size_mb * 1024 * 1024
     if file_size > max_file_size:
         if audit_logger:

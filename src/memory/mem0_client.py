@@ -75,9 +75,7 @@ class Mem0Client:
             logger.warning("mem0 add error", error=str(e))
             return None
 
-    async def get_all(
-        self, user_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    async def get_all(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all memories for a user."""
         try:
             client = self._get_client()
@@ -95,13 +93,17 @@ class Mem0Client:
             await self._client.aclose()
 
 
-def format_memories_for_prompt(memories: List[Dict[str, Any]], min_score: float = 0.3) -> str:
+def format_memories_for_prompt(
+    memories: List[Dict[str, Any]], min_score: float = 0.3
+) -> str:
     """Format search results into a context block for Claude prompt."""
     relevant = [m for m in memories if m.get("score", 0) >= min_score]
     if not relevant:
         return ""
 
-    lines = ["[Relevant context from your persistent memory (Mem0 + Qdrant, already integrated and active)]:"]
+    lines = [
+        "[Relevant context from your persistent memory (Mem0 + Qdrant, already integrated and active)]:"
+    ]
     for m in relevant:
         text = m.get("text", "")
         if text:

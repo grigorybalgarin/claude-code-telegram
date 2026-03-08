@@ -41,8 +41,7 @@ class SingleInstanceLock:
             self._handle.close()
             self._handle = None
             raise RuntimeError(
-                f"Another bot instance is already running "
-                f"(lock: {self.lock_path})"
+                f"Another bot instance is already running " f"(lock: {self.lock_path})"
             ) from exc
 
         self._handle.seek(0)

@@ -22,16 +22,16 @@ from src.bot.agentic.context import (
     VerifyReport,
     VerifyStep,
 )
-from src.bot.agentic.panel_builder import PanelBuilder
 from src.bot.agentic.monitoring import (
     Incident,
     IncidentState,
-    WorkspaceMonitor,
     WorkspaceHealth,
+    WorkspaceMonitor,
 )
+from src.bot.agentic.panel_builder import PanelBuilder
 from src.bot.agentic.problem_classifier import (
-    ProblemType,
     ProblemDiagnosis,
+    ProblemType,
     classify_problem,
     format_resolve_summary,
     format_service_summary,
@@ -65,9 +65,7 @@ def workspace(tmp_dir):
     pass_script.chmod(0o755)
     # A script that always fails with a code error
     fail_script = ws / "check_fail.sh"
-    fail_script.write_text(
-        "#!/bin/bash\necho 'SyntaxError: unexpected EOF'\nexit 1\n"
-    )
+    fail_script.write_text("#!/bin/bash\necho 'SyntaxError: unexpected EOF'\nexit 1\n")
     fail_script.chmod(0o755)
     # A script that fails with dependency error
     dep_fail = ws / "check_dep.sh"
@@ -77,9 +75,7 @@ def workspace(tmp_dir):
     dep_fail.chmod(0o755)
     # A script that fails with service error
     svc_fail = ws / "check_svc.sh"
-    svc_fail.write_text(
-        "#!/bin/bash\necho 'Connection refused on port 8080'\nexit 1\n"
-    )
+    svc_fail.write_text("#!/bin/bash\necho 'Connection refused on port 8080'\nexit 1\n")
     svc_fail.chmod(0o755)
     return ws
 
@@ -181,10 +177,13 @@ class TestVerifyFlow:
 
     async def test_verify_failure_shows_diagnosis(self, workspace):
         """When a check fails, verify shows problem type and cause."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_pass.sh'}",
-            "test": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_pass.sh'}",
+                "test": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -200,9 +199,12 @@ class TestVerifyFlow:
 
     async def test_verify_dependency_error_classified(self, workspace):
         """Dependency errors are correctly classified."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_dep.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_dep.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -215,9 +217,12 @@ class TestVerifyFlow:
 
     async def test_verify_service_error_classified(self, workspace):
         """Service errors are correctly classified."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_svc.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_svc.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -230,9 +235,12 @@ class TestVerifyFlow:
 
     async def test_verify_suggests_resolve_on_fixable(self, workspace):
         """Code errors suggest using Resolve button."""
-        profile = _make_profile(workspace, commands={
-            "test": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "test": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -269,9 +277,12 @@ class TestResolveFlow:
 
     async def test_resolve_runs_claude_on_failure(self, workspace):
         """On verify failure, resolve calls Claude to fix."""
-        profile = _make_profile(workspace, commands={
-            "test": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "test": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -310,9 +321,12 @@ class TestResolveFlow:
 
     async def test_resolve_success_persists_result(self, workspace):
         """Successful resolve persists success status."""
-        profile = _make_profile(workspace, commands={
-            "test": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "test": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         runner = _make_runner()
         query, status_msg = _make_query()
         context = _make_context(workspace, profile)
@@ -559,14 +573,28 @@ class TestProblemClassifier:
     def test_verify_summary_success(self):
         report = VerifyReport(
             results=[
-                (VerifyStep(label="lint", command="flake8"), ShellActionResult(
-                    command="flake8", returncode=0, success=True,
-                    timed_out=False, stdout_text="", stderr_text="",
-                )),
-                (VerifyStep(label="test", command="pytest"), ShellActionResult(
-                    command="pytest", returncode=0, success=True,
-                    timed_out=False, stdout_text="5 passed", stderr_text="",
-                )),
+                (
+                    VerifyStep(label="lint", command="flake8"),
+                    ShellActionResult(
+                        command="flake8",
+                        returncode=0,
+                        success=True,
+                        timed_out=False,
+                        stdout_text="",
+                        stderr_text="",
+                    ),
+                ),
+                (
+                    VerifyStep(label="test", command="pytest"),
+                    ShellActionResult(
+                        command="pytest",
+                        returncode=0,
+                        success=True,
+                        timed_out=False,
+                        stdout_text="5 passed",
+                        stderr_text="",
+                    ),
+                ),
             ],
             failed_step=None,
             logs_result=None,
@@ -579,8 +607,12 @@ class TestProblemClassifier:
     def test_verify_summary_failure_suggests_resolve(self):
         step = VerifyStep(label="тесты", command="pytest")
         result = ShellActionResult(
-            command="pytest", returncode=1, success=False,
-            timed_out=False, stdout_text="FAILED test_foo", stderr_text="",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="FAILED test_foo",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(step, result)], failed_step=step, logs_result=None
@@ -631,8 +663,11 @@ class TestProblemClassifier:
     def test_service_summary_success(self):
         result = ShellActionResult(
             command="systemctl restart app",
-            returncode=0, success=True, timed_out=False,
-            stdout_text="", stderr_text="",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
         )
         summary = format_service_summary(
             service_name="MyApp",
@@ -647,8 +682,11 @@ class TestProblemClassifier:
     def test_service_summary_failure(self):
         result = ShellActionResult(
             command="systemctl restart app",
-            returncode=1, success=False, timed_out=False,
-            stdout_text="", stderr_text="",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
             error="unit not found",
         )
         summary = format_service_summary(
@@ -722,7 +760,8 @@ class TestResponseSender:
         change_guard.format_report_html.return_value = "<b>Guard OK</b>"
 
         await sender.deliver(
-            update, messages,
+            update,
+            messages,
             guard_report=guard_report,
             change_guard=change_guard,
         )
@@ -917,7 +956,9 @@ class TestClassifierConfidence:
         )
         diagnosis = classify_problem(report)
         # Should be UNKNOWN or low confidence
-        assert diagnosis.confidence <= 0.5 or diagnosis.problem_type == ProblemType.UNKNOWN
+        assert (
+            diagnosis.confidence <= 0.5 or diagnosis.problem_type == ProblemType.UNKNOWN
+        )
 
     async def test_confidence_is_in_diagnosis(self):
         """Confidence field exists and is a float between 0 and 1."""
@@ -955,7 +996,9 @@ class TestPersistentStatusFallback:
         ctx.project_automation = None
 
         text = await panel.build_status_text(
-            ctx, user_id=123, session_id=None,
+            ctx,
+            user_id=123,
+            session_id=None,
             last_deploy={
                 "success": True,
                 "commit": "abc12345",
@@ -978,7 +1021,9 @@ class TestPersistentStatusFallback:
         ctx.project_automation = None
 
         text = await panel.build_status_text(
-            ctx, user_id=123, session_id=None,
+            ctx,
+            user_id=123,
+            session_id=None,
             last_deploy={
                 "success": False,
                 "failed_stage": "compile",
@@ -1003,7 +1048,9 @@ class TestPersistentStatusFallback:
         ctx.project_automation = None
 
         text = await panel.build_status_text(
-            ctx, user_id=123, session_id=None,
+            ctx,
+            user_id=123,
+            session_id=None,
         )
         assert "Деплой" not in text
         assert "Статус" in text
@@ -1116,9 +1163,7 @@ class TestServerDiagnostics:
     def test_disk_problem_detection(self):
         from src.bot.agentic.server_diagnostics import ServerDiagnostics
 
-        diag = ServerDiagnostics(
-            disk_usage="/dev/sda1  20G  19G  1G  97% /"
-        )
+        diag = ServerDiagnostics(disk_usage="/dev/sda1  20G  19G  1G  97% /")
         assert diag.has_disk_problem is True
 
     def test_flapping_detection(self):
@@ -1175,6 +1220,7 @@ class TestRetentionCleanup:
     async def test_cleanup_method_exists(self):
         """OperationsRepository has cleanup_old_operations method."""
         from src.storage.repositories import OperationsRepository
+
         assert hasattr(OperationsRepository, "cleanup_old_operations")
 
     async def test_storage_cleanup_includes_operations(self):
@@ -1188,10 +1234,16 @@ class TestRetentionCleanup:
         storage.sessions.cleanup_old_sessions = AsyncMock(return_value=5)
         storage.operations = MagicMock()
         storage.operations.cleanup_old_operations = AsyncMock(return_value=10)
+        storage.incidents = MagicMock()
+        storage.incidents.cleanup_old_incidents = AsyncMock(return_value=3)
+        storage.improvements = MagicMock()
+        storage.improvements.cleanup_old_improvements = AsyncMock(return_value=2)
 
         result = await storage.cleanup_old_data(days=7)
         assert result["sessions_cleaned"] == 5
         assert result["operations_cleaned"] == 10
+        assert result["incidents_cleaned"] == 3
+        assert result["improvements_cleaned"] == 2
 
 
 # ── Profile Validation Tests ──────────────────────────────────────────
@@ -1280,9 +1332,12 @@ class TestWorkspaceMonitor:
 
     async def test_healthy_workspace_no_incident(self, workspace):
         """A passing workspace creates no incident."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_pass.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_pass.sh'}",
+            },
+        )
         profile.operations = None
         monitor = self._make_monitor(workspace)
         monitor.set_profiles([profile])
@@ -1290,6 +1345,7 @@ class TestWorkspaceMonitor:
         # Manual check (operations=None means _check_workspace skips)
         # Set operations so it proceeds
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(monitoring_interval_seconds=60)
 
         await monitor._check_workspace(profile)
@@ -1300,10 +1356,14 @@ class TestWorkspaceMonitor:
 
     async def test_failing_workspace_creates_incident(self, workspace):
         """A failing workspace creates a DETECTED incident."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(monitoring_interval_seconds=60)
 
         notifications = []
@@ -1321,7 +1381,8 @@ class TestWorkspaceMonitor:
         assert health.healthy is False
         assert health.active_incident is not None
         assert health.active_incident.state in {
-            IncidentState.DETECTED, IncidentState.ESCALATED
+            IncidentState.DETECTED,
+            IncidentState.ESCALATED,
         }
         # Should have notified
         assert len(notifications) >= 1
@@ -1329,10 +1390,14 @@ class TestWorkspaceMonitor:
 
     async def test_recovery_clears_incident(self, workspace):
         """When workspace recovers, incident transitions to HEALED."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(monitoring_interval_seconds=60)
 
         notifications = []
@@ -1361,10 +1426,14 @@ class TestWorkspaceMonitor:
 
     async def test_no_duplicate_notification_on_repeated_failure(self, workspace):
         """Repeated failures don't re-notify (only first detection does)."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(monitoring_interval_seconds=60)
 
         notifications = []
@@ -1382,9 +1451,7 @@ class TestWorkspaceMonitor:
 
         # Second failure — should NOT re-send "сбой обнаружен"
         await monitor._check_workspace(profile)
-        detection_notifications = [
-            n for n in notifications if "сбой обнаружен" in n
-        ]
+        detection_notifications = [n for n in notifications if "сбой обнаружен" in n]
         assert len(detection_notifications) == 1
 
     async def test_auto_heal_attempted_when_policy_allows(self, workspace):
@@ -1417,6 +1484,7 @@ class TestWorkspaceMonitor:
             ],
         )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(
             monitoring_interval_seconds=60,
             self_heal_restart=True,
@@ -1448,10 +1516,14 @@ class TestWorkspaceMonitor:
 
     async def test_auto_heal_not_attempted_for_code_errors(self, workspace):
         """Code errors should NOT trigger auto-heal even if policy allows."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_fail.sh'}",  # SyntaxError output
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_fail.sh'}",  # SyntaxError output
+            },
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(
             monitoring_interval_seconds=60,
             self_heal_restart=True,
@@ -1538,9 +1610,12 @@ class TestRunbookHints:
         )
         step = VerifyStep(label="health", command="check")
         result = ShellActionResult(
-            command="check", returncode=1,
-            success=False, timed_out=False,
-            stdout_text="", stderr_text="",
+            command="check",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(step, result)],
@@ -1599,22 +1674,27 @@ class TestMonitoringIncidentLifecycle:
 
     async def test_escalation_after_max_heal_attempts(self, workspace):
         """Incident escalates after exhausting heal attempts."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_svc.sh'}",
-        }, services=[
-            SimpleNamespace(
-                key="app",
-                display_name="TestApp",
-                service_type="command",
-                restart_command="exit 1",  # restart always fails
-                health_command=f"bash {workspace / 'check_svc.sh'}",
-                status_command=None,
-                start_command=None,
-                stop_command=None,
-                logs_command=None,
-            ),
-        ])
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_svc.sh'}",
+            },
+            services=[
+                SimpleNamespace(
+                    key="app",
+                    display_name="TestApp",
+                    service_type="command",
+                    restart_command="exit 1",  # restart always fails
+                    health_command=f"bash {workspace / 'check_svc.sh'}",
+                    status_command=None,
+                    start_command=None,
+                    stop_command=None,
+                    logs_command=None,
+                ),
+            ],
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(
             monitoring_interval_seconds=60,
             self_heal_restart=True,
@@ -1628,6 +1708,7 @@ class TestMonitoringIncidentLifecycle:
         shell = ShellExecutor()
         verify = VerifyPipeline(shell)
         from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+
         monitor = WorkspaceMonitor(
             shell=shell,
             verify=verify,
@@ -1647,15 +1728,20 @@ class TestMonitoringIncidentLifecycle:
 
     async def test_get_active_incidents(self, workspace):
         """get_active_incidents returns only unresolved incidents."""
-        profile = _make_profile(workspace, commands={
-            "health": f"bash {workspace / 'check_fail.sh'}",
-        })
+        profile = _make_profile(
+            workspace,
+            commands={
+                "health": f"bash {workspace / 'check_fail.sh'}",
+            },
+        )
         from src.bot.features.project_automation import OperationConfig
+
         profile.operations = OperationConfig(monitoring_interval_seconds=60)
 
         shell = ShellExecutor()
         verify = VerifyPipeline(shell)
         from src.bot.agentic.server_diagnostics import DiagnosticsCollector
+
         monitor = WorkspaceMonitor(
             shell=shell,
             verify=verify,
@@ -1683,7 +1769,10 @@ class TestRemediationPlanner:
 
     def test_code_problem_safe_auto_resolve(self):
         """Code problems are safe to auto-resolve by default."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.CODE,
@@ -1699,7 +1788,10 @@ class TestRemediationPlanner:
 
     def test_service_problem_high_caution(self):
         """Service problems get high caution by default."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.SERVICE,
@@ -1715,7 +1807,10 @@ class TestRemediationPlanner:
 
     def test_environment_problem_blocks_auto(self):
         """Environment problems block auto-resolve."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.ENVIRONMENT,
@@ -1748,7 +1843,10 @@ class TestRemediationPlanner:
 
     def test_caution_keyword_raises_level(self):
         """Runbook hints with caution keywords raise the caution level."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.CODE,
@@ -1765,7 +1863,10 @@ class TestRemediationPlanner:
 
     def test_low_confidence_raises_caution(self):
         """Low confidence raises caution level."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.CODE,
@@ -1781,7 +1882,10 @@ class TestRemediationPlanner:
 
     def test_critical_step_raises_caution(self):
         """Critical step raises caution level from NONE to LOW."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.CODE,
@@ -1813,7 +1917,10 @@ class TestRemediationPlanner:
 
     def test_safe_keyword_lowers_caution(self):
         """Runbook hints with safe keywords can lower caution."""
-        from src.bot.agentic.remediation_planner import CautionLevel, build_remediation_plan
+        from src.bot.agentic.remediation_planner import (
+            CautionLevel,
+            build_remediation_plan,
+        )
 
         diag = ProblemDiagnosis(
             problem_type=ProblemType.SERVICE,
@@ -1843,9 +1950,12 @@ class TestSummaryFormatter:
 
         step = VerifyStep(label="test", command="pytest")
         result = ShellActionResult(
-            command="pytest", returncode=0,
-            success=True, timed_out=False,
-            stdout_text="5 passed", stderr_text="",
+            command="pytest",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="5 passed",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(step, result)],
@@ -1854,8 +1964,10 @@ class TestSummaryFormatter:
         )
         diag = ProblemDiagnosis(
             problem_type=ProblemType.UNKNOWN,
-            label="", failed_step_label="",
-            short_cause="", safe_to_autofix=False,
+            label="",
+            failed_step_label="",
+            short_cause="",
+            safe_to_autofix=False,
         )
         text = format_verify_summary(report, diag, "/test")
         assert "Все проверки пройдены" in text
@@ -1867,13 +1979,17 @@ class TestSummaryFormatter:
 
         step = VerifyStep(label="lint", command="flake8")
         result = ShellActionResult(
-            command="flake8", returncode=1,
-            success=False, timed_out=False,
-            stdout_text="E501: line too long", stderr_text="",
+            command="flake8",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="E501: line too long",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(step, result)],
-            failed_step=step, logs_result=None,
+            failed_step=step,
+            logs_result=None,
         )
         diag = ProblemDiagnosis(
             problem_type=ProblemType.CODE,
@@ -1896,13 +2012,17 @@ class TestSummaryFormatter:
 
         step = VerifyStep(label="test", command="pytest")
         result = ShellActionResult(
-            command="pytest", returncode=1,
-            success=False, timed_out=False,
-            stdout_text="Error", stderr_text="",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="Error",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(step, result)],
-            failed_step=step, logs_result=None,
+            failed_step=step,
+            logs_result=None,
         )
         diag = ProblemDiagnosis(
             problem_type=ProblemType.UNKNOWN,
@@ -1952,9 +2072,12 @@ class TestSummaryFormatter:
         from src.bot.agentic.summary_formatter import format_service_summary
 
         result = ShellActionResult(
-            command="systemctl restart", returncode=0,
-            success=True, timed_out=False,
-            stdout_text="", stderr_text="",
+            command="systemctl restart",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
         )
         text = format_service_summary("TestApp", "restart", True, result, True)
         assert "выполнено" in text
@@ -1965,9 +2088,12 @@ class TestSummaryFormatter:
         from src.bot.agentic.summary_formatter import format_service_summary
 
         result = ShellActionResult(
-            command="systemctl restart", returncode=1,
-            success=False, timed_out=False,
-            stdout_text="", stderr_text="",
+            command="systemctl restart",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
             error="permission denied",
         )
         text = format_service_summary("TestApp", "restart", False, result, False)
@@ -2011,17 +2137,19 @@ class TestEnhancedProfileValidation:
         """Warns when monitoring enabled but no verify/health commands."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(monitoring_interval_seconds=300),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(monitoring_interval_seconds=300),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2034,19 +2162,21 @@ class TestEnhancedProfileValidation:
         """Warns when critical step doesn't match any command."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {"test": "pytest", "lint": "flake8"},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(
-                    critical_steps=("health", "nonexistent"),
-                ),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {"test": "pytest", "lint": "flake8"},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(
+                        critical_steps=("health", "nonexistent"),
+                    ),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2060,19 +2190,21 @@ class TestEnhancedProfileValidation:
         """Warns when runbook key is not a valid problem type or command."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {"test": "pytest"},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(
-                    runbook_hints={"invalid_key": "some hint"},
-                ),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {"test": "pytest"},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(
+                        runbook_hints={"invalid_key": "some hint"},
+                    ),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2085,19 +2217,21 @@ class TestEnhancedProfileValidation:
         """Warns when runbook hint value is empty."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(
-                    runbook_hints={"code": "  "},
-                ),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(
+                        runbook_hints={"code": "  "},
+                    ),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2110,17 +2244,19 @@ class TestEnhancedProfileValidation:
         """Warns about empty operations config."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2131,24 +2267,26 @@ class TestEnhancedProfileValidation:
 
     def test_duplicate_alias_is_error(self):
         """Duplicate aliases across profiles are errors."""
-        pa = self._make_pa({
-            "project1": {
-                "display_name": "P1",
-                "aliases": ("bot",),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-            },
-            "project2": {
-                "display_name": "P2",
-                "aliases": ("bot",),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-            },
-        })
+        pa = self._make_pa(
+            {
+                "project1": {
+                    "display_name": "P1",
+                    "aliases": ("bot",),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                },
+                "project2": {
+                    "display_name": "P2",
+                    "aliases": ("bot",),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                },
+            }
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2163,20 +2301,22 @@ class TestEnhancedProfileValidation:
         """Warns about verify_after_restart without health command."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(
-                    self_heal_restart=True,
-                    self_heal_verify_after_restart=True,
-                ),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(
+                        self_heal_restart=True,
+                        self_heal_verify_after_restart=True,
+                    ),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -2189,22 +2329,24 @@ class TestEnhancedProfileValidation:
         """Valid runbook keys (problem types + commands) produce no warnings."""
         from src.bot.features.project_automation import OperationConfig
 
-        pa = self._make_pa({
-            "test_project": {
-                "display_name": "Test",
-                "aliases": (),
-                "operator_notes": "",
-                "commands": {"health": "echo ok"},
-                "services": (),
-                "sort_priority": 0,
-                "operations": OperationConfig(
-                    runbook_hints={
-                        "service": "check logs",
-                        "health": "run systemctl status",
-                    },
-                ),
+        pa = self._make_pa(
+            {
+                "test_project": {
+                    "display_name": "Test",
+                    "aliases": (),
+                    "operator_notes": "",
+                    "commands": {"health": "echo ok"},
+                    "services": (),
+                    "sort_priority": 0,
+                    "operations": OperationConfig(
+                        runbook_hints={
+                            "service": "check logs",
+                            "health": "run systemctl status",
+                        },
+                    ),
+                }
             }
-        })
+        )
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:

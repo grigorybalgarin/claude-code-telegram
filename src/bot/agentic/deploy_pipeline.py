@@ -100,9 +100,7 @@ class DeployResult:
                 "",
             ]
             if self.post_deploy_commit:
-                lines.append(
-                    f"Коммит: <code>{self.post_deploy_commit[:8]}</code>"
-                )
+                lines.append(f"Коммит: <code>{self.post_deploy_commit[:8]}</code>")
             elapsed = self.total_duration_ms / 1000
             lines.append(f"Время: {elapsed:.1f}с")
 
@@ -129,9 +127,7 @@ class DeployResult:
             rb_status = "успешно" if self.rollback_success else "не удалось"
             lines.append(f"\n<b>Откат:</b> {rb_status}")
             if self.pre_deploy_commit:
-                lines.append(
-                    f"Откат к: <code>{self.pre_deploy_commit[:8]}</code>"
-                )
+                lines.append(f"Откат к: <code>{self.pre_deploy_commit[:8]}</code>")
 
         # Show failing stage output
         if self.failed_stage:
@@ -177,9 +173,8 @@ class DeployProfile:
             if not restart_cmd:
                 restart_cmd = getattr(svc, "restart_command", None)
             if not health_cmd:
-                health_cmd = (
-                    getattr(svc, "health_command", None)
-                    or getattr(svc, "status_command", None)
+                health_cmd = getattr(svc, "health_command", None) or getattr(
+                    svc, "status_command", None
                 )
             if not logs_cmd:
                 logs_cmd = getattr(svc, "logs_command", None)
@@ -220,42 +215,50 @@ class DeployPipeline:
                 timeout_seconds=10,
             )
             clean = r.success and not r.stdout_text.strip()
-            report.results.append(GateResult(
-                gate=DeploySafetyGate(
-                    name="clean_worktree",
-                    check_type="clean_worktree",
-                    hard=True,
-                    description="Рабочая директория должна быть чистой",
-                ),
-                passed=clean,
-                message="" if clean else "Есть незакоммиченные изменения",
-            ))
+            report.results.append(
+                GateResult(
+                    gate=DeploySafetyGate(
+                        name="clean_worktree",
+                        check_type="clean_worktree",
+                        hard=True,
+                        description="Рабочая директория должна быть чистой",
+                    ),
+                    passed=clean,
+                    message="" if clean else "Есть незакоммиченные изменения",
+                )
+            )
 
         # Gate 2: Required commands present (hard gate)
         has_restart = bool(deploy_profile.restart_command)
-        report.results.append(GateResult(
-            gate=DeploySafetyGate(
-                name="restart_command",
-                check_type="profile_complete",
-                hard=True,
-                description="Команда перезапуска должна быть задана",
-            ),
-            passed=has_restart,
-            message="" if has_restart else "Не задана команда restart/deploy",
-        ))
+        report.results.append(
+            GateResult(
+                gate=DeploySafetyGate(
+                    name="restart_command",
+                    check_type="profile_complete",
+                    hard=True,
+                    description="Команда перезапуска должна быть задана",
+                ),
+                passed=has_restart,
+                message="" if has_restart else "Не задана команда restart/deploy",
+            )
+        )
 
         # Gate 3: Health command present (soft gate)
         has_health = bool(deploy_profile.health_command)
-        report.results.append(GateResult(
-            gate=DeploySafetyGate(
-                name="health_command",
-                check_type="profile_complete",
-                hard=False,
-                description="Команда health check желательна",
-            ),
-            passed=has_health,
-            message="" if has_health else "Нет health check — deploy без верификации",
-        ))
+        report.results.append(
+            GateResult(
+                gate=DeploySafetyGate(
+                    name="health_command",
+                    check_type="profile_complete",
+                    hard=False,
+                    description="Команда health check желательна",
+                ),
+                passed=has_health,
+                message=(
+                    "" if has_health else "Нет health check — deploy без верификации"
+                ),
+            )
+        )
 
         # Gate 4: Service currently healthy (soft gate)
         if deploy_profile.health_command:
@@ -264,16 +267,18 @@ class DeployPipeline:
                 command=deploy_profile.health_command,
                 timeout_seconds=15,
             )
-            report.results.append(GateResult(
-                gate=DeploySafetyGate(
-                    name="service_healthy",
-                    check_type="service_healthy",
-                    hard=False,
-                    description="Сервис должен быть здоров перед deploy",
-                ),
-                passed=r.success,
-                message="" if r.success else "Сервис не здоров перед deploy",
-            ))
+            report.results.append(
+                GateResult(
+                    gate=DeploySafetyGate(
+                        name="service_healthy",
+                        check_type="service_healthy",
+                        hard=False,
+                        description="Сервис должен быть здоров перед deploy",
+                    ),
+                    passed=r.success,
+                    message="" if r.success else "Сервис не здоров перед deploy",
+                )
+            )
 
         return report
 
@@ -355,7 +360,8 @@ class DeployPipeline:
                 if (
                     deploy_profile.rollback_safe
                     and pre_commit
-                    and stage in {
+                    and stage
+                    in {
                         DeployStage.PREFLIGHT,
                         DeployStage.COMPILE,
                         DeployStage.RESTART,

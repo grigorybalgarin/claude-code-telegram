@@ -7,10 +7,10 @@ Uses severity-aware notifications and incident deduplication.
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Optional
-import uuid
 
 import structlog
 
@@ -62,7 +62,10 @@ def _classify_severity(
         return Severity.CRITICAL
     if diagnosis and diagnosis.is_critical_step:
         return Severity.CRITICAL
-    if diagnosis and diagnosis.problem_type in (ProblemType.SERVICE, ProblemType.ENVIRONMENT):
+    if diagnosis and diagnosis.problem_type in (
+        ProblemType.SERVICE,
+        ProblemType.ENVIRONMENT,
+    ):
         return Severity.DEGRADED
     if consecutive_failures >= 3:
         return Severity.DEGRADED
@@ -111,9 +114,9 @@ class WorkspaceMonitor:
 
         # Callbacks
         self._on_notify: Optional[NotifyCallback] = None
-        self._on_save_operation: Optional[
-            Callable[..., Coroutine[Any, Any, None]]
-        ] = None
+        self._on_save_operation: Optional[Callable[..., Coroutine[Any, Any, None]]] = (
+            None
+        )
         self._on_save_incident: Optional[
             Callable[[Incident], Coroutine[Any, Any, None]]
         ] = None
@@ -309,7 +312,9 @@ class WorkspaceMonitor:
         self, health: WorkspaceHealth, profile: Any, report: Any
     ) -> None:
         ops = getattr(profile, "operations", None)
-        server_diag = await self.diagnostics.collect(profile, Path(health.workspace_path))
+        server_diag = await self.diagnostics.collect(
+            profile, Path(health.workspace_path)
+        )
         diagnosis = classify_problem(
             report,
             operations_config=ops,
@@ -389,7 +394,9 @@ class WorkspaceMonitor:
             if incident.heal_attempts > 0:
                 lines.append(f"<b>Авто-починок:</b> {incident.heal_attempts}")
             if incident.suppressed_count > 0:
-                lines.append(f"<b>Подавлено дубликатов:</b> {incident.suppressed_count}")
+                lines.append(
+                    f"<b>Подавлено дубликатов:</b> {incident.suppressed_count}"
+                )
             await self._notify("\n".join(lines))
 
             # Clear dedup key on recovery
@@ -431,9 +438,7 @@ class WorkspaceMonitor:
         # Check global guardrail limits
         now = time.time()
         window = self.guardrails.heal_window_seconds
-        recent_heals = sum(
-            1 for t in self._recent_heal_timestamps if now - t < window
-        )
+        recent_heals = sum(1 for t in self._recent_heal_timestamps if now - t < window)
         if not self.guardrails.allows_heal(recent_heals):
             logger.info("Heal blocked by global guardrails")
             return

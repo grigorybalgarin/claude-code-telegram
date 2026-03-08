@@ -120,9 +120,11 @@ class VerifyPipeline:
             rel_path = str(profile.root_path)
 
         lines = [
-            "✅ <b>Проверка завершена</b>"
-            if report.success
-            else "❌ <b>Проверка не пройдена</b>",
+            (
+                "✅ <b>Проверка завершена</b>"
+                if report.success
+                else "❌ <b>Проверка не пройдена</b>"
+            ),
             "",
             f"Проект: <code>{escape_html(rel_path)}</code>",
         ]

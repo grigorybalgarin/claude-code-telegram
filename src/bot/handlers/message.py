@@ -399,8 +399,10 @@ async def handle_text_message(
                 session_id = None
                 if not force_new:
                     try:
-                        existing_session = await claude_integration._find_resumable_session(
-                            user_id, working_dir
+                        existing_session = (
+                            await claude_integration._find_resumable_session(
+                                user_id, working_dir
+                            )
                         )
                     except Exception as e:
                         logger.warning(
@@ -482,7 +484,9 @@ async def handle_text_message(
             if autopilot_plan and autopilot_plan.should_verify and change_guard:
                 verification_results = await change_guard.run_verification_commands(
                     working_dir,
-                    project_automation.get_verification_commands(autopilot_plan.profile),
+                    project_automation.get_verification_commands(
+                        autopilot_plan.profile
+                    ),
                 )
                 guard_report = ChangeGuardReport(
                     checkpoint_created=checkpoint is not None,
@@ -671,9 +675,9 @@ async def handle_text_message(
                     except Exception as doc_err:
                         logger.warning(
                             "Failed to send document image",
-                                path=str(img.path),
-                                error=str(doc_err),
-                            )
+                            path=str(img.path),
+                            error=str(doc_err),
+                        )
 
         if guard_report and change_guard:
             await update.message.reply_text(

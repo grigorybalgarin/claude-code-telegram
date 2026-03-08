@@ -532,6 +532,7 @@ class TestClaudeSandboxSettings:
             approved_directory=tmp_path,
             claude_timeout_seconds=2,
             claude_disallowed_tools=["WebFetch", "WebSearch"],
+            disable_tool_validation=False,
         )
         manager = ClaudeSDKManager(config)
 
@@ -561,6 +562,7 @@ class TestClaudeSandboxSettings:
             approved_directory=tmp_path,
             claude_timeout_seconds=2,
             claude_allowed_tools=["Read", "Write", "Bash"],
+            disable_tool_validation=False,
         )
         manager = ClaudeSDKManager(config)
 
@@ -733,8 +735,9 @@ class TestClaudeSandboxSettings:
         assert len(captured_options) == 1
         assert captured_options[0].model == "claude-sonnet-4-20250514"
 
-    async def test_claude_model_none_when_unset(self, tmp_path):
+    async def test_claude_model_none_when_unset(self, tmp_path, monkeypatch):
         """Test that model is None when claude_model is not configured."""
+        monkeypatch.delenv("CLAUDE_MODEL", raising=False)
         config = Settings(
             _env_file=None,
             telegram_bot_token="test:token",

@@ -30,14 +30,14 @@ from telegram.ext import (
 
 from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
-from .agentic.context import AgenticWorkspaceContext
 from .agentic.action_runner import ActionRunner
+from .agentic.context import AgenticWorkspaceContext
 from .agentic.panel_builder import PanelBuilder
-from .agentic.response_sender import ResponseSender
-from .agentic.stream_handler import StreamHandler, _tool_icon
-from .agentic.shell_executor import ShellExecutor
 from .agentic.resolve_runner import ResolveRunner
+from .agentic.response_sender import ResponseSender
 from .agentic.service_controller import ServiceController
+from .agentic.shell_executor import ShellExecutor
+from .agentic.stream_handler import StreamHandler, _tool_icon
 from .agentic.verify_pipeline import VerifyPipeline
 from .features.change_guard import ChangeGuardReport
 from .utils.draft_streamer import DraftStreamer, generate_draft_id
@@ -113,7 +113,6 @@ class _MessageActionProxy:
         )
 
 
-
 class MessageOrchestrator:
     """Routes messages based on mode. Single entry point for all Telegram updates."""
 
@@ -126,8 +125,12 @@ class MessageOrchestrator:
         self.resolver = ResolveRunner(self.verify)
         self.panel = PanelBuilder(self.verify, self.shell, self.services)
         self.actions = ActionRunner(
-            self.settings, self.shell, self.verify,
-            self.services, self.resolver, self.panel,
+            self.settings,
+            self.shell,
+            self.verify,
+            self.services,
+            self.resolver,
+            self.panel,
         )
         self.stream = StreamHandler()
         self.response_sender = ResponseSender(self.stream)
@@ -593,9 +596,13 @@ class MessageOrchestrator:
         """Compact status with task/queue info."""
         user_id = update.effective_user.id
         text = await self._build_agentic_status_text(context, user_id)
-        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
+        (
+            _current_dir,
+            _current_workspace,
+            _boundary_root,
+            _project_automation,
+            profile,
+        ) = self._get_agentic_workspace_profile(context)
         await update.message.reply_text(
             text,
             parse_mode="HTML",
@@ -682,7 +689,11 @@ class MessageOrchestrator:
             for t in top_tools[:8]:
                 icon = _tool_icon(t["tool_name"])
                 tool_lines.append(f"  {icon} {t['tool_name']}: {t['usage_count']}x")
-            tools_text = "\n".join(tool_lines) if tool_lines else "  Инструменты пока не отслеживались"
+            tools_text = (
+                "\n".join(tool_lines)
+                if tool_lines
+                else "  Инструменты пока не отслеживались"
+            )
 
             text = (
                 f"<b>Твоя статистика</b>\n\n"
@@ -692,9 +703,13 @@ class MessageOrchestrator:
                 f"<b>Последние 7 дней:</b>\n<pre>{cost_chart}</pre>\n\n"
                 f"<b>Топ инструментов:</b>\n{tools_text}"
             )
-            _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-                self._get_agentic_workspace_profile(context)
-            )
+            (
+                _current_dir,
+                _current_workspace,
+                _boundary_root,
+                _project_automation,
+                profile,
+            ) = self._get_agentic_workspace_profile(context)
             await update.message.reply_text(
                 text,
                 parse_mode="HTML",
@@ -770,9 +785,7 @@ class MessageOrchestrator:
             await self.agentic_text(update, context)
 
         else:
-            await update.message.reply_text(
-                "Unknown action. Use: list, add, del, run"
-            )
+            await update.message.reply_text("Unknown action. Use: list, add, del, run")
 
     async def agentic_context(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -791,7 +804,9 @@ class MessageOrchestrator:
                     parse_mode="HTML",
                 )
                 return
-            lines = [f"  {i+1}. {escape_html(inst)}" for i, inst in enumerate(instructions)]
+            lines = [
+                f"  {i+1}. {escape_html(inst)}" for i, inst in enumerate(instructions)
+            ]
             await update.message.reply_text(
                 "<b>Active instructions:</b>\n" + "\n".join(lines),
                 parse_mode="HTML",
@@ -913,7 +928,11 @@ class MessageOrchestrator:
                     pass
 
         return await self.panel.build_status_text(
-            ctx, user_id, session_id, active_elapsed, queue_size,
+            ctx,
+            user_id,
+            session_id,
+            active_elapsed,
+            queue_size,
             last_verify=last_verify,
             last_resolve=last_resolve,
             last_deploy=last_deploy,
@@ -1119,8 +1138,10 @@ class MessageOrchestrator:
                 session_id = None
                 if not force_new:
                     try:
-                        existing_session = await claude_integration._find_resumable_session(
-                            user_id, working_dir
+                        existing_session = (
+                            await claude_integration._find_resumable_session(
+                                user_id, working_dir
+                            )
                         )
                     except Exception as e:
                         logger.warning(
@@ -1136,9 +1157,7 @@ class MessageOrchestrator:
             if autopilot_plan.should_checkpoint and change_guard:
                 checkpoint = await change_guard.create_checkpoint(working_dir)
         if custom_instructions:
-            instructions_block = "\n".join(
-                f"- {inst}" for inst in custom_instructions
-            )
+            instructions_block = "\n".join(f"- {inst}" for inst in custom_instructions)
             final_prompt = (
                 f"[User instructions: {instructions_block}]\n\n{final_prompt}"
             )
@@ -1196,7 +1215,9 @@ class MessageOrchestrator:
             if autopilot_plan and autopilot_plan.should_verify and change_guard:
                 verification_results = await change_guard.run_verification_commands(
                     working_dir,
-                    project_automation.get_verification_commands(autopilot_plan.profile),
+                    project_automation.get_verification_commands(
+                        autopilot_plan.profile
+                    ),
                 )
                 guard_report = ChangeGuardReport(
                     checkpoint_created=checkpoint is not None,
@@ -1264,9 +1285,7 @@ class MessageOrchestrator:
                     f"last tools: {', '.join(tool_names)}"
                 )
 
-            formatted_messages = [
-                FormattedMessage(error_msg, parse_mode="HTML")
-            ]
+            formatted_messages = [FormattedMessage(error_msg, parse_mode="HTML")]
         finally:
             self._active_tasks.pop(user_id, None)
             heartbeat.cancel()
@@ -1616,25 +1635,24 @@ class MessageOrchestrator:
                 await progress_msg.edit_text("No video found in message.")
                 return
 
-            extracted = await extract_frames_from_video(
-                video, update.message.caption
-            )
+            extracted = await extract_frames_from_video(video, update.message.caption)
 
             # Build image content blocks for Claude multimodal
             image_blocks = []
             for frame_b64 in extracted.frames_base64:
-                image_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": frame_b64,
-                    },
-                })
+                image_blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": frame_b64,
+                        },
+                    }
+                )
 
             prompt = (
-                extracted.prompt
-                + "\n\nДетально проанализируй все кадры из видео. "
+                extracted.prompt + "\n\nДетально проанализируй все кадры из видео. "
                 "Определи и назови точные бренды и модели всей техники "
                 "(ноутбуки, телефоны, наушники, зарядки, павербанки — "
                 "по форме корпуса, портам, логотипам, цвету, размеру). "
@@ -1657,9 +1675,7 @@ class MessageOrchestrator:
             from .handlers.message import _format_error_message
 
             await progress_msg.edit_text(_format_error_message(e), parse_mode="HTML")
-            logger.error(
-                "Video note processing failed", error=str(e), user_id=user_id
-            )
+            logger.error("Video note processing failed", error=str(e), user_id=user_id)
 
     async def _handle_agentic_media_message(
         self,
@@ -1752,9 +1768,13 @@ class MessageOrchestrator:
         """
         args = update.message.text.split()[1:] if update.message.text else []
         base = self.settings.approved_directory
-        _current_dir, current_workspace, _boundary_root, project_automation, _profile = (
-            self._get_agentic_workspace_profile(context)
-        )
+        (
+            _current_dir,
+            current_workspace,
+            _boundary_root,
+            project_automation,
+            _profile,
+        ) = self._get_agentic_workspace_profile(context)
 
         if args:
             # Switch to named repo
@@ -1773,7 +1793,9 @@ class MessageOrchestrator:
                 return
 
             if project_automation:
-                target_path = project_automation.detect_workspace_root(target_path, base)
+                target_path = project_automation.detect_workspace_root(
+                    target_path, base
+                )
             context.user_data["current_directory"] = target_path
 
             # Try to find a resumable session
@@ -1830,9 +1852,13 @@ class MessageOrchestrator:
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
         """Handle a quick action triggered from inline or reply keyboards."""
-        _current_dir, _current_workspace, _boundary_root, _project_automation, profile = (
-            self._get_agentic_workspace_profile(context)
-        )
+        (
+            _current_dir,
+            _current_workspace,
+            _boundary_root,
+            _project_automation,
+            profile,
+        ) = self._get_agentic_workspace_profile(context)
 
         if action == "new":
             context.user_data["claude_session_id"] = None
@@ -1868,7 +1894,9 @@ class MessageOrchestrator:
             )
 
         elif action == "running":
-            text, reply_markup = await self._build_agentic_running_services_text(context)
+            text, reply_markup = await self._build_agentic_running_services_text(
+                context
+            )
             await query.edit_message_text(
                 text,
                 parse_mode="HTML",
@@ -1942,14 +1970,10 @@ class MessageOrchestrator:
 
         elif action.startswith("svc:"):
             _svc, service_key, service_action = action.split(":", 2)
-            await self.actions.run_service(
-                query, context, service_key, service_action
-            )
+            await self.actions.run_service(query, context, service_key, service_action)
 
         elif action.startswith("stop:"):
-            await self.actions.stop_background(
-                query, context, action.split(":", 1)[1]
-            )
+            await self.actions.stop_background(query, context, action.split(":", 1)[1])
 
         elif action.startswith("v"):
             level = int(action[1])
@@ -1981,9 +2005,13 @@ class MessageOrchestrator:
         _, project_name = data.split(":", 1)
 
         base = self.settings.approved_directory
-        _current_dir, _current_workspace, _boundary_root, project_automation, _profile = (
-            self._get_agentic_workspace_profile(context)
-        )
+        (
+            _current_dir,
+            _current_workspace,
+            _boundary_root,
+            project_automation,
+            _profile,
+        ) = self._get_agentic_workspace_profile(context)
 
         if project_name == "/":
             new_path = base

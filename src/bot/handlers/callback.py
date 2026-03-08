@@ -11,12 +11,12 @@ from ...claude.facade import ClaudeIntegration
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
+from ..utils.html_format import escape_html
 from .command import (
     _build_workspace_catalog_keyboard,
     _get_workspace_catalog,
     _render_workspace_catalog_text,
 )
-from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
 
@@ -366,9 +366,13 @@ async def _handle_show_projects_action(
             )
             return
 
-        _current_dir, _boundary_root, project_automation, summaries, current_workspace = (
-            _get_workspace_catalog(settings, context)
-        )
+        (
+            _current_dir,
+            _boundary_root,
+            project_automation,
+            summaries,
+            current_workspace,
+        ) = _get_workspace_catalog(settings, context)
         if not project_automation or not summaries:
             await query.edit_message_text(
                 "📁 <b>No Projects Found</b>\n\n"

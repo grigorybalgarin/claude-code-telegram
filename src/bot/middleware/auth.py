@@ -1,6 +1,5 @@
 """Telegram bot authentication middleware."""
 
-from datetime import UTC, datetime
 from typing import Any, Callable, Dict
 
 import structlog

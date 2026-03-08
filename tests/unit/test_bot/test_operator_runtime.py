@@ -156,7 +156,7 @@ async def test_launch_job_blocks_second_active_job_in_same_workspace(tmp_path):
     job = await runtime.launch_job(
         workspace_root=workspace_root,
         action_key="start",
-        command="python3 -c \"import time; time.sleep(10)\"",
+        command='python3 -c "import time; time.sleep(10)"',
         title="Start",
     )
 

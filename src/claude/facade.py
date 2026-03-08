@@ -3,14 +3,19 @@
 Provides simple interface for bot handlers.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import structlog
 
 from ..config.settings import Settings
 from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
+
+if TYPE_CHECKING:
+    from .session import ClaudeSession
 
 logger = structlog.get_logger()
 

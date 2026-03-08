@@ -267,8 +267,13 @@ class ProjectAutomationManager:
             return warnings
 
         _VALID_RUNBOOK_KEYS = {
-            "code", "config", "dependency", "service",
-            "deploy", "environment", "unknown",
+            "code",
+            "config",
+            "dependency",
+            "service",
+            "deploy",
+            "environment",
+            "unknown",
         }
 
         seen_aliases: dict[str, str] = {}
@@ -278,9 +283,7 @@ class ProjectAutomationManager:
 
             # Path existence
             if not full_path.is_dir():
-                warnings.append(
-                    f"[warn] {profile_name}: путь '{rel_path}' не найден"
-                )
+                warnings.append(f"[warn] {profile_name}: путь '{rel_path}' не найден")
 
             # Duplicate aliases
             for alias in override.get("aliases") or ():
@@ -347,7 +350,9 @@ class ProjectAutomationManager:
                         )
 
                     # verify_after_restart without health makes no sense
-                    if ops.self_heal_verify_after_restart and not commands.get("health"):
+                    if ops.self_heal_verify_after_restart and not commands.get(
+                        "health"
+                    ):
                         if not has_health:
                             warnings.append(
                                 f"[warn] {profile_name}: "
@@ -374,9 +379,7 @@ class ProjectAutomationManager:
                 if ops.critical_steps:
                     known_labels = set(commands.keys())
                     if services:
-                        known_labels.update(
-                            getattr(s, "key", "") for s in services
-                        )
+                        known_labels.update(getattr(s, "key", "") for s in services)
                     for step in ops.critical_steps:
                         if step not in known_labels:
                             warnings.append(
@@ -387,7 +390,9 @@ class ProjectAutomationManager:
                 # Runbook hints use valid keys
                 if ops.runbook_hints:
                     for key in ops.runbook_hints:
-                        if key not in _VALID_RUNBOOK_KEYS and key not in (commands or {}):
+                        if key not in _VALID_RUNBOOK_KEYS and key not in (
+                            commands or {}
+                        ):
                             warnings.append(
                                 f"[warn] {profile_name}: runbook ключ "
                                 f"'{key}' не является типом проблемы "
@@ -717,7 +722,9 @@ class ProjectAutomationManager:
         current_workspace: Optional[Path] = None,
     ) -> List[str]:
         """Build compact Telegram lines for a workspace summary."""
-        marker = " ◀" if current_workspace and summary.root_path == current_workspace else ""
+        marker = (
+            " ◀" if current_workspace and summary.root_path == current_workspace else ""
+        )
         stacks = ", ".join(summary.stacks)
         badges = []
         if summary.has_git_repo:
@@ -744,7 +751,9 @@ class ProjectAutomationManager:
             )
         return lines
 
-    def get_playbook(self, slug: str, profile: ProjectProfile) -> Optional[ProjectPlaybook]:
+    def get_playbook(
+        self, slug: str, profile: ProjectProfile
+    ) -> Optional[ProjectPlaybook]:
         """Return a playbook only if it is available for the profile."""
         normalized = slug.strip().lower()
         for playbook in self.list_playbooks(profile):
@@ -786,7 +795,11 @@ class ProjectAutomationManager:
                 pattern.search(user_request) for pattern in self._MUTATING_PATTERNS
             )
 
-        mutating = playbook is not None and playbook.slug in {"setup", "test", "quality"}
+        mutating = playbook is not None and playbook.slug in {
+            "setup",
+            "test",
+            "quality",
+        }
         if not mutating:
             mutating = any(
                 pattern.search(user_request) for pattern in self._MUTATING_PATTERNS
@@ -885,7 +898,9 @@ class ProjectAutomationManager:
                     f"Run type checks before finishing: {profile.commands['typecheck']}"
                 )
             if "format" in profile.commands:
-                steps.append(f"Run formatting when helpful: {profile.commands['format']}")
+                steps.append(
+                    f"Run formatting when helpful: {profile.commands['format']}"
+                )
             steps.extend(
                 [
                     "Fix straightforward code quality issues.",
@@ -919,12 +934,12 @@ class ProjectAutomationManager:
                     f"{len(doctor_steps) + 2}. End with findings first, then a short change summary.",
                 ]
             )
-            body = (
-                "Goal:\n" + "\n".join(doctor_steps) + "\n"
-            )
+            body = "Goal:\n" + "\n".join(doctor_steps) + "\n"
 
         extra = (
-            f"\nOperator note: {extra_instructions.strip()}\n" if extra_instructions.strip() else ""
+            f"\nOperator note: {extra_instructions.strip()}\n"
+            if extra_instructions.strip()
+            else ""
         )
         return f"{base_context}\n{body}{extra}"
 
@@ -1043,7 +1058,9 @@ class ProjectAutomationManager:
             return "pip"
         return "python"
 
-    def _detect_python_commands(self, root: Path, package_manager: str) -> Dict[str, str]:
+    def _detect_python_commands(
+        self, root: Path, package_manager: str
+    ) -> Dict[str, str]:
         commands: Dict[str, str] = {}
         pyproject = root / "pyproject.toml"
         pyproject_text = ""
@@ -1067,12 +1084,20 @@ class ProjectAutomationManager:
             commands["install"] = "pip install -e ."
 
         lowered = pyproject_text.lower()
-        if any(marker in lowered for marker in ("pytest", "[tool.pytest", "pytest.ini_options")) or (
-            root / "pytest.ini"
-        ).exists():
+        if (
+            any(
+                marker in lowered
+                for marker in ("pytest", "[tool.pytest", "pytest.ini_options")
+            )
+            or (root / "pytest.ini").exists()
+        ):
             commands.setdefault("test", f"{prefix}pytest".strip())
 
-        if "ruff" in lowered or (root / "ruff.toml").exists() or (root / ".ruff.toml").exists():
+        if (
+            "ruff" in lowered
+            or (root / "ruff.toml").exists()
+            or (root / ".ruff.toml").exists()
+        ):
             commands.setdefault("lint", f"{prefix}ruff check .".strip())
             commands.setdefault("format", f"{prefix}ruff format .".strip())
         elif "black" in lowered:
@@ -1093,7 +1118,11 @@ class ProjectAutomationManager:
         except OSError:
             return targets
 
-        lowered = {line.split(":")[0].strip().lower() for line in content.splitlines() if ":" in line}
+        lowered = {
+            line.split(":")[0].strip().lower()
+            for line in content.splitlines()
+            if ":" in line
+        }
         if "test" in lowered:
             targets.setdefault("test", "make test")
         if "lint" in lowered:
@@ -1119,7 +1148,12 @@ class ProjectAutomationManager:
         return targets
 
     def _find_compose_file(self, root: Path) -> Optional[Path]:
-        for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+        for name in (
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "compose.yml",
+            "compose.yaml",
+        ):
             candidate = root / name
             if candidate.exists():
                 return candidate
@@ -1145,7 +1179,9 @@ class ProjectAutomationManager:
 
         score = 1 if candidate == current_workspace else 0
 
-        if relative_label and self._contains_path_reference(request_text, relative_label):
+        if relative_label and self._contains_path_reference(
+            request_text, relative_label
+        ):
             score = max(score, 9 + relative_label.count("/"))
         if (
             normalized_relative
@@ -1163,7 +1199,9 @@ class ProjectAutomationManager:
             normalized_alias = self._normalize_match_text(alias)
             if len(normalized_alias) >= 3 and normalized_alias in normalized_request:
                 score = max(score, 8)
-            elif len(alias) >= 3 and self._contains_workspace_name(request_text, alias.casefold()):
+            elif len(alias) >= 3 and self._contains_workspace_name(
+                request_text, alias.casefold()
+            ):
                 score = max(score, 8)
 
         return score
@@ -1209,7 +1247,10 @@ class ProjectAutomationManager:
             return {}
 
         try:
-            raw = yaml.safe_load(workspace_profiles_path.read_text(encoding="utf-8")) or {}
+            raw = (
+                yaml.safe_load(workspace_profiles_path.read_text(encoding="utf-8"))
+                or {}
+            )
         except OSError as exc:
             logger.warning(
                 "Failed to read workspace profiles %s: %s",
@@ -1268,16 +1309,16 @@ class ProjectAutomationManager:
                 "operator_notes": str(entry.get("notes", "")).strip(),
                 "commands": {
                     str(key).strip(): (
-                        str(value).strip() if value is not None and str(value).strip() else None
+                        str(value).strip()
+                        if value is not None and str(value).strip()
+                        else None
                     )
                     for key, value in commands.items()
                     if str(key).strip()
                 },
                 "services": services,
                 "sort_priority": int(entry.get("priority", 0) or 0),
-                "operations": self._parse_operations_override(
-                    entry.get("operations")
-                ),
+                "operations": self._parse_operations_override(entry.get("operations")),
             }
 
         return overrides
@@ -1336,9 +1377,7 @@ class ProjectAutomationManager:
 
         display_name = str(override.get("display_name") or profile.display_name)
         aliases = tuple(
-            dict.fromkeys(
-                [*profile.aliases, *(override.get("aliases") or ())]
-            )
+            dict.fromkeys([*profile.aliases, *(override.get("aliases") or ())])
         )
         services = profile.services
         if override.get("services") is not None:
@@ -1388,7 +1427,11 @@ class ProjectAutomationManager:
         if service_type == "compose":
             service_name = str(payload.get("service", "")).strip()
             selector = f" {service_name}" if service_name else ""
-            key = raw_key or self._normalize_match_text(service_name or raw_name) or "compose"
+            key = (
+                raw_key
+                or self._normalize_match_text(service_name or raw_name)
+                or "compose"
+            )
             display_name = raw_name or service_name or "compose"
             logs_tail = max(1, int(payload.get("logs_tail", 80) or 80))
             return ManagedService(
@@ -1427,7 +1470,9 @@ class ProjectAutomationManager:
     def _is_container_workspace(
         self, summary: WorkspaceSummary, summaries: List[WorkspaceSummary]
     ) -> bool:
-        if summary.relative_path == "/" or self._looks_like_workspace_root(summary.root_path):
+        if summary.relative_path == "/" or self._looks_like_workspace_root(
+            summary.root_path
+        ):
             return False
 
         prefix = f"{summary.relative_path.rstrip('/')}/"

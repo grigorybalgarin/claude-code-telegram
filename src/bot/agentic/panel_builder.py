@@ -17,11 +17,11 @@ from telegram import (
     ReplyKeyboardMarkup,
 )
 
-from .context import AgenticWorkspaceContext
-from .shell_executor import ShellExecutor
-from .service_controller import ServiceController
-from .verify_pipeline import VerifyPipeline
 from ..utils.html_format import escape_html
+from .context import AgenticWorkspaceContext
+from .service_controller import ServiceController
+from .shell_executor import ShellExecutor
+from .verify_pipeline import VerifyPipeline
 
 
 class PanelBuilder:
@@ -46,9 +46,18 @@ class PanelBuilder:
         return InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
-                    InlineKeyboardButton("\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c", callback_data="act:verify"),
-                    InlineKeyboardButton("\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c", callback_data="act:resolve"),
+                    InlineKeyboardButton(
+                        "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                        callback_data="act:status",
+                    ),
+                    InlineKeyboardButton(
+                        "\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",
+                        callback_data="act:verify",
+                    ),
+                    InlineKeyboardButton(
+                        "\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c",
+                        callback_data="act:resolve",
+                    ),
                 ],
             ]
         )
@@ -57,9 +66,18 @@ class PanelBuilder:
         """Build the persistent control panel keyboard for agentic mode."""
         rows = [
             [
-                InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
-                InlineKeyboardButton("\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c", callback_data="act:verify"),
-                InlineKeyboardButton("\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c", callback_data="act:resolve"),
+                InlineKeyboardButton(
+                    "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                    callback_data="act:status",
+                ),
+                InlineKeyboardButton(
+                    "\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",
+                    callback_data="act:verify",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c",
+                    callback_data="act:resolve",
+                ),
             ]
         ]
         return InlineKeyboardMarkup(rows)
@@ -67,7 +85,11 @@ class PanelBuilder:
     def build_reply_keyboard(self) -> ReplyKeyboardMarkup:
         """Return a persistent bottom keyboard for the most common actions."""
         rows: List[List[str]] = [
-            ["\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", "\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c", "\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c"],
+            [
+                "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                "\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",
+                "\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c",
+            ],
         ]
         return ReplyKeyboardMarkup(
             rows,
@@ -171,7 +193,9 @@ class PanelBuilder:
             if profile and profile.display_name
             else self.format_relative_path(ctx.current_workspace, ctx.boundary_root)
         )
-        project_path = self.format_relative_path(ctx.current_workspace, ctx.boundary_root)
+        project_path = self.format_relative_path(
+            ctx.current_workspace, ctx.boundary_root
+        )
         verify_steps = self.verify.build_steps(profile) if profile else []
         verify_status = "доступна" if verify_steps else "не настроена"
         primary_service = self.verify.select_primary_service(profile)
@@ -236,7 +260,7 @@ class PanelBuilder:
             elif last_resolve.get("rollback"):
                 r_label = "⚠️ откат"
             elif last_resolve.get("error"):
-                r_label = f"❌ ошибка"
+                r_label = "❌ ошибка"
             else:
                 r_label = "⚠️ не добил"
             attempts = last_resolve.get("attempts", 1)
@@ -250,7 +274,7 @@ class PanelBuilder:
             ago_text = self._format_ago(ago)
             if last_deploy.get("success"):
                 commit = last_deploy.get("commit", "")
-                d_label = f"✅ успешно"
+                d_label = "✅ успешно"
                 if commit:
                     d_label += f" ({commit[:8]})"
             else:
@@ -313,7 +337,11 @@ class PanelBuilder:
             lines.append("")
             lines.append(f"💡 <b>Рекомендация:</b> {suggested}")
 
-        if ctx.project_automation and profile and ctx.current_workspace != ctx.boundary_root:
+        if (
+            ctx.project_automation
+            and profile
+            and ctx.current_workspace != ctx.boundary_root
+        ):
             lines.extend(
                 [
                     "",
@@ -363,7 +391,10 @@ class PanelBuilder:
     ) -> str:
         """Build the main control panel text for agentic mode."""
         profile = ctx.profile
-        lines = ["<b>\u041f\u0430\u043d\u0435\u043b\u044c \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f</b>", ""]
+        lines = [
+            "<b>\u041f\u0430\u043d\u0435\u043b\u044c \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f</b>",
+            "",
+        ]
         if profile:
             lines.append(
                 f"\U0001f4e6 \u041f\u0440\u043e\u0435\u043a\u0442: <code>{escape_html(self.format_relative_path(ctx.current_workspace, ctx.boundary_root))}</code>"
@@ -371,33 +402,47 @@ class PanelBuilder:
             lines.append(
                 f"\U0001f9f1 \u0421\u0442\u0435\u043a: <code>{escape_html(', '.join(profile.stacks))}</code>"
             )
-        lines.append("\U0001f6e1\ufe0f \u0410\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442: <code>\u0432\u043a\u043b\u044e\u0447\u0435\u043d</code>")
-        verbose_label = {0: "\u043a\u043e\u0440\u043e\u0442\u043a\u043e", 1: "\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u043e", 2: "\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u043e"}[verbose_level]
+        lines.append(
+            "\U0001f6e1\ufe0f \u0410\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442: <code>\u0432\u043a\u043b\u044e\u0447\u0435\u043d</code>"
+        )
+        verbose_label = {
+            0: "\u043a\u043e\u0440\u043e\u0442\u043a\u043e",
+            1: "\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u043e",
+            2: "\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u043e",
+        }[verbose_level]
         lines.append(
             f"\U0001f50a \u0420\u0435\u0436\u0438\u043c \u043e\u0442\u0432\u0435\u0442\u0430: <code>{escape_html(verbose_label)}</code>"
         )
 
         session_text = "\u043d\u0435\u0442"
         if session_id:
-            session_text = f"\u0430\u043a\u0442\u0438\u0432\u043d\u0430 {session_id[:8]}..."
+            session_text = (
+                f"\u0430\u043a\u0442\u0438\u0432\u043d\u0430 {session_id[:8]}..."
+            )
         elif ctx.claude_integration:
             existing = await ctx.claude_integration._find_resumable_session(
                 user_id, ctx.current_workspace
             )
             if existing:
                 session_text = f"\u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c {existing.session_id[:8]}..."
-        lines.append(f"\U0001f916 \u0421\u0435\u0441\u0441\u0438\u044f: <code>{escape_html(session_text)}</code>")
+        lines.append(
+            f"\U0001f916 \u0421\u0435\u0441\u0441\u0438\u044f: <code>{escape_html(session_text)}</code>"
+        )
 
         if profile and ctx.project_automation:
             playbooks = ", ".join(
-                playbook.slug for playbook in ctx.project_automation.list_playbooks(profile)
+                playbook.slug
+                for playbook in ctx.project_automation.list_playbooks(profile)
             )
             playbooks_display = escape_html(playbooks or "\u043d\u0435\u0442")
             lines.append(
                 f"\U0001f9ed \u0421\u0446\u0435\u043d\u0430\u0440\u0438\u0438: <code>{playbooks_display}</code>"
             )
             operator_commands = ", ".join(
-                key for key, _command in ctx.project_automation.list_operator_commands(profile)
+                key
+                for key, _command in ctx.project_automation.list_operator_commands(
+                    profile
+                )
             )
             if operator_commands:
                 lines.append(
@@ -465,7 +510,9 @@ class PanelBuilder:
             active_incident=active_incident,
         )
 
-        lines = ["<b>\u041d\u0435\u0434\u0430\u0432\u043d\u044f\u044f \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u044c</b>"]
+        lines = [
+            "<b>\u041d\u0435\u0434\u0430\u0432\u043d\u044f\u044f \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u044c</b>"
+        ]
         if snapshot:
             lines.extend(["", "<b>Сейчас</b>"])
             status_parts: List[str] = [snapshot.health_emoji()]
@@ -482,11 +529,15 @@ class PanelBuilder:
             lines.append(" ".join(status_parts))
             if diagnosis and diagnosis.short_cause:
                 lines.append(f"• {escape_html(diagnosis.short_cause)}")
-            if snapshot.suggested_action and getattr(snapshot.suggested_action, "reason", ""):
+            if snapshot.suggested_action and getattr(
+                snapshot.suggested_action, "reason", ""
+            ):
                 lines.append(f"→ {escape_html(snapshot.suggested_action.reason)}")
 
         if automation_entries:
-            lines.extend(["", "<b>\u0410\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442</b>"])
+            lines.extend(
+                ["", "<b>\u0410\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442</b>"]
+            )
             for entry in automation_entries:
                 details = (entry.event_data or {}).get("details", {})
                 playbook = escape_html(str(details.get("playbook", "general")))
@@ -516,29 +567,49 @@ class PanelBuilder:
 
         workspace_ops = await self._get_workspace_ops(ctx)
         if workspace_ops:
-            lines.extend(["", "<b>\u041e\u043f\u0435\u0440\u0430\u0446\u0438\u0438 \u043f\u0440\u043e\u0435\u043a\u0442\u0430</b>"])
+            lines.extend(
+                [
+                    "",
+                    "<b>\u041e\u043f\u0435\u0440\u0430\u0446\u0438\u0438 \u043f\u0440\u043e\u0435\u043a\u0442\u0430</b>",
+                ]
+            )
             for op in workspace_ops:
                 lines.append(self._format_operation_line(op))
 
         incidents = await self._get_active_incidents(ctx)
         if incidents:
-            lines.extend(["", "<b>\u0418\u043d\u0446\u0438\u0434\u0435\u043d\u0442\u044b</b>"])
+            lines.extend(
+                ["", "<b>\u0418\u043d\u0446\u0438\u0434\u0435\u043d\u0442\u044b</b>"]
+            )
             for incident in incidents[:3]:
                 lines.append(self._format_incident_line(incident))
 
         pending_improvements = await self._get_pending_improvements(ctx)
         if pending_improvements:
-            lines.extend(["", "<b>\u0423\u043b\u0443\u0447\u0448\u0435\u043d\u0438\u044f</b>"])
+            lines.extend(
+                ["", "<b>\u0423\u043b\u0443\u0447\u0448\u0435\u043d\u0438\u044f</b>"]
+            )
             for item in pending_improvements[:3]:
                 description = escape_html(str(item.get("description") or ""))
                 lines.append(f"\u2022 {description}")
 
         system_summary = await self._get_system_summary(ctx)
         if system_summary:
-            lines.extend(["", "<b>\u0421\u0438\u0441\u0442\u0435\u043c\u0430</b>", *system_summary])
+            lines.extend(
+                [
+                    "",
+                    "<b>\u0421\u0438\u0441\u0442\u0435\u043c\u0430</b>",
+                    *system_summary,
+                ]
+            )
 
         if len(lines) == 1:
-            lines.extend(["", "\u041f\u043e\u043a\u0430 \u043d\u0435\u0434\u0430\u0432\u043d\u0435\u0439 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u0438 \u043d\u0435\u0442."])
+            lines.extend(
+                [
+                    "",
+                    "\u041f\u043e\u043a\u0430 \u043d\u0435\u0434\u0430\u0432\u043d\u0435\u0439 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0441\u0442\u0438 \u043d\u0435\u0442.",
+                ]
+            )
 
         lines.append("")
         lines.append(
@@ -546,15 +617,21 @@ class PanelBuilder:
         )
         return "\n".join(lines)
 
-    async def _get_workspace_ops(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+    async def _get_workspace_ops(
+        self, ctx: AgenticWorkspaceContext
+    ) -> List[Dict[str, Any]]:
         if not ctx.storage or not hasattr(ctx.storage, "operations"):
             return []
         try:
-            return await ctx.storage.operations.get_recent(str(ctx.current_workspace), limit=4)
+            return await ctx.storage.operations.get_recent(
+                str(ctx.current_workspace), limit=4
+            )
         except Exception:
             return []
 
-    async def _get_workspace_state(self, ctx: AgenticWorkspaceContext) -> Dict[str, Optional[Dict[str, Any]]]:
+    async def _get_workspace_state(
+        self, ctx: AgenticWorkspaceContext
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
         if not ctx.storage or not hasattr(ctx.storage, "operations"):
             return {}
         try:
@@ -565,23 +642,30 @@ class PanelBuilder:
             return {}
 
         return {
-            key: self._normalize_operation_state(row)
-            for key, row in raw_state.items()
+            key: self._normalize_operation_state(row) for key, row in raw_state.items()
         }
 
-    async def _get_active_incidents(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+    async def _get_active_incidents(
+        self, ctx: AgenticWorkspaceContext
+    ) -> List[Dict[str, Any]]:
         if not ctx.storage or not hasattr(ctx.storage, "incidents"):
             return []
         try:
-            return await ctx.storage.incidents.list_active([str(ctx.current_workspace)], limit=3)
+            return await ctx.storage.incidents.list_active(
+                [str(ctx.current_workspace)], limit=3
+            )
         except Exception:
             return []
 
-    async def _get_active_incident(self, ctx: AgenticWorkspaceContext) -> Optional[Dict[str, Any]]:
+    async def _get_active_incident(
+        self, ctx: AgenticWorkspaceContext
+    ) -> Optional[Dict[str, Any]]:
         incidents = await self._get_active_incidents(ctx)
         return incidents[0] if incidents else None
 
-    async def _get_pending_improvements(self, ctx: AgenticWorkspaceContext) -> List[Dict[str, Any]]:
+    async def _get_pending_improvements(
+        self, ctx: AgenticWorkspaceContext
+    ) -> List[Dict[str, Any]]:
         if not ctx.storage or not hasattr(ctx.storage, "improvements"):
             return []
         try:
@@ -608,10 +692,16 @@ class PanelBuilder:
         )
 
         if self_review:
-            details = self_review.get("details", {}) if isinstance(self_review, dict) else {}
-            candidates = details.get("candidates", 0) if isinstance(details, dict) else 0
+            details = (
+                self_review.get("details", {}) if isinstance(self_review, dict) else {}
+            )
+            candidates = (
+                details.get("candidates", 0) if isinstance(details, dict) else 0
+            )
             ago = self._format_ago(self._seconds_ago(self_review.get("created_at")))
-            lines.append(f"🧠 self-review: <code>{candidates}</code> кандидатов · {ago}")
+            lines.append(
+                f"🧠 self-review: <code>{candidates}</code> кандидатов · {ago}"
+            )
         if cleanup:
             details = cleanup.get("details", {}) if isinstance(cleanup, dict) else {}
             if isinstance(details, dict):
@@ -726,19 +816,17 @@ class PanelBuilder:
         plan = None
         if diagnosis and profile:
             ops_config = getattr(profile, "operations", None)
-            runbook_hints = getattr(ops_config, "runbook_hints", None) if ops_config else None
-            topology = getattr(ops_config, "topology", None) if ops_config else None
+            runbook_hints = (
+                getattr(ops_config, "runbook_hints", None) if ops_config else None
+            )
             plan = build_remediation_plan(
                 diagnosis,
                 runbook_hints,
-                operations_config=ops_config,
-                topology=topology,
             )
             snapshot.suggested_action = suggest_next_action(
                 snapshot,
                 diagnosis=diagnosis,
                 remediation_plan=plan,
-                topology=topology,
             )
         return snapshot, diagnosis, plan
 
@@ -763,7 +851,9 @@ class PanelBuilder:
             failed_label = str(source.get("failed_step") or "")
         elif last_resolve and not last_resolve.get("success"):
             source = last_resolve
-            failed_label = str(source.get("failed_step") or source.get("error") or "resolve")
+            failed_label = str(
+                source.get("failed_step") or source.get("error") or "resolve"
+            )
         elif last_deploy and not last_deploy.get("success"):
             source = last_deploy
             fallback_type = ProblemType.DEPLOY
@@ -800,8 +890,8 @@ class PanelBuilder:
         ops = getattr(profile, "operations", None) if profile else None
         critical_steps = set(getattr(ops, "critical_steps", ()) or ())
         runbook_hints = getattr(ops, "runbook_hints", {}) or {}
-        runbook_hint = (
-            str(runbook_hints.get(ptype.value) or runbook_hints.get(failed_label) or "")
+        runbook_hint = str(
+            runbook_hints.get(ptype.value) or runbook_hints.get(failed_label) or ""
         )
 
         return ProblemDiagnosis(
@@ -809,7 +899,8 @@ class PanelBuilder:
             label=label,
             failed_step_label=failed_label,
             short_cause=short_cause,
-            safe_to_autofix=ptype in {
+            safe_to_autofix=ptype
+            in {
                 ProblemType.CODE,
                 ProblemType.CONFIG,
                 ProblemType.DEPENDENCY,
@@ -821,7 +912,9 @@ class PanelBuilder:
         )
 
     @staticmethod
-    def _coerce_incident_for_snapshot(active_incident: Optional[Dict[str, Any]]) -> Optional[Any]:
+    def _coerce_incident_for_snapshot(
+        active_incident: Optional[Dict[str, Any]],
+    ) -> Optional[Any]:
         if not active_incident:
             return None
 
@@ -867,7 +960,9 @@ class PanelBuilder:
         return labels.get(str(key), "Неизвестная проблема")
 
     @staticmethod
-    def _normalize_operation_state(operation: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _normalize_operation_state(
+        operation: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
         if not operation or not isinstance(operation, dict):
             return None
 
@@ -876,7 +971,10 @@ class PanelBuilder:
             normalized = dict(details)
             if "success" not in normalized and "success" in operation:
                 normalized["success"] = operation.get("success")
-            if "timestamp" not in normalized and operation.get("created_at") is not None:
+            if (
+                "timestamp" not in normalized
+                and operation.get("created_at") is not None
+            ):
                 normalized["timestamp"] = PanelBuilder._timestamp_from_value(
                     operation.get("created_at")
                 )
@@ -897,6 +995,7 @@ class PanelBuilder:
     @staticmethod
     def _seconds_ago(timestamp: Any) -> int:
         import time as _time
+
         ts = PanelBuilder._timestamp_from_value(timestamp)
         if ts <= 0:
             return 0
@@ -924,31 +1023,52 @@ class PanelBuilder:
         """Render recent background workspace jobs and management buttons."""
         profile = ctx.profile
         if not ctx.operator_runtime:
-            return "\u0424\u043e\u043d\u043e\u0432\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b.", self.build_start_keyboard()
+            return (
+                "\u0424\u043e\u043d\u043e\u0432\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u044b.",
+                self.build_start_keyboard(),
+            )
 
         jobs = ctx.operator_runtime.list_jobs(limit=8)
-        current_jobs = ctx.operator_runtime.list_jobs(workspace_root=ctx.current_workspace, limit=4)
+        current_jobs = ctx.operator_runtime.list_jobs(
+            workspace_root=ctx.current_workspace, limit=4
+        )
 
-        lines = ["<b>\u0424\u043e\u043d\u043e\u0432\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438</b>"]
+        lines = [
+            "<b>\u0424\u043e\u043d\u043e\u0432\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438</b>"
+        ]
         if header:
             lines.extend(["", header])
 
         if current_jobs:
-            lines.extend(["", "<b>\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u043f\u0440\u043e\u0435\u043a\u0442</b>"])
+            lines.extend(
+                [
+                    "",
+                    "<b>\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u043f\u0440\u043e\u0435\u043a\u0442</b>",
+                ]
+            )
             for job in current_jobs:
                 lines.append(
                     f"\u2022 <code>{escape_html(self.format_job_status(job, ctx.boundary_root))}</code>"
                 )
         if jobs:
-            other_jobs = [job for job in jobs if job.workspace_root != ctx.current_workspace][:4]
+            other_jobs = [
+                job for job in jobs if job.workspace_root != ctx.current_workspace
+            ][:4]
             if other_jobs:
-                lines.extend(["", "<b>\u041d\u0435\u0434\u0430\u0432\u043d\u0438\u0435</b>"])
+                lines.extend(
+                    ["", "<b>\u041d\u0435\u0434\u0430\u0432\u043d\u0438\u0435</b>"]
+                )
                 for job in other_jobs:
                     lines.append(
                         f"\u2022 <code>{escape_html(self.format_job_status(job, ctx.boundary_root))}</code>"
                     )
         if len(lines) == 1:
-            lines.extend(["", "\u0424\u043e\u043d\u043e\u0432\u044b\u0445 \u0437\u0430\u0434\u0430\u0447 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442."])
+            lines.extend(
+                [
+                    "",
+                    "\u0424\u043e\u043d\u043e\u0432\u044b\u0445 \u0437\u0430\u0434\u0430\u0447 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442.",
+                ]
+            )
 
         latest_job = current_jobs[0] if current_jobs else None
         if latest_job:
@@ -961,11 +1081,15 @@ class PanelBuilder:
                 ]
             )
             if latest_job.exit_code is not None:
-                lines.append(f"\u041a\u043e\u0434 \u0432\u044b\u0445\u043e\u0434\u0430: <code>{latest_job.exit_code}</code>")
+                lines.append(
+                    f"\u041a\u043e\u0434 \u0432\u044b\u0445\u043e\u0434\u0430: <code>{latest_job.exit_code}</code>"
+                )
             if latest_job.verification_command:
                 verify_status = self.format_job_verification(latest_job)
                 if verify_status:
-                    lines.append(f"\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430: <code>{escape_html(verify_status)}</code>")
+                    lines.append(
+                        f"\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430: <code>{escape_html(verify_status)}</code>"
+                    )
                 if latest_job.verification_exit_code is not None:
                     lines.append(
                         f"\u041a\u043e\u0434 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438: <code>{latest_job.verification_exit_code}</code>"
@@ -999,7 +1123,10 @@ class PanelBuilder:
             action_row = []
             for key, label in (
                 ("start", "\u25b6\ufe0f \u0417\u0430\u043f\u0443\u0441\u043a"),
-                ("dev", "\U0001f6e0\ufe0f \u0420\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u043a\u0430"),
+                (
+                    "dev",
+                    "\U0001f6e0\ufe0f \u0420\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u043a\u0430",
+                ),
                 ("deploy", "\U0001f680 \u0414\u0435\u043f\u043b\u043e\u0439"),
             ):
                 if key in profile.commands:
@@ -1011,13 +1138,27 @@ class PanelBuilder:
 
         keyboard_rows.append(
             [
-                InlineKeyboardButton("\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c", callback_data="act:jobs"),
-                InlineKeyboardButton("\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c", callback_data="act:panel"),
-                InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
+                InlineKeyboardButton(
+                    "\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",
+                    callback_data="act:jobs",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c",
+                    callback_data="act:panel",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                    callback_data="act:status",
+                ),
             ]
         )
         keyboard_rows.append(
-            [InlineKeyboardButton("\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b", callback_data="act:projects")]
+            [
+                InlineKeyboardButton(
+                    "\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b",
+                    callback_data="act:projects",
+                )
+            ]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1080,13 +1221,27 @@ class PanelBuilder:
 
         keyboard_rows.append(
             [
-                InlineKeyboardButton("\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c", callback_data="act:services"),
-                InlineKeyboardButton("\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c", callback_data="act:panel"),
-                InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
+                InlineKeyboardButton(
+                    "\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",
+                    callback_data="act:services",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c",
+                    callback_data="act:panel",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                    callback_data="act:status",
+                ),
             ]
         )
         keyboard_rows.append(
-            [InlineKeyboardButton("\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b", callback_data="act:projects")]
+            [
+                InlineKeyboardButton(
+                    "\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b",
+                    callback_data="act:projects",
+                )
+            ]
         )
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1106,7 +1261,12 @@ class PanelBuilder:
             lines.extend(["", header])
 
         if profile and profile.services:
-            lines.extend(["", "<b>\u0423\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b</b>"])
+            lines.extend(
+                [
+                    "",
+                    "<b>\u0423\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b</b>",
+                ]
+            )
             for service in profile.services:
                 command = service.health_command or service.status_command
                 if not command:
@@ -1119,23 +1279,39 @@ class PanelBuilder:
                     command=command,
                     timeout_seconds=45,
                 )
-                state = "ok" if result.success else "\u043e\u0448\u0438\u0431\u043a\u0430"
+                state = (
+                    "ok" if result.success else "\u043e\u0448\u0438\u0431\u043a\u0430"
+                )
                 if result.timed_out:
                     state = "\u0442\u0430\u0439\u043c\u0430\u0443\u0442"
                 lines.append(
                     f"\u2022 <code>{escape_html(service.display_name)}</code>: <code>{escape_html(state)}</code>"
                 )
                 summary = self.shell.summarize(result)
-                if summary and summary != "\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430":
+                if (
+                    summary
+                    and summary
+                    != "\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430"
+                ):
                     lines.append(f"  <code>{escape_html(summary)}</code>")
         else:
-            lines.extend(["", "\u0414\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u0443\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u044b."])
+            lines.extend(
+                [
+                    "",
+                    "\u0414\u043b\u044f \u044d\u0442\u043e\u0433\u043e \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u0443\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u044b.",
+                ]
+            )
 
         running_units_result = await self.services.list_running_units(
             ctx.current_workspace
         )
         running_units = self.services.parse_systemd_units(running_units_result)
-        lines.extend(["", "<b>\u0421\u0438\u0441\u0442\u0435\u043c\u043d\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b \u0441\u0435\u0440\u0432\u0435\u0440\u0430</b>"])
+        lines.extend(
+            [
+                "",
+                "<b>\u0421\u0438\u0441\u0442\u0435\u043c\u043d\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b \u0441\u0435\u0440\u0432\u0435\u0440\u0430</b>",
+            ]
+        )
         if running_units:
             for unit in running_units:
                 lines.append(f"\u2022 <code>{escape_html(unit)}</code>")
@@ -1145,7 +1321,10 @@ class PanelBuilder:
             if running_units_result.success:
                 label = "\u0437\u0430\u043f\u0443\u0449\u0435\u043d\u043d\u044b\u0435 \u0441\u0435\u0440\u0432\u0438\u0441\u044b \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b"
             lines.append(f"<code>{escape_html(label)}</code>")
-            if summary and summary not in {"\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430", label}:
+            if summary and summary not in {
+                "\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430",
+                label,
+            }:
                 lines.append(f"<code>{escape_html(summary)}</code>")
 
         failed_units_result = await self.services.list_failed_units(
@@ -1153,19 +1332,39 @@ class PanelBuilder:
         )
         failed_units = self.services.parse_systemd_units(failed_units_result, limit=6)
         if failed_units:
-            lines.extend(["", "<b>\u0421\u0435\u0440\u0432\u0438\u0441\u044b \u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438</b>"])
+            lines.extend(
+                [
+                    "",
+                    "<b>\u0421\u0435\u0440\u0432\u0438\u0441\u044b \u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438</b>",
+                ]
+            )
             for unit in failed_units:
                 lines.append(f"\u2022 <code>{escape_html(unit)}</code>")
 
         keyboard_rows = [
             [
-                InlineKeyboardButton("\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c", callback_data="act:running"),
-                InlineKeyboardButton("\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c", callback_data="act:panel"),
-                InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
+                InlineKeyboardButton(
+                    "\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",
+                    callback_data="act:running",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c",
+                    callback_data="act:panel",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                    callback_data="act:status",
+                ),
             ],
             [
-                InlineKeyboardButton("\U0001f9e9 \u0421\u0435\u0440\u0432\u0438\u0441\u044b", callback_data="act:services"),
-                InlineKeyboardButton("\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b", callback_data="act:projects"),
+                InlineKeyboardButton(
+                    "\U0001f9e9 \u0421\u0435\u0440\u0432\u0438\u0441\u044b",
+                    callback_data="act:services",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f4c1 \u041f\u0440\u043e\u0435\u043a\u0442\u044b",
+                    callback_data="act:projects",
+                ),
             ],
         ]
         return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
@@ -1176,9 +1375,14 @@ class PanelBuilder:
     ) -> tuple[str, InlineKeyboardMarkup]:
         """Build the workspace catalog view used by /repo and control buttons."""
         if ctx.project_automation:
-            summaries = ctx.project_automation.list_workspace_summaries(ctx.boundary_root)
+            summaries = ctx.project_automation.list_workspace_summaries(
+                ctx.boundary_root
+            )
             if summaries:
-                lines: List[str] = ["<b>\u041f\u0440\u043e\u0435\u043a\u0442\u044b</b>", ""]
+                lines: List[str] = [
+                    "<b>\u041f\u0440\u043e\u0435\u043a\u0442\u044b</b>",
+                    "",
+                ]
                 for summary in summaries:
                     lines.extend(
                         ctx.project_automation.describe_workspace_summary_lines(
@@ -1208,13 +1412,27 @@ class PanelBuilder:
 
                 keyboard_rows.append(
                     [
-                        InlineKeyboardButton("\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c", callback_data="act:projects"),
-                        InlineKeyboardButton("\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c", callback_data="act:panel"),
-                        InlineKeyboardButton("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441", callback_data="act:status"),
+                        InlineKeyboardButton(
+                            "\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",
+                            callback_data="act:projects",
+                        ),
+                        InlineKeyboardButton(
+                            "\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c",
+                            callback_data="act:panel",
+                        ),
+                        InlineKeyboardButton(
+                            "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441",
+                            callback_data="act:status",
+                        ),
                     ]
                 )
                 keyboard_rows.append(
-                    [InlineKeyboardButton("\U0001f558 \u041d\u0435\u0434\u0430\u0432\u043d\u0435\u0435", callback_data="act:recent")]
+                    [
+                        InlineKeyboardButton(
+                            "\U0001f558 \u041d\u0435\u0434\u0430\u0432\u043d\u0435\u0435",
+                            callback_data="act:recent",
+                        )
+                    ]
                 )
                 return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
@@ -1229,9 +1447,12 @@ class PanelBuilder:
                 key=lambda d: d.name.casefold(),
             )
         except OSError as e:
-            return f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0447\u0442\u0435\u043d\u0438\u044f \u043f\u0440\u043e\u0435\u043a\u0442\u0430: {escape_html(str(e))}", self.build_start_keyboard()
+            return (
+                f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0447\u0442\u0435\u043d\u0438\u044f \u043f\u0440\u043e\u0435\u043a\u0442\u0430: {escape_html(str(e))}",
+                self.build_start_keyboard(),
+            )
 
-        keyboard_rows: List[list] = []
+        kb_rows: List[list] = []
         for entry in entries:
             marker = " \u25c0" if entry == ctx.current_workspace else ""
             lines.append(f"\u2022 <code>{escape_html(entry.name)}</code>{marker}")
@@ -1245,11 +1466,17 @@ class PanelBuilder:
                             callback_data=f"cd:{entries[i + j].name}",
                         )
                     )
-            keyboard_rows.append(row)
-        keyboard_rows.append(
+            kb_rows.append(row)
+        kb_rows.append(
             [
-                InlineKeyboardButton("\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c", callback_data="act:projects"),
-                InlineKeyboardButton("\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c", callback_data="act:panel"),
+                InlineKeyboardButton(
+                    "\U0001f504 \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c",
+                    callback_data="act:projects",
+                ),
+                InlineKeyboardButton(
+                    "\U0001f39b\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c",
+                    callback_data="act:panel",
+                ),
             ]
         )
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+        return "\n".join(lines), InlineKeyboardMarkup(kb_rows)

@@ -73,8 +73,10 @@ def test_allowed_users_parsing_with_spaces():
         assert settings.allowed_users == [123, 456, 789]
 
 
-def test_security_relaxation_settings_defaults_and_overrides():
+def test_security_relaxation_settings_defaults_and_overrides(monkeypatch):
     """Security relaxation settings should default to False and be configurable."""
+    monkeypatch.delenv("DISABLE_SECURITY_PATTERNS", raising=False)
+    monkeypatch.delenv("DISABLE_TOOL_VALIDATION", raising=False)
     with tempfile.TemporaryDirectory() as tmp_dir:
         defaults = Settings(
             telegram_bot_token="test_token",

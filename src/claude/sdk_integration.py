@@ -25,10 +25,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from claude_agent_sdk.types import ThinkingConfigAdaptive, ThinkingConfigEnabled
 from claude_agent_sdk._errors import MessageParseError
 from claude_agent_sdk._internal.message_parser import parse_message
-from claude_agent_sdk.types import StreamEvent
+from claude_agent_sdk.types import (
+    StreamEvent,
+    ThinkingConfigAdaptive,
+    ThinkingConfigEnabled,
+)
 
 from ..config.settings import Settings
 from ..security.validators import SecurityValidator
@@ -277,9 +280,11 @@ class ClaudeSDKManager:
                     )
                     if self.config.claude_thinking
                     and self.config.claude_max_thinking_tokens > 0
-                    else ThinkingConfigAdaptive(type="adaptive")
-                    if self.config.claude_thinking
-                    else None
+                    else (
+                        ThinkingConfigAdaptive(type="adaptive")
+                        if self.config.claude_thinking
+                        else None
+                    )
                 ),
             )
 

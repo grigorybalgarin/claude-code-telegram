@@ -18,7 +18,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from src.utils.constants import (
     DEFAULT_CLAUDE_MAX_COST_PER_REQUEST,
     DEFAULT_CLAUDE_MAX_COST_PER_USER,
-    DEFAULT_CLAUDE_MAX_TURNS,
     DEFAULT_CLAUDE_TIMEOUT_SECONDS,
     DEFAULT_DATABASE_URL,
     DEFAULT_MAX_SESSIONS_PER_USER,
@@ -100,9 +99,7 @@ class Settings(BaseSettings):
         True,
         description="Auto-continue when Claude hits max_turns limit",
     )
-    claude_auto_continue_max: int = Field(
-        5, description="Max auto-continue attempts"
-    )
+    claude_auto_continue_max: int = Field(5, description="Max auto-continue attempts")
     # NOTE: When changing this list, also update docs/tools.md,
     # docs/configuration.md, .env.example,
     # src/claude/facade.py (_get_admin_instructions),
@@ -433,7 +430,9 @@ class Settings(BaseSettings):
             return "mistral"
         provider = str(v).strip().lower()
         if provider not in {"mistral", "openai", "groq"}:
-            raise ValueError("voice_provider must be one of ['mistral', 'openai', 'groq']")
+            raise ValueError(
+                "voice_provider must be one of ['mistral', 'openai', 'groq']"
+            )
         return provider
 
     @field_validator("project_threads_chat_id", mode="before")

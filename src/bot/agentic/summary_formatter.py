@@ -18,8 +18,8 @@ from .context import ShellActionResult, VerifyReport
 from .problem_classifier import ProblemDiagnosis, ProblemType
 from .remediation_planner import CautionLevel, RemediationPlan
 
-
 # ── Verify Summary ─────────────────────────────────────────────────
+
 
 def format_verify_summary(
     report: VerifyReport,
@@ -72,6 +72,7 @@ def format_verify_summary(
 
 # ── Resolve Summary ────────────────────────────────────────────────
 
+
 def format_resolve_summary(
     diagnosis: ProblemDiagnosis,
     success: bool,
@@ -94,9 +95,7 @@ def format_resolve_summary(
         )
         if diagnosis.short_cause:
             lines.append(f"<b>Причина:</b> {diagnosis.short_cause}")
-        lines.append(
-            f"<b>Результат:</b> все проверки пройдены ({passed}/{total})"
-        )
+        lines.append(f"<b>Результат:</b> все проверки пройдены ({passed}/{total})")
     elif rollback:
         lines.append(f"<b>Откат выполнен</b> (попыток: {attempts})")
         lines.append("")
@@ -143,6 +142,7 @@ def format_resolve_summary(
 
 # ── Service Action Summary ─────────────────────────────────────────
 
+
 def format_service_summary(
     service_name: str,
     action: str,
@@ -162,8 +162,7 @@ def format_service_summary(
     lines = [f"<b>{service_name}: {action} не удалось</b>", ""]
     if main_result.success and not checks_ok:
         lines.append(
-            "<b>Что не так:</b> команда выполнена, "
-            "но пост-проверка не прошла"
+            "<b>Что не так:</b> команда выполнена, " "но пост-проверка не прошла"
         )
     elif main_result.timed_out:
         lines.append("<b>Что не так:</b> превышено время ожидания")
@@ -176,6 +175,7 @@ def format_service_summary(
 
 
 # ── Diagnosis Summary (for incidents/digest) ───────────────────────
+
 
 def format_diagnosis_summary(
     diagnosis: ProblemDiagnosis,

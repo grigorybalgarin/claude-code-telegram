@@ -133,7 +133,11 @@ class DiagnosticsCollector:
                 unit = None
                 status_cmd = getattr(svc, "status_command", "") or ""
                 if "systemctl status" in status_cmd:
-                    unit = status_cmd.replace("systemctl status", "").replace("--no-pager", "").strip()
+                    unit = (
+                        status_cmd.replace("systemctl status", "")
+                        .replace("--no-pager", "")
+                        .strip()
+                    )
                 if unit:
                     diag.restart_count = await self._get_restart_count(
                         workspace_root, unit
@@ -171,7 +175,9 @@ class DiagnosticsCollector:
                 command=logs_cmd,
                 timeout_seconds=10,
             )
-            diag.recent_errors = result.stdout_text.strip() or result.stderr_text.strip()
+            diag.recent_errors = (
+                result.stdout_text.strip() or result.stderr_text.strip()
+            )
 
         return diag
 

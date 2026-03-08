@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.bot.agentic.action_runner import ActionRunner
 from src.bot.agentic.context import (
     AgenticWorkspaceContext,
     ResolveResult,
@@ -15,12 +16,11 @@ from src.bot.agentic.context import (
     VerifyReport,
     VerifyStep,
 )
-from src.bot.agentic.action_runner import ActionRunner
 from src.bot.agentic.panel_builder import PanelBuilder
 from src.bot.agentic.resolve_runner import ResolveRunner
-from src.bot.agentic.stream_handler import StreamHandler, _redact_secrets, _tool_icon
 from src.bot.agentic.service_controller import ServiceController, ServiceFollowUpResult
 from src.bot.agentic.shell_executor import ShellExecutor
+from src.bot.agentic.stream_handler import StreamHandler, _redact_secrets, _tool_icon
 from src.bot.agentic.verify_pipeline import VerifyPipeline
 
 
@@ -114,15 +114,23 @@ class TestShellExecutor:
 
     def test_summarize_short(self):
         result = ShellActionResult(
-            command="x", returncode=0, success=True,
-            timed_out=False, stdout_text="short output", stderr_text="",
+            command="x",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="short output",
+            stderr_text="",
         )
         assert ShellExecutor.summarize(result) == "short output"
 
     def test_summarize_truncates(self):
         result = ShellActionResult(
-            command="x", returncode=0, success=True,
-            timed_out=False, stdout_text="a" * 200, stderr_text="",
+            command="x",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="a" * 200,
+            stderr_text="",
         )
         summary = ShellExecutor.summarize(result, limit=50)
         assert len(summary) == 50
@@ -130,15 +138,26 @@ class TestShellExecutor:
 
     def test_summarize_empty(self):
         result = ShellActionResult(
-            command="x", returncode=0, success=True,
-            timed_out=False, stdout_text="", stderr_text="",
+            command="x",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="",
         )
-        assert ShellExecutor.summarize(result) == "\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430"
+        assert (
+            ShellExecutor.summarize(result)
+            == "\u043d\u0435\u0442 \u0432\u044b\u0432\u043e\u0434\u0430"
+        )
 
     def test_summarize_prefers_error_field(self):
         result = ShellActionResult(
-            command="x", returncode=1, success=False,
-            timed_out=False, stdout_text="out", stderr_text="",
+            command="x",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="out",
+            stderr_text="",
             error="the error",
         )
         assert "the error" in ShellExecutor.summarize(result)
@@ -174,23 +193,32 @@ class TestVerifyPipeline:
         assert steps[0].command == "curl localhost"
 
     def test_build_steps_deduplicates(self):
-        profile = _make_profile(commands={
-            "health": "check.sh",
-            "build": "check.sh",  # same command
-        })
+        profile = _make_profile(
+            commands={
+                "health": "check.sh",
+                "build": "check.sh",  # same command
+            }
+        )
         steps = VerifyPipeline.build_steps(profile)
         assert len(steps) == 1
 
     def test_build_steps_multiple_commands(self):
-        profile = _make_profile(commands={
-            "health": "curl localhost",
-            "lint": "ruff check .",
-            "test": "pytest",
-            "build": "make build",
-        })
+        profile = _make_profile(
+            commands={
+                "health": "curl localhost",
+                "lint": "ruff check .",
+                "test": "pytest",
+                "build": "make build",
+            }
+        )
         steps = VerifyPipeline.build_steps(profile)
         labels = [s.label for s in steps]
-        assert labels == ["health", "\u043b\u0438\u043d\u0442", "\u0442\u0435\u0441\u0442\u044b", "\u0441\u0431\u043e\u0440\u043a\u0430"]
+        assert labels == [
+            "health",
+            "\u043b\u0438\u043d\u0442",
+            "\u0442\u0435\u0441\u0442\u044b",
+            "\u0441\u0431\u043e\u0440\u043a\u0430",
+        ]
 
     def test_build_steps_service_fallback(self):
         service = SimpleNamespace(
@@ -238,8 +266,10 @@ class TestVerifyPipeline:
             root_path=tmp_dir,
         )
         calls = []
+
         async def on_step(index, total, step):
             calls.append((index, total, step.label))
+
         await pipeline.execute(profile, on_step=on_step)
         assert calls == [(1, 1, "health")]
 
@@ -264,23 +294,38 @@ class TestVerifyPipeline:
         pipeline = VerifyPipeline(shell)
         step = VerifyStep(label="health", command="echo ok")
         result = ShellActionResult(
-            command="echo ok", returncode=0, success=True,
-            timed_out=False, stdout_text="ok", stderr_text="",
+            command="echo ok",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="ok",
+            stderr_text="",
         )
-        report = VerifyReport(results=[(step, result)], failed_step=None, logs_result=None)
+        report = VerifyReport(
+            results=[(step, result)], failed_step=None, logs_result=None
+        )
         profile = _make_profile(root_path=tmp_dir)
         html = pipeline.format_report(profile, tmp_dir, report)
-        assert "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430" in html
+        assert (
+            "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430"
+            in html
+        )
 
     def test_format_report_failure(self, tmp_dir):
         shell = ShellExecutor()
         pipeline = VerifyPipeline(shell)
         step = VerifyStep(label="test", command="pytest")
         result = ShellActionResult(
-            command="pytest", returncode=1, success=False,
-            timed_out=False, stdout_text="FAILED", stderr_text="",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="FAILED",
+            stderr_text="",
         )
-        report = VerifyReport(results=[(step, result)], failed_step=step, logs_result=None)
+        report = VerifyReport(
+            results=[(step, result)], failed_step=step, logs_result=None
+        )
         profile = _make_profile(root_path=tmp_dir)
         html = pipeline.format_report(profile, tmp_dir, report)
         assert "\u043d\u0435 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430" in html
@@ -296,7 +341,10 @@ class TestVerifyPipeline:
             status_command="systemctl status app",
         )
         profile = _make_profile(services=[service])
-        assert VerifyPipeline.select_background_verification(profile) == "curl :3000/health"
+        assert (
+            VerifyPipeline.select_background_verification(profile)
+            == "curl :3000/health"
+        )
 
     def test_select_background_verification_none(self):
         profile = _make_profile()
@@ -363,16 +411,26 @@ class TestServiceController:
 
     def test_parse_systemd_units_failure(self):
         result = ShellActionResult(
-            command="list-units", returncode=1, success=False,
-            timed_out=False, stdout_text="", stderr_text="error",
+            command="list-units",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="error",
         )
         assert ServiceController.parse_systemd_units(result) == []
 
     def test_parse_systemd_units_respects_limit(self):
-        lines = "\n".join(f"svc{i}.service loaded active running Svc" for i in range(20))
+        lines = "\n".join(
+            f"svc{i}.service loaded active running Svc" for i in range(20)
+        )
         result = ShellActionResult(
-            command="list-units", returncode=0, success=True,
-            timed_out=False, stdout_text=lines, stderr_text="",
+            command="list-units",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text=lines,
+            stderr_text="",
         )
         units = ServiceController.parse_systemd_units(result, limit=3)
         assert len(units) == 3
@@ -389,9 +447,7 @@ class TestServiceController:
                 "logs": "echo log",
             }.get(action),
         )
-        follow_up = await controller.run_follow_up_checks(
-            service, tmp_dir, "restart"
-        )
+        follow_up = await controller.run_follow_up_checks(service, tmp_dir, "restart")
         assert follow_up.all_passed is True
         assert len(follow_up.checks) == 2
 
@@ -407,9 +463,7 @@ class TestServiceController:
                 "logs": "echo failure-logs",
             }.get(action),
         )
-        follow_up = await controller.run_follow_up_checks(
-            service, tmp_dir, "restart"
-        )
+        follow_up = await controller.run_follow_up_checks(service, tmp_dir, "restart")
         assert follow_up.all_passed is False
         assert follow_up.logs_result is not None
         assert "failure-logs" in follow_up.logs_result.stdout_text
@@ -425,10 +479,12 @@ class TestResolveRunner:
             root_path=tmp_dir,
         )
         claude_integration = AsyncMock()
-        claude_integration.run_command = AsyncMock(return_value=SimpleNamespace(
-            session_id="sess-123",
-            content="Fixed the issue",
-        ))
+        claude_integration.run_command = AsyncMock(
+            return_value=SimpleNamespace(
+                session_id="sess-123",
+                content="Fixed the issue",
+            )
+        )
         pa = MagicMock()
         # Make build_general_autopilot_prompt pass through the user_request
         pa.build_general_autopilot_prompt = lambda req, prof: f"AUTOPILOT\n{req}"
@@ -448,9 +504,16 @@ class TestResolveRunner:
         shell = ShellExecutor()
         verify = VerifyPipeline(shell)
         runner = ResolveRunner(verify)
-        result = await runner.run(ctx, user_id=1, session_id=None, initial_report=VerifyReport(
-            results=[], failed_step=VerifyStep(label="x", command="x"), logs_result=None,
-        ))
+        result = await runner.run(
+            ctx,
+            user_id=1,
+            session_id=None,
+            initial_report=VerifyReport(
+                results=[],
+                failed_step=VerifyStep(label="x", command="x"),
+                logs_result=None,
+            ),
+        )
         assert result.success is False
         assert result.error == "Project automation unavailable"
 
@@ -460,7 +523,9 @@ class TestResolveRunner:
         verify = VerifyPipeline(shell)
         runner = ResolveRunner(verify)
         report = VerifyReport(results=[], failed_step=None, logs_result=None)
-        result = await runner.run(ctx, user_id=1, session_id=None, initial_report=report)
+        result = await runner.run(
+            ctx, user_id=1, session_id=None, initial_report=report
+        )
         assert result.success is True
 
     async def test_resolve_calls_claude_with_both_outputs(self, tmp_dir):
@@ -471,11 +536,17 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         step = VerifyStep(label="test", command="pytest")
         failing = ShellActionResult(
-            command="pytest", returncode=1, success=False,
-            timed_out=False, stdout_text="FAILED test_foo", stderr_text="ImportError: no module",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="FAILED test_foo",
+            stderr_text="ImportError: no module",
         )
         report = VerifyReport(
-            results=[(step, failing)], failed_step=step, logs_result=None,
+            results=[(step, failing)],
+            failed_step=step,
+            logs_result=None,
         )
         prompt = runner._build_prompt(ctx, report)
         assert "stderr:" in prompt
@@ -491,13 +562,21 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         ok_step = VerifyStep(label="health", command="curl :8080")
         ok_result = ShellActionResult(
-            command="curl :8080", returncode=0, success=True,
-            timed_out=False, stdout_text="ok", stderr_text="",
+            command="curl :8080",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="ok",
+            stderr_text="",
         )
         fail_step = VerifyStep(label="test", command="pytest")
         fail_result = ShellActionResult(
-            command="pytest", returncode=1, success=False,
-            timed_out=False, stdout_text="FAILED", stderr_text="",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="FAILED",
+            stderr_text="",
         )
         report = VerifyReport(
             results=[(ok_step, ok_result), (fail_step, fail_result)],
@@ -516,11 +595,17 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         step = VerifyStep(label="test", command="pytest")
         result = ShellActionResult(
-            command="pytest", returncode=1, success=False,
-            timed_out=False, stdout_text="still failing", stderr_text="",
+            command="pytest",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="still failing",
+            stderr_text="",
         )
         report = VerifyReport(
-            results=[(step, result)], failed_step=step, logs_result=None,
+            results=[(step, result)],
+            failed_step=step,
+            logs_result=None,
         )
         first_prompt = runner._build_prompt(ctx, report, is_retry=False)
         retry_prompt = runner._build_prompt(ctx, report, is_retry=True)
@@ -535,15 +620,25 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         step = VerifyStep(label="health", command="curl :8080")
         fail = ShellActionResult(
-            command="curl :8080", returncode=1, success=False,
-            timed_out=False, stdout_text="", stderr_text="connection refused",
+            command="curl :8080",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="connection refused",
         )
         logs = ShellActionResult(
-            command="journalctl", returncode=0, success=True,
-            timed_out=False, stdout_text="Error: port already in use", stderr_text="",
+            command="journalctl",
+            returncode=0,
+            success=True,
+            timed_out=False,
+            stdout_text="Error: port already in use",
+            stderr_text="",
         )
         report = VerifyReport(
-            results=[(step, fail)], failed_step=step, logs_result=logs,
+            results=[(step, fail)],
+            failed_step=step,
+            logs_result=logs,
         )
         prompt = runner._build_prompt(ctx, report)
         assert "port already in use" in prompt
@@ -556,17 +651,28 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         step = VerifyStep(label="health", command="echo ok")
         fail = ShellActionResult(
-            command="echo ok", returncode=1, success=False,
-            timed_out=False, stdout_text="", stderr_text="err",
+            command="echo ok",
+            returncode=1,
+            success=False,
+            timed_out=False,
+            stdout_text="",
+            stderr_text="err",
         )
         report = VerifyReport(
-            results=[(step, fail)], failed_step=step, logs_result=None,
+            results=[(step, fail)],
+            failed_step=step,
+            logs_result=None,
         )
         progress_calls = []
+
         async def on_progress(text):
             progress_calls.append(text)
+
         await runner.run(
-            ctx, user_id=1, session_id=None, initial_report=report,
+            ctx,
+            user_id=1,
+            session_id=None,
+            initial_report=report,
             on_progress=on_progress,
         )
         assert len(progress_calls) >= 1
@@ -580,7 +686,9 @@ class TestResolveRunner:
         runner = ResolveRunner(verify)
         # With a report that already passes, attempts should be 1 (default)
         report = VerifyReport(results=[], failed_step=None, logs_result=None)
-        result = await runner.run(ctx, user_id=1, session_id=None, initial_report=report)
+        result = await runner.run(
+            ctx, user_id=1, session_id=None, initial_report=report
+        )
         assert result.attempts == 1
 
 
@@ -632,13 +740,28 @@ class TestPanelBuilder:
         assert len(markup.keyboard[0]) == 3
 
     def test_map_reply_action_status(self):
-        assert PanelBuilder.map_reply_action("\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441") == "status"
+        assert (
+            PanelBuilder.map_reply_action(
+                "\U0001f4c2 \u0421\u0442\u0430\u0442\u0443\u0441"
+            )
+            == "status"
+        )
 
     def test_map_reply_action_verify(self):
-        assert PanelBuilder.map_reply_action("\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c") == "verify"
+        assert (
+            PanelBuilder.map_reply_action(
+                "\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c"
+            )
+            == "verify"
+        )
 
     def test_map_reply_action_resolve(self):
-        assert PanelBuilder.map_reply_action("\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c") == "resolve"
+        assert (
+            PanelBuilder.map_reply_action(
+                "\U0001f6e0 \u0420\u0430\u0437\u0431\u0435\u0440\u0438\u0441\u044c"
+            )
+            == "resolve"
+        )
 
     def test_map_reply_action_unknown(self):
         assert PanelBuilder.map_reply_action("random text") is None
@@ -681,7 +804,10 @@ class TestPanelBuilder:
             verification_attempts=2,
         )
         text = builder.format_job_status(job, tmp_dir)
-        assert "\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430" in text
+        assert (
+            "\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430"
+            in text
+        )
         assert "(2x)" in text
 
     def test_format_job_verification_none_without_command(self):
@@ -714,13 +840,18 @@ class TestPanelBuilder:
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir)
         text = await builder.build_status_text(
-            ctx, user_id=1, session_id=None,
-            active_task_elapsed=30, queue_size=2,
+            ctx,
+            user_id=1,
+            session_id=None,
+            active_task_elapsed=30,
+            queue_size=2,
         )
         assert "30" in text
         assert "\u043e\u0447\u0435\u0440\u0435\u0434\u0438" in text
 
-    async def test_build_status_text_surfaces_incident_backlog_and_stale_job(self, tmp_dir):
+    async def test_build_status_text_surfaces_incident_backlog_and_stale_job(
+        self, tmp_dir
+    ):
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir, with_storage=True)
         ctx.storage.incidents.list_active = AsyncMock(
@@ -792,7 +923,9 @@ class TestPanelBuilder:
         assert "Connection refused" in text
         assert "ручной анализ" in text
 
-    async def test_build_recent_text_surfaces_ops_incidents_and_improvements(self, tmp_dir):
+    async def test_build_recent_text_surfaces_ops_incidents_and_improvements(
+        self, tmp_dir
+    ):
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir, with_storage=True)
         ctx.storage.audit.get_user_audit_log = AsyncMock(return_value=[])
@@ -874,9 +1007,15 @@ class TestPanelBuilder:
         builder = self._make_builder()
         ctx = self._make_ctx(tmp_dir)
         text = await builder.build_panel_text(
-            ctx, user_id=1, session_id="abc", verbose_level=1,
+            ctx,
+            user_id=1,
+            session_id="abc",
+            verbose_level=1,
         )
-        assert "\u041f\u0430\u043d\u0435\u043b\u044c \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f" in text
+        assert (
+            "\u041f\u0430\u043d\u0435\u043b\u044c \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f"
+            in text
+        )
         assert "\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u043e" in text
 
     async def test_build_recent_text_no_storage(self, tmp_dir):
@@ -903,7 +1042,10 @@ class TestPanelBuilder:
             profile=profile,
         )
         text, markup = await builder.build_services_text(ctx)
-        assert "\u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u044b" in text
+        assert (
+            "\u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u044b"
+            in text
+        )
 
     async def test_build_workspace_catalog_no_automation(self, tmp_dir):
         builder = self._make_builder()
@@ -928,9 +1070,7 @@ class TestPanelBuilder:
         )
         pa = MagicMock()
         pa.list_workspace_summaries.return_value = [summary]
-        pa.describe_workspace_summary_lines.return_value = [
-            "ProjectA stuff"
-        ]
+        pa.describe_workspace_summary_lines.return_value = ["ProjectA stuff"]
         ctx = AgenticWorkspaceContext(
             current_directory=tmp_dir,
             current_workspace=tmp_dir,
@@ -1004,7 +1144,9 @@ class TestStreamHandler:
 
     def test_summarize_tool_input_read(self):
         sh = StreamHandler()
-        result = sh.summarize_tool_input("Read", {"file_path": "/home/user/project/main.py"})
+        result = sh.summarize_tool_input(
+            "Read", {"file_path": "/home/user/project/main.py"}
+        )
         assert result == "main.py"
 
     def test_summarize_tool_input_bash(self):
@@ -1144,6 +1286,7 @@ class TestStatusWithHistory:
 
     async def test_status_shows_last_verify_success(self, panel, ctx):
         import time
+
         last_verify = {
             "success": True,
             "failed_step": None,
@@ -1152,7 +1295,9 @@ class TestStatusWithHistory:
             "timestamp": time.time(),
         }
         text = await panel.build_status_text(
-            ctx, user_id=1, session_id=None,
+            ctx,
+            user_id=1,
+            session_id=None,
             last_verify=last_verify,
         )
         assert "всё ок" in text
@@ -1160,6 +1305,7 @@ class TestStatusWithHistory:
 
     async def test_status_shows_last_verify_failure(self, panel, ctx):
         import time
+
         last_verify = {
             "success": False,
             "failed_step": "тесты",
@@ -1168,7 +1314,9 @@ class TestStatusWithHistory:
             "timestamp": time.time(),
         }
         text = await panel.build_status_text(
-            ctx, user_id=1, session_id=None,
+            ctx,
+            user_id=1,
+            session_id=None,
             last_verify=last_verify,
         )
         assert "сбой" in text
@@ -1177,6 +1325,7 @@ class TestStatusWithHistory:
 
     async def test_status_shows_last_resolve_success(self, panel, ctx):
         import time
+
         last_resolve = {
             "success": True,
             "attempts": 1,
@@ -1185,13 +1334,16 @@ class TestStatusWithHistory:
             "timestamp": time.time(),
         }
         text = await panel.build_status_text(
-            ctx, user_id=1, session_id=None,
+            ctx,
+            user_id=1,
+            session_id=None,
             last_resolve=last_resolve,
         )
         assert "исправлено" in text
 
     async def test_status_shows_last_resolve_rollback(self, panel, ctx):
         import time
+
         last_resolve = {
             "success": False,
             "attempts": 2,
@@ -1200,7 +1352,9 @@ class TestStatusWithHistory:
             "timestamp": time.time(),
         }
         text = await panel.build_status_text(
-            ctx, user_id=1, session_id=None,
+            ctx,
+            user_id=1,
+            session_id=None,
             last_resolve=last_resolve,
         )
         assert "откат" in text

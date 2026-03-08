@@ -355,7 +355,11 @@ def _detect_type(output: str, failed_step: VerifyStep) -> tuple:
 
     # Confidence: based on score magnitude and gap to second-best
     sorted_scores = sorted(scores.values(), reverse=True)
-    gap = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else sorted_scores[0]
+    gap = (
+        sorted_scores[0] - sorted_scores[1]
+        if len(sorted_scores) > 1
+        else sorted_scores[0]
+    )
     confidence = min(1.0, 0.3 + gap * 0.15 + min(scores[best], 5) * 0.1)
     return best, round(confidence, 2)
 
@@ -371,31 +375,52 @@ def _extract_short_cause(output: str, problem_type: ProblemType) -> str:
     if problem_type == ProblemType.CODE:
         for line in reversed(lines):
             stripped = line.strip()
-            if any(stripped.startswith(prefix) for prefix in (
-                "Error:", "error:", "SyntaxError", "TypeError",
-                "ValueError", "AttributeError", "NameError",
-                "FAILED", "E ", "AssertionError",
-            )):
+            if any(
+                stripped.startswith(prefix)
+                for prefix in (
+                    "Error:",
+                    "error:",
+                    "SyntaxError",
+                    "TypeError",
+                    "ValueError",
+                    "AttributeError",
+                    "NameError",
+                    "FAILED",
+                    "E ",
+                    "AssertionError",
+                )
+            ):
                 return _truncate(stripped, 120)
 
     # For dependency errors
     if problem_type == ProblemType.DEPENDENCY:
         for line in lines:
             stripped = line.strip()
-            if any(kw in stripped for kw in (
-                "ModuleNotFoundError", "No module named",
-                "Cannot find module", "not installed",
-            )):
+            if any(
+                kw in stripped
+                for kw in (
+                    "ModuleNotFoundError",
+                    "No module named",
+                    "Cannot find module",
+                    "not installed",
+                )
+            ):
                 return _truncate(stripped, 120)
 
     # For service errors
     if problem_type == ProblemType.SERVICE:
         for line in lines:
             stripped = line.strip()
-            if any(kw in stripped for kw in (
-                "Connection refused", "port already",
-                "not running", "failed", "inactive",
-            )):
+            if any(
+                kw in stripped
+                for kw in (
+                    "Connection refused",
+                    "port already",
+                    "not running",
+                    "failed",
+                    "inactive",
+                )
+            ):
                 return _truncate(stripped, 120)
 
     # Fallback: last non-empty line

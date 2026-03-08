@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -114,10 +114,14 @@ async def _extract_frames(video_bytes: bytes, duration: int) -> List[str]:
 
         cmd = [
             "ffmpeg",
-            "-i", str(video_file),
-            "-vf", f"{fps_filter},scale='min({FRAME_MAX_SIZE},iw)':'-1'",
-            "-q:v", "2",
-            "-frames:v", str(MAX_FRAMES),
+            "-i",
+            str(video_file),
+            "-vf",
+            f"{fps_filter},scale='min({FRAME_MAX_SIZE},iw)':'-1'",
+            "-q:v",
+            "2",
+            "-frames:v",
+            str(MAX_FRAMES),
             "-y",
             output_pattern,
         ]

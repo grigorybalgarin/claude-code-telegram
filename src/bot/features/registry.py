@@ -91,6 +91,7 @@ class FeatureRegistry:
                 state_root=state_root
             )
             if self.storage and hasattr(self.storage, "operations"):
+
                 async def _persist_reconciled_job(job: Any) -> None:
                     await self.storage.operations.save(
                         workspace_path=str(job.workspace_root),

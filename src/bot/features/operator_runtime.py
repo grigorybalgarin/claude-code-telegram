@@ -76,7 +76,9 @@ class OperatorJob:
             ),
             pid=payload.get("pid") if isinstance(payload.get("pid"), int) else None,
             started_at=(
-                str(payload["started_at"]) if payload.get("started_at") is not None else None
+                str(payload["started_at"])
+                if payload.get("started_at") is not None
+                else None
             ),
             finished_at=(
                 str(payload["finished_at"])
@@ -143,7 +145,9 @@ class WorkspaceOperatorRuntime:
         self.logs_root = self.state_root / "logs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
-        self._reconcile_callback: Optional[Callable[[OperatorJob], Awaitable[None]]] = None
+        self._reconcile_callback: Optional[Callable[[OperatorJob], Awaitable[None]]] = (
+            None
+        )
         self.reconcile_jobs()
 
     def set_reconcile_callback(
@@ -210,9 +214,7 @@ class WorkspaceOperatorRuntime:
             env["CLAUDE_OPERATOR_VERIFY_COMMAND"] = verification_command
         if verification_mode:
             env["CLAUDE_OPERATOR_VERIFY_MODE"] = verification_mode
-        env["CLAUDE_OPERATOR_VERIFY_DELAY_SECONDS"] = str(
-            verification_delay_seconds
-        )
+        env["CLAUDE_OPERATOR_VERIFY_DELAY_SECONDS"] = str(verification_delay_seconds)
         env["CLAUDE_OPERATOR_VERIFY_RETRIES"] = str(max(1, verification_retries))
         env["CLAUDE_OPERATOR_VERIFY_INTERVAL_SECONDS"] = str(
             max(0.0, verification_interval_seconds)
@@ -364,9 +366,7 @@ class WorkspaceOperatorRuntime:
         return self.jobs_root / f"{job_id}.json"
 
     def _read_job(self, path: Path) -> OperatorJob:
-        return OperatorJob.from_dict(
-            json.loads(path.read_text(encoding="utf-8"))
-        )
+        return OperatorJob.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _write_job(self, job: OperatorJob) -> None:
         path = self._job_path(job.job_id)

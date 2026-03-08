@@ -169,7 +169,9 @@ def test_build_automation_plan_matches_test_playbook(tmp_path):
     )
     manager = ProjectAutomationManager()
 
-    plan = manager.build_automation_plan("почини тесты и прогоняй их до конца", tmp_path, tmp_path)
+    plan = manager.build_automation_plan(
+        "почини тесты и прогоняй их до конца", tmp_path, tmp_path
+    )
 
     assert plan.matched_playbook == "test"
     assert plan.should_checkpoint is True
@@ -255,7 +257,9 @@ def test_build_automation_plan_routes_to_nested_workspace_from_relative_path(tmp
     assert plan.read_only is True
 
 
-def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(tmp_path):
+def test_build_automation_plan_keeps_current_workspace_when_request_is_generic(
+    tmp_path,
+):
     """Generic requests should stay in the current workspace."""
     current_root = tmp_path / "ClaudeBot"
     current_root.mkdir()

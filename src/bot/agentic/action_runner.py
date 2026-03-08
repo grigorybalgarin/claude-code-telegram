@@ -16,12 +16,11 @@ from telegram.ext import ContextTypes
 
 from ...config.settings import Settings
 from ..features.change_guard import ChangeGuardReport
-from ..utils.formatting import FormattedMessage, ResponseFormatter
+from ..utils.formatting import ResponseFormatter
 from ..utils.html_format import escape_html
 from .context import AgenticWorkspaceContext, ShellActionResult, VerifyStep
 from .deploy_pipeline import DeployPipeline, DeployProfile
 from .panel_builder import PanelBuilder
-from .server_diagnostics import DiagnosticsCollector
 from .problem_classifier import (
     classify_problem,
     format_resolve_summary,
@@ -29,6 +28,7 @@ from .problem_classifier import (
     format_verify_summary,
 )
 from .resolve_runner import ResolveRunner
+from .server_diagnostics import DiagnosticsCollector
 from .service_controller import ServiceController
 from .shell_executor import ShellExecutor
 from .verify_pipeline import VerifyPipeline
@@ -99,7 +99,13 @@ class ActionRunner:
                 context.user_data["current_directory"] = current_dir
 
         profile = project_automation.build_profile(current_dir, boundary_root)
-        return current_dir, profile.root_path, boundary_root, project_automation, profile
+        return (
+            current_dir,
+            profile.root_path,
+            boundary_root,
+            project_automation,
+            profile,
+        )
 
     def _get_operator_runtime(
         self, context: ContextTypes.DEFAULT_TYPE
@@ -188,7 +194,9 @@ class ActionRunner:
 
         playbook = project_automation.get_playbook(playbook_slug, profile)
         if playbook is None:
-            await query.answer("Сценарий недоступен для этого проекта.", show_alert=True)
+            await query.answer(
+                "Сценарий недоступен для этого проекта.", show_alert=True
+            )
             return
 
         prompt = project_automation.build_playbook_prompt(playbook_slug, profile)
@@ -315,8 +323,7 @@ class ActionRunner:
                     success=success,
                     mode="agentic_button",
                     checkpoint_created=bool(
-                        checkpoint
-                        or (guard_report and guard_report.checkpoint_created)
+                        checkpoint or (guard_report and guard_report.checkpoint_created)
                     ),
                     verification_results=verification_results,
                     rollback_triggered=bool(
@@ -424,9 +431,7 @@ class ActionRunner:
 
         command = profile.commands.get(command_key)
         if not command:
-            await query.answer(
-                "Команда недоступна для этого проекта.", show_alert=True
-            )
+            await query.answer("Команда недоступна для этого проекта.", show_alert=True)
             return
 
         title = {
@@ -451,24 +456,23 @@ class ActionRunner:
         action_key: str,
     ) -> None:
         """Run a managed service action from the explicit service catalog."""
-        _current_dir, _current_workspace, boundary_root, _project_automation, profile = (
-            self._get_workspace_profile(context)
-        )
+        (
+            _current_dir,
+            _current_workspace,
+            boundary_root,
+            _project_automation,
+            profile,
+        ) = self._get_workspace_profile(context)
         service = self.services.resolve_service(profile, service_key)
         if not profile or not service:
-            await query.answer(
-                "Сервис не настроен для этого проекта.", show_alert=True
-            )
+            await query.answer("Сервис не настроен для этого проекта.", show_alert=True)
             return
 
         command = service.command_for(action_key)
         if not command:
-            await query.answer(
-                "Это действие недоступно для сервиса.", show_alert=True
-            )
+            await query.answer("Это действие недоступно для сервиса.", show_alert=True)
             return
 
-        title = f"{service.display_name}: {action_key}"
         user_id = query.from_user.id
         rel_path = self.panel.format_relative_path(profile.root_path, boundary_root)
         status_msg = await query.message.reply_text(
@@ -536,21 +540,25 @@ class ActionRunner:
                 check_state = "ok" if result.success else "ошибка"
                 if result.timed_out:
                     check_state = "таймаут"
-                lines.append(
-                    f"  {label}: {check_state}"
-                )
+                lines.append(f"  {label}: {check_state}")
 
         # Show output only on failure (don't dump stdout on success)
         if not final_success:
             if main_result.stderr_text:
                 lines.extend(
-                    ["", "<b>Вывод ошибки</b>",
-                     f"<pre>{escape_html(main_result.stderr_text)}</pre>"]
+                    [
+                        "",
+                        "<b>Вывод ошибки</b>",
+                        f"<pre>{escape_html(main_result.stderr_text)}</pre>",
+                    ]
                 )
             elif main_result.stdout_text:
                 lines.extend(
-                    ["", "<b>Вывод</b>",
-                     f"<pre>{escape_html(main_result.stdout_text)}</pre>"]
+                    [
+                        "",
+                        "<b>Вывод</b>",
+                        f"<pre>{escape_html(main_result.stdout_text)}</pre>",
+                    ]
                 )
 
         if logs_result and (
@@ -560,8 +568,7 @@ class ActionRunner:
             if logs_result.error:
                 log_body = logs_result.error
             lines.extend(
-                ["", "<b>Логи сервиса</b>",
-                 f"<pre>{escape_html(log_body)}</pre>"]
+                ["", "<b>Логи сервиса</b>", f"<pre>{escape_html(log_body)}</pre>"]
             )
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
@@ -684,7 +691,11 @@ class ActionRunner:
         profile = ws_ctx.profile
         boundary_root = ws_ctx.boundary_root
 
-        if not ws_ctx.claude_integration or not ws_ctx.project_automation or not profile:
+        if (
+            not ws_ctx.claude_integration
+            or not ws_ctx.project_automation
+            or not profile
+        ):
             await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
@@ -704,9 +715,7 @@ class ActionRunner:
             parse_mode="HTML",
         )
 
-        async def _on_resolve_step(
-            index: int, total: int, step: VerifyStep
-        ) -> None:
+        async def _on_resolve_step(index: int, total: int, step: VerifyStep) -> None:
             await status_msg.edit_text(
                 "⏳ <b>Проверяю</b>\n\n"
                 f"Проект: <code>{escape_html(rel_path)}</code>\n"
@@ -716,9 +725,7 @@ class ActionRunner:
                 parse_mode="HTML",
             )
 
-        initial_report = await self.verify.execute(
-            profile, on_step=_on_resolve_step
-        )
+        initial_report = await self.verify.execute(profile, on_step=_on_resolve_step)
         if initial_report.success:
             await status_msg.edit_text(
                 "✅ <b>Проблем не найдено</b>\n\n"
@@ -738,7 +745,7 @@ class ActionRunner:
         diag_lines = server_diag.summary_lines()
         diag_hint = ""
         if diag_lines:
-            diag_hint = "\n" + "\n".join(f"  {l}" for l in diag_lines)
+            diag_hint = "\n" + "\n".join(f"  {line}" for line in diag_lines)
 
         await status_msg.edit_text(
             "🛠 <b>Разбираюсь</b>\n\n"
@@ -767,9 +774,7 @@ class ActionRunner:
         )
 
         if result.claude_response:
-            context.user_data["claude_session_id"] = (
-                result.claude_response.session_id
-            )
+            context.user_data["claude_session_id"] = result.claude_response.session_id
 
         if result.error and not result.claude_response:
             try:
@@ -867,12 +872,10 @@ class ActionRunner:
                 mode="agentic_button",
                 checkpoint_created=result.checkpoint_created,
                 rollback_triggered=bool(
-                    result.rollback_report
-                    and result.rollback_report.rollback_triggered
+                    result.rollback_report and result.rollback_report.rollback_triggered
                 ),
                 rollback_succeeded=bool(
-                    result.rollback_report
-                    and result.rollback_report.rollback_succeeded
+                    result.rollback_report and result.rollback_report.rollback_succeeded
                 ),
                 workspace_changed=current_workspace != profile.root_path,
             )
@@ -895,9 +898,7 @@ class ActionRunner:
 
         command = profile.commands.get(action_key)
         if not command:
-            await query.answer(
-                "Это действие недоступно для проекта.", show_alert=True
-            )
+            await query.answer("Это действие недоступно для проекта.", show_alert=True)
             return
 
         verification_command = self.verify.select_background_verification(profile)
@@ -1025,13 +1026,9 @@ class ActionRunner:
             await query.edit_message_text("Автоматизация проекта недоступна.")
             return
 
-        deploy_profile = DeployProfile.from_workspace_profile(
-            profile, boundary_root
-        )
+        deploy_profile = DeployProfile.from_workspace_profile(profile, boundary_root)
         if not deploy_profile.restart_command and not deploy_profile.update_command:
-            await query.answer(
-                "Deploy не настроен для этого проекта.", show_alert=True
-            )
+            await query.answer("Deploy не настроен для этого проекта.", show_alert=True)
             return
 
         rel_path = self.panel.format_relative_path(profile.root_path, boundary_root)
@@ -1135,9 +1132,8 @@ class ActionRunner:
         if not restart_cmd:
             return False
 
-        health_cmd = (
-            getattr(primary_service, "health_command", None)
-            or getattr(primary_service, "status_command", None)
+        health_cmd = getattr(primary_service, "health_command", None) or getattr(
+            primary_service, "status_command", None
         )
         if not health_cmd:
             return False
@@ -1179,7 +1175,10 @@ class ActionRunner:
                 parse_mode="HTML",
             )
             await self._save_operation(
-                context, str(profile.root_path), "self_heal", False,
+                context,
+                str(profile.root_path),
+                "self_heal",
+                False,
                 {"action": "restart", "error": restart_result.error},
                 correlation_id=correlation_id,
             )
@@ -1189,6 +1188,7 @@ class ActionRunner:
         verify_ok = None
         if getattr(ops, "self_heal_verify_after_restart", False):
             import asyncio
+
             await asyncio.sleep(3)
             health_result = await self.shell.execute(
                 workspace_root=profile.root_path,
@@ -1213,7 +1213,9 @@ class ActionRunner:
             )
 
         await self._save_operation(
-            context, str(profile.root_path), "self_heal",
+            context,
+            str(profile.root_path),
+            "self_heal",
             verify_ok is not False,
             {
                 "action": "restart",

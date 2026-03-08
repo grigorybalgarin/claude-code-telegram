@@ -7,7 +7,7 @@ parameters or reference back to MessageOrchestrator.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from ...bot.features.operator_runtime import WorkspaceOperatorRuntime
 from ...bot.features.project_automation import ProjectAutomationManager, ProjectProfile

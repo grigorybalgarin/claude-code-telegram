@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-
 # ── Severity ────────────────────────────────────────────────────────
+
 
 class Severity(Enum):
     """Incident / diagnostic severity level."""
@@ -56,6 +56,7 @@ class Severity(Enum):
 
 # ── Operation Outcome ───────────────────────────────────────────────
 
+
 class OperationOutcome(Enum):
     """Final outcome of any operation."""
 
@@ -74,6 +75,7 @@ class OperationOutcome(Enum):
 
 # ── Remediation ─────────────────────────────────────────────────────
 
+
 class RemediationType(Enum):
     """What kind of fix action."""
 
@@ -89,10 +91,10 @@ class RemediationType(Enum):
 class RemediationPolicy(Enum):
     """How aggressively the system can auto-remediate."""
 
-    SAFE_AUTO = "safe_auto"       # Run automatically, low risk
+    SAFE_AUTO = "safe_auto"  # Run automatically, low risk
     CAUTIOUS_AUTO = "cautious_auto"  # Run automatically with extra checks
     SUGGEST_ONLY = "suggest_only"  # Show to user but don't execute
-    NEVER_AUTO = "never_auto"     # Never auto-remediate
+    NEVER_AUTO = "never_auto"  # Never auto-remediate
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,7 @@ class RemediationAction:
 
 # ── Enriched Diagnosis ──────────────────────────────────────────────
 
+
 class ProblemCategory(Enum):
     """High-level problem category (superset of ProblemType)."""
 
@@ -140,14 +143,14 @@ class EnrichedDiagnosis:
 
     category: ProblemCategory
     severity: Severity
-    confidence: float                 # 0.0–1.0
-    summary_reason: str               # One-line human summary
-    root_cause_hint: str = ""         # Best-guess root cause
-    failed_step: str = ""             # Which step failed
+    confidence: float  # 0.0–1.0
+    summary_reason: str  # One-line human summary
+    root_cause_hint: str = ""  # Best-guess root cause
+    failed_step: str = ""  # Which step failed
     is_critical_step: bool = False
-    fixability: str = "unknown"       # "auto_fixable", "manual_only", "needs_investigation"
+    fixability: str = "unknown"  # "auto_fixable", "manual_only", "needs_investigation"
     needs_caution: bool = False
-    probable_scope: str = ""          # "single_file", "config", "service", "infrastructure"
+    probable_scope: str = ""  # "single_file", "config", "service", "infrastructure"
     server_context: str = ""
     runbook_hint: str = ""
     suggested_remediation: Optional[RemediationAction] = None
@@ -182,6 +185,7 @@ class EnrichedDiagnosis:
 
 
 # ── Incident ────────────────────────────────────────────────────────
+
 
 class IncidentState(Enum):
     """Lifecycle state of an incident."""
@@ -227,12 +231,15 @@ class Incident:
     def transition_to(self, new_state: IncidentState, reason: str = "") -> None:
         """Record a state transition."""
         import time
-        self.transitions.append(IncidentTransition(
-            from_state=self.state,
-            to_state=new_state,
-            timestamp=time.time(),
-            reason=reason,
-        ))
+
+        self.transitions.append(
+            IncidentTransition(
+                from_state=self.state,
+                to_state=new_state,
+                timestamp=time.time(),
+                reason=reason,
+            )
+        )
         self.state = new_state
 
     @property
@@ -248,6 +255,7 @@ class Incident:
         if not self.detected_at:
             return None
         import time
+
         end = self.healed_at or time.time()
         return end - self.detected_at
 
@@ -258,14 +266,17 @@ class Incident:
         category = getattr(diag, "category", None)
         problem_type = getattr(diag, "problem_type", None)
         ptype_val = (
-            category.value if category else
-            problem_type.value if problem_type else None
+            category.value if category else problem_type.value if problem_type else None
         )
         reason = (
-            getattr(diag, "summary_reason", None)
-            or getattr(diag, "short_cause", None)
-            or ""
-        ) if diag else ""
+            (
+                getattr(diag, "summary_reason", None)
+                or getattr(diag, "short_cause", None)
+                or ""
+            )
+            if diag
+            else ""
+        )
         return {
             "incident_id": self.incident_id,
             "workspace_path": self.workspace_path,
@@ -284,6 +295,7 @@ class Incident:
 
 
 # ── Suggested Action ────────────────────────────────────────────────
+
 
 class SuggestedActionType(Enum):
     """What the bot recommends as next step."""
@@ -323,6 +335,7 @@ class SuggestedAction:
 
 
 # ── Improvement Backlog ─────────────────────────────────────────────
+
 
 class ImprovementType(Enum):
     """Category of self-improvement."""
@@ -369,15 +382,16 @@ class ImprovementCandidate:
 
 # ── Autonomy Guardrails ────────────────────────────────────────────
 
+
 @dataclass
 class AutonomyGuardrails:
     """Hard limits on autonomous bot behavior."""
 
     max_heal_attempts_per_window: int = 3
-    heal_window_seconds: int = 3600        # 1 hour
+    heal_window_seconds: int = 3600  # 1 hour
     max_improvements_per_day: int = 2
     improvement_cooldown_seconds: int = 7200  # 2 hours
-    heal_cooldown_seconds: int = 300       # 5 min between same heal
+    heal_cooldown_seconds: int = 300  # 5 min between same heal
     max_consecutive_restarts: int = 2
     require_verify_after_heal: bool = True
     require_rollback_on_failure: bool = True
@@ -396,6 +410,7 @@ class AutonomyGuardrails:
 
 
 # ── Operational Snapshot ────────────────────────────────────────────
+
 
 @dataclass
 class OperationalSnapshot:
@@ -427,12 +442,15 @@ class OperationalSnapshot:
 
 # ── Deploy Safety Gate ──────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class DeploySafetyGate:
     """A pre-deploy check that must pass."""
 
     name: str
-    check_type: str  # "clean_worktree", "verify_pass", "profile_complete", "service_healthy"
+    check_type: (
+        str  # "clean_worktree", "verify_pass", "profile_complete", "service_healthy"
+    )
     hard: bool = True  # hard=abort deploy, soft=warn but continue
     description: str = ""
 

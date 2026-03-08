@@ -76,7 +76,9 @@ async def test_handle_text_message_switches_workspace_and_resumes_session(tmp_pa
 
     await handle_text_message(update, context)
 
-    claude_integration._find_resumable_session.assert_awaited_once_with(123, target_root)
+    claude_integration._find_resumable_session.assert_awaited_once_with(
+        123, target_root
+    )
     kwargs = claude_integration.run_command.call_args.kwargs
     assert kwargs["prompt"] == "AUTOPILOT PROMPT"
     assert kwargs["working_directory"] == target_root

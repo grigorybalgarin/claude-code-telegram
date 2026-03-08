@@ -92,7 +92,9 @@ class ProjectChangeGuard:
                     if absolute_path.exists():
                         archive.add(absolute_path, arcname=str(relative_path))
 
-        status_result = await self._run_git(["status", "--short", "--branch"], repo_root)
+        status_result = await self._run_git(
+            ["status", "--short", "--branch"], repo_root
+        )
         metadata = {
             "checkpoint_id": checkpoint_id,
             "repo_root": str(repo_root),
@@ -164,7 +166,9 @@ class ProjectChangeGuard:
         clean_result = await self._run_git(["clean", "-fd"], checkpoint.repo_root)
         if reset_result.returncode != 0 or clean_result.returncode != 0:
             report.rollback_error = (
-                reset_result.stderr.strip() or clean_result.stderr.strip() or "reset failed"
+                reset_result.stderr.strip()
+                or clean_result.stderr.strip()
+                or "reset failed"
             )
             await self.cleanup_checkpoint(checkpoint)
             return report
@@ -175,11 +179,16 @@ class ProjectChangeGuard:
                 checkpoint.repo_root,
             )
             if apply_result.returncode != 0:
-                report.rollback_error = apply_result.stderr.strip() or "git apply failed"
+                report.rollback_error = (
+                    apply_result.stderr.strip() or "git apply failed"
+                )
                 await self.cleanup_checkpoint(checkpoint)
                 return report
 
-        if checkpoint.untracked_archive_path and checkpoint.untracked_archive_path.exists():
+        if (
+            checkpoint.untracked_archive_path
+            and checkpoint.untracked_archive_path.exists()
+        ):
             with tarfile.open(checkpoint.untracked_archive_path, "r") as archive:
                 archive.extractall(checkpoint.repo_root)
 
@@ -204,9 +213,7 @@ class ProjectChangeGuard:
             lines.append("<b>Verification</b>")
             for result in report.verification_results:
                 status = "✅" if result.success else "❌"
-                lines.append(
-                    f"{status} <code>{escape_html(result.command)}</code>"
-                )
+                lines.append(f"{status} <code>{escape_html(result.command)}</code>")
 
         if report.rollback_triggered:
             lines.append("")

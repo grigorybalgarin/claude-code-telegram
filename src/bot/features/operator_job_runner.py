@@ -219,10 +219,17 @@ def main() -> int:
 
     payload = _read_state(state_path)
     stop_requested = bool(payload.get("stop_requested_at"))
-    status = "stopped" if stop_requested else ("succeeded" if exit_code == 0 else "failed")
+    status = (
+        "stopped" if stop_requested else ("succeeded" if exit_code == 0 else "failed")
+    )
     error = None if status != "failed" else payload.get("error")
 
-    if not stop_requested and exit_code == 0 and verify_command and verify_mode == "after_exit":
+    if (
+        not stop_requested
+        and exit_code == 0
+        and verify_command
+        and verify_mode == "after_exit"
+    ):
         if verification_ok:
             status = "succeeded"
         else:

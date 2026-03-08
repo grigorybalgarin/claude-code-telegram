@@ -699,10 +699,16 @@ class AnalyticsRepository:
             )
 
             row = await cursor.fetchone()
-            summary = dict(row) if row else {
-                "total_messages": 0, "total_sessions": 0,
-                "total_cost": 0.0, "avg_duration": 0,
-            }
+            summary = (
+                dict(row)
+                if row
+                else {
+                    "total_messages": 0,
+                    "total_sessions": 0,
+                    "total_cost": 0.0,
+                    "avg_duration": 0,
+                }
+            )
 
             # Daily usage (last 30 days)
             cursor = await conn.execute(
@@ -763,10 +769,17 @@ class AnalyticsRepository:
             )
 
             row = await cursor.fetchone()
-            overall = dict(row) if row else {
-                "total_users": 0, "total_sessions": 0,
-                "total_messages": 0, "total_cost": 0.0, "avg_duration": 0,
-            }
+            overall = (
+                dict(row)
+                if row
+                else {
+                    "total_users": 0,
+                    "total_sessions": 0,
+                    "total_messages": 0,
+                    "total_cost": 0.0,
+                    "avg_duration": 0,
+                }
+            )
 
             # Active users (last 7 days)
             cursor = await conn.execute(
@@ -958,9 +971,7 @@ class OperationsRepository:
     async def count_operations(self) -> int:
         """Return total number of stored operations."""
         async with self.db.get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM workspace_operations"
-            )
+            cursor = await conn.execute("SELECT COUNT(*) FROM workspace_operations")
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -1093,15 +1104,13 @@ class IncidentRepository:
         """Return active incidents, optionally filtered by workspace."""
         async with self.db.get_connection() as conn:
             params: List[object] = list(self._ACTIVE_STATES)
-            query = (
-                """
+            query = """
                 SELECT incident_id, workspace_path, state, severity, dedup_key,
                        detected_at, healed_at, heal_attempts, suppressed_count,
                        details, created_at, updated_at
                 FROM incidents
                 WHERE state IN (?, ?, ?)
                 """
-            )
             if workspace_paths:
                 placeholders = ",".join("?" for _ in workspace_paths)
                 query += f" AND workspace_path IN ({placeholders})"
@@ -1241,9 +1250,7 @@ class ImprovementBacklogRepository:
                     (status,),
                 )
             else:
-                cursor = await conn.execute(
-                    "SELECT COUNT(*) FROM improvement_backlog"
-                )
+                cursor = await conn.execute("SELECT COUNT(*) FROM improvement_backlog")
             row = await cursor.fetchone()
             return row[0] if row else 0
 

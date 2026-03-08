@@ -99,9 +99,11 @@ class ShellExecutor:
             ]
 
         lines = [
-            f"✅ <b>{escape_html(title)}</b>"
-            if result.success
-            else f"❌ <b>{escape_html(title)}</b>",
+            (
+                f"✅ <b>{escape_html(title)}</b>"
+                if result.success
+                else f"❌ <b>{escape_html(title)}</b>"
+            ),
             "",
             f"Проект: <code>{escape_html(rel_path)}</code>",
             f"Команда: <code>{escape_html(result.command)}</code>",

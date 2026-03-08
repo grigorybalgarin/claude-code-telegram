@@ -6,7 +6,7 @@ import logging
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, MutableMapping, Optional, Union
 
 import structlog
 
@@ -53,8 +53,10 @@ class _RedactingLogFilter(logging.Filter):
 
 
 def _redact_structlog_event(
-    _logger: Any, _method_name: str, event_dict: Dict[str, Any]
-) -> Dict[str, Any]:
+    _logger: Any,
+    _method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> Union[MutableMapping[str, Any], str, bytes]:
     """Redact likely secrets from structured log payloads."""
     return redact_sensitive_value(event_dict, max_string_length=4000)
 
@@ -339,6 +341,7 @@ def _start_workspace_monitor(
 
     # Wire notification callback
     if notification_service:
+
         async def _notify(text: str) -> None:
             from src.events.types import AgentResponseEvent
 
@@ -350,12 +353,14 @@ def _start_workspace_monitor(
 
     # Wire save callback
     if storage and hasattr(storage, "operations"):
+
         async def _save(**kwargs: Any) -> None:
             await storage.operations.save(**kwargs)
 
         monitor.set_save_callback(_save)
 
     if storage and hasattr(storage, "incidents"):
+
         async def _save_incident(incident: Any) -> None:
             await storage.incidents.upsert(
                 incident_id=incident.incident_id,
@@ -412,6 +417,7 @@ def _start_maintenance_loop(
 
     # Wire ops fetch callback
     if storage and hasattr(storage, "operations"):
+
         async def _get_ops() -> list:
             return await storage.operations.get_all_recent(limit=100)
 
@@ -419,12 +425,14 @@ def _start_maintenance_loop(
 
     # Wire save callback
     if storage and hasattr(storage, "operations"):
+
         async def _save(**kwargs: Any) -> None:
             await storage.operations.save(**kwargs)
 
         loop.set_save_callback(_save)
 
     if storage and hasattr(storage, "improvements"):
+
         async def _save_improvement(candidate: Any) -> None:
             await storage.improvements.upsert(
                 improvement_id=candidate.improvement_id,
@@ -450,6 +458,7 @@ def _start_maintenance_loop(
         loop.set_improvement_load_callback(_load_improvements)
 
     if storage:
+
         async def _cleanup(days: int) -> dict[str, int]:
             return await storage.cleanup_old_data(days=days)
 
@@ -457,6 +466,7 @@ def _start_maintenance_loop(
 
     # Wire notification
     if notification_service:
+
         async def _notify(text: str) -> None:
             from src.events.types import AgentResponseEvent
 

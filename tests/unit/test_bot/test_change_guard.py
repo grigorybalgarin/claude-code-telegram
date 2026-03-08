@@ -8,7 +8,6 @@ import pytest
 
 from src.bot.features.change_guard import ProjectChangeGuard
 
-
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git is required for change guard tests"
 )
@@ -55,7 +54,7 @@ async def test_run_verification_commands_stops_on_failure(tmp_path):
     guard = ProjectChangeGuard()
     commands = [
         f"{sys.executable} -c \"print('ok')\"",
-        f"{sys.executable} -c \"import sys; sys.exit(2)\"",
+        f'{sys.executable} -c "import sys; sys.exit(2)"',
         f"{sys.executable} -c \"print('should not run')\"",
     ]
 

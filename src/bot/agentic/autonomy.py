@@ -49,15 +49,17 @@ class AutonomyTracker:
         self._prune_old_timestamps()
         if not self.guardrails.allows_heal(len(self._heal_timestamps)):
             return False
-        if self._restart_counts.get(workspace, 0) >= self.guardrails.max_consecutive_restarts:
+        if (
+            self._restart_counts.get(workspace, 0)
+            >= self.guardrails.max_consecutive_restarts
+        ):
             return False
         return True
 
     def can_improve(self) -> bool:
         self._prune_old_timestamps()
         today_count = sum(
-            1 for t in self._improvement_timestamps
-            if time.time() - t < 86400
+            1 for t in self._improvement_timestamps if time.time() - t < 86400
         )
         return self.guardrails.allows_improvement(today_count)
 
@@ -68,9 +70,7 @@ class AutonomyTracker:
     def _prune_old_timestamps(self) -> None:
         now = time.time()
         window = self.guardrails.heal_window_seconds
-        self._heal_timestamps = [
-            t for t in self._heal_timestamps if now - t < window
-        ]
+        self._heal_timestamps = [t for t in self._heal_timestamps if now - t < window]
 
 
 class SelfReviewEngine:
@@ -106,7 +106,8 @@ class SelfReviewEngine:
 
         # Pattern: repeated verify failures of the same type
         verify_failures = [
-            o for o in ops
+            o
+            for o in ops
             if o.get("operation_type") == "verify" and not o.get("success")
         ]
         if len(verify_failures) >= 3:
@@ -117,80 +118,91 @@ class SelfReviewEngine:
                 except (json.JSONDecodeError, TypeError):
                     details = {}
             problem_type = details.get("problem_type", "unknown")
-            candidates.append(ImprovementCandidate(
-                improvement_id=str(uuid.uuid4())[:8],
-                improvement_type=ImprovementType.RUNBOOK_HINT,
-                description=(
-                    f"Повторяющиеся verify failures ({len(verify_failures)}x) "
-                    f"типа '{problem_type}' в {workspace}"
-                ),
-                category=problem_type,
-                confidence=min(0.9, 0.3 + len(verify_failures) * 0.1),
-                priority=len(verify_failures),
-                safe_to_auto_apply=False,
-                requires_user_approval=True,
-                created_at=time.time(),
-            ))
+            candidates.append(
+                ImprovementCandidate(
+                    improvement_id=str(uuid.uuid4())[:8],
+                    improvement_type=ImprovementType.RUNBOOK_HINT,
+                    description=(
+                        f"Повторяющиеся verify failures ({len(verify_failures)}x) "
+                        f"типа '{problem_type}' в {workspace}"
+                    ),
+                    category=problem_type,
+                    confidence=min(0.9, 0.3 + len(verify_failures) * 0.1),
+                    priority=len(verify_failures),
+                    safe_to_auto_apply=False,
+                    requires_user_approval=True,
+                    created_at=time.time(),
+                )
+            )
 
         # Pattern: resolve failures (attempted but didn't fix)
         resolve_failures = [
-            o for o in ops
+            o
+            for o in ops
             if o.get("operation_type") == "resolve" and not o.get("success")
         ]
         if len(resolve_failures) >= 2:
-            candidates.append(ImprovementCandidate(
-                improvement_id=str(uuid.uuid4())[:8],
-                improvement_type=ImprovementType.REMEDIATION_POLICY,
-                description=(
-                    f"Resolve не справляется ({len(resolve_failures)}x) в {workspace}. "
-                    "Возможно, нужен runbook hint или другой подход."
-                ),
-                confidence=0.6,
-                priority=len(resolve_failures) + 1,
-                safe_to_auto_apply=False,
-                requires_user_approval=True,
-                created_at=time.time(),
-            ))
+            candidates.append(
+                ImprovementCandidate(
+                    improvement_id=str(uuid.uuid4())[:8],
+                    improvement_type=ImprovementType.REMEDIATION_POLICY,
+                    description=(
+                        f"Resolve не справляется ({len(resolve_failures)}x) в {workspace}. "
+                        "Возможно, нужен runbook hint или другой подход."
+                    ),
+                    confidence=0.6,
+                    priority=len(resolve_failures) + 1,
+                    safe_to_auto_apply=False,
+                    requires_user_approval=True,
+                    created_at=time.time(),
+                )
+            )
 
         # Pattern: failed self-heal attempts
         heal_failures = [
-            o for o in ops
+            o
+            for o in ops
             if o.get("operation_type") in ("heal_failed", "incident_escalated")
         ]
         if len(heal_failures) >= 2:
-            candidates.append(ImprovementCandidate(
-                improvement_id=str(uuid.uuid4())[:8],
-                improvement_type=ImprovementType.REMEDIATION_POLICY,
-                description=(
-                    f"Self-heal не помогает ({len(heal_failures)}x) в {workspace}. "
-                    "Нужна более точная remediation policy."
-                ),
-                confidence=0.7,
-                priority=len(heal_failures) + 2,
-                safe_to_auto_apply=False,
-                requires_user_approval=True,
-                created_at=time.time(),
-            ))
+            candidates.append(
+                ImprovementCandidate(
+                    improvement_id=str(uuid.uuid4())[:8],
+                    improvement_type=ImprovementType.REMEDIATION_POLICY,
+                    description=(
+                        f"Self-heal не помогает ({len(heal_failures)}x) в {workspace}. "
+                        "Нужна более точная remediation policy."
+                    ),
+                    confidence=0.7,
+                    priority=len(heal_failures) + 2,
+                    safe_to_auto_apply=False,
+                    requires_user_approval=True,
+                    created_at=time.time(),
+                )
+            )
 
         # Pattern: deploy failures
         deploy_failures = [
-            o for o in ops
+            o
+            for o in ops
             if o.get("operation_type") == "deploy" and not o.get("success")
         ]
         if deploy_failures:
-            candidates.append(ImprovementCandidate(
-                improvement_id=str(uuid.uuid4())[:8],
-                improvement_type=ImprovementType.PROFILE_FIX,
-                description=(
-                    f"Deploy failures ({len(deploy_failures)}x) в {workspace}. "
-                    "Проверь deploy config и safety gates."
-                ),
-                confidence=0.5,
-                priority=len(deploy_failures),
-                safe_to_auto_apply=False,
-                requires_user_approval=True,
-                created_at=time.time(),
-            ))
+            candidates.append(
+                ImprovementCandidate(
+                    improvement_id=str(uuid.uuid4())[:8],
+                    improvement_type=ImprovementType.PROFILE_FIX,
+                    description=(
+                        f"Deploy failures ({len(deploy_failures)}x) в {workspace}. "
+                        "Проверь deploy config и safety gates."
+                    ),
+                    confidence=0.5,
+                    priority=len(deploy_failures),
+                    safe_to_auto_apply=False,
+                    requires_user_approval=True,
+                    created_at=time.time(),
+                )
+            )
 
         return candidates
 
@@ -240,10 +252,12 @@ class ImprovementBacklog:
                 existing.priority = max(existing.priority, candidate.priority)
                 existing.confidence = max(existing.confidence, candidate.confidence)
                 if candidate.source_incident_ids:
-                    existing.source_incident_ids = list({
-                        *existing.source_incident_ids,
-                        *candidate.source_incident_ids,
-                    })
+                    existing.source_incident_ids = list(
+                        {
+                            *existing.source_incident_ids,
+                            *candidate.source_incident_ids,
+                        }
+                    )
                 if candidate.suggested_change and not existing.suggested_change:
                     existing.suggested_change = candidate.suggested_change
                 return existing
@@ -260,8 +274,7 @@ class ImprovementBacklog:
 
     def get_auto_applicable(self) -> List[ImprovementCandidate]:
         return [
-            i for i in self._items
-            if i.status == "pending" and i.safe_to_auto_apply
+            i for i in self._items if i.status == "pending" and i.safe_to_auto_apply
         ]
 
     def mark_applied(self, improvement_id: str) -> None:
@@ -286,9 +299,7 @@ class ImprovementBacklog:
             return "Нет предложений по улучшению."
         lines = [f"<b>Backlog улучшений:</b> {len(pending)} предложений"]
         for item in sorted(pending, key=lambda x: -x.priority)[:5]:
-            lines.append(
-                f"  • [{item.improvement_type.value}] {item.description[:80]}"
-            )
+            lines.append(f"  • [{item.improvement_type.value}] {item.description[:80]}")
         return "\n".join(lines)
 
 

@@ -15,11 +15,11 @@ from .problem_classifier import ProblemDiagnosis, ProblemType
 class CautionLevel(Enum):
     """How cautious the resolve/action should be."""
 
-    NONE = "none"           # Safe to auto-resolve
-    LOW = "low"             # Auto-resolve ok, mention caution
-    MODERATE = "moderate"   # Auto-resolve ok with extra checks
-    HIGH = "high"           # Suggest manual check first
-    BLOCK = "block"         # Do NOT auto-resolve
+    NONE = "none"  # Safe to auto-resolve
+    LOW = "low"  # Auto-resolve ok, mention caution
+    MODERATE = "moderate"  # Auto-resolve ok with extra checks
+    HIGH = "high"  # Suggest manual check first
+    BLOCK = "block"  # Do NOT auto-resolve
 
 
 @dataclass(frozen=True)
@@ -32,9 +32,9 @@ class RemediationPlan:
 
     caution_level: CautionLevel
     safe_auto_resolve: bool
-    resolve_framing: str       # Guidance injected into resolve prompt
-    next_step_hint: str        # What to tell the user as "next step"
-    runbook_note: str = ""     # Cleaned runbook hint for display
+    resolve_framing: str  # Guidance injected into resolve prompt
+    next_step_hint: str  # What to tell the user as "next step"
+    runbook_note: str = ""  # Cleaned runbook hint for display
     confidence_note: str = ""  # Note about low confidence if applicable
     extra_checks: List[str] = field(default_factory=list)
 
@@ -53,14 +53,28 @@ _DEFAULT_CAUTION: Dict[ProblemType, CautionLevel] = {
 
 # Runbook hint keywords that raise caution
 _CAUTION_KEYWORDS = (
-    "вручную", "manual", "осторожно", "careful", "опасно", "danger",
-    "не автоматизируй", "не трогай", "don't", "backup", "бэкап",
+    "вручную",
+    "manual",
+    "осторожно",
+    "careful",
+    "опасно",
+    "danger",
+    "не автоматизируй",
+    "не трогай",
+    "don't",
+    "backup",
+    "бэкап",
 )
 
 # Runbook hint keywords that lower caution (known safe actions)
 _SAFE_KEYWORDS = (
-    "make install", "pip install", "npm install", "restart",
-    "перезапусти", "systemctl restart", "запусти",
+    "make install",
+    "pip install",
+    "npm install",
+    "restart",
+    "перезапусти",
+    "systemctl restart",
+    "запусти",
 )
 
 
@@ -83,7 +97,9 @@ def build_remediation_plan(
     caution = _compute_caution(diagnosis, runbook_note)
 
     # Determine if auto-resolve is safe
-    safe_auto = caution in (CautionLevel.NONE, CautionLevel.LOW) and diagnosis.safe_to_autofix
+    safe_auto = (
+        caution in (CautionLevel.NONE, CautionLevel.LOW) and diagnosis.safe_to_autofix
+    )
 
     # Build resolve framing (injected into Claude prompt)
     framing = _build_framing(diagnosis, runbook_note, caution)
@@ -197,8 +213,7 @@ def _build_framing(
 
     if diagnosis.confidence < 0.4:
         parts.append(
-            "Уверенность диагноза низкая — начни с изучения проблемы, "
-            "а не с правок."
+            "Уверенность диагноза низкая — начни с изучения проблемы, " "а не с правок."
         )
 
     return "\n".join(parts)

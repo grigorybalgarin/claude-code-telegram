@@ -30,9 +30,7 @@ def _mock_video(duration=10, file_size=1024, is_video_note=True):
     video.file_size = file_size
 
     mock_file = AsyncMock()
-    mock_file.download_as_bytearray = AsyncMock(
-        return_value=bytearray(b"\x00" * 512)
-    )
+    mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"\x00" * 512))
     video.get_file = AsyncMock(return_value=mock_file)
     return video
 
@@ -164,15 +162,18 @@ class TestExtractFramesSubprocess:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.returncode = 0
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc
-        ) as mock_exec, patch(
-            "src.bot.features.video_note_handler.tempfile.TemporaryDirectory"
-        ) as mock_tmpdir:
+        with (
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ) as mock_exec,
+            patch(
+                "src.bot.features.video_note_handler.tempfile.TemporaryDirectory"
+            ) as mock_tmpdir,
+        ):
             # Set up temp directory with fake frame files
-            mock_tmpdir.return_value.__enter__ = MagicMock(
-                return_value=str(tmp_path)
-            )
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
             mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
 
             # Create fake frame files that ffmpeg would produce
@@ -195,9 +196,7 @@ class TestExtractFramesSubprocess:
     async def test_extract_frames_timeout(self):
         """TimeoutError from ffmpeg is converted to ValueError."""
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            side_effect=asyncio.TimeoutError()
-        )
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock()
 
@@ -214,9 +213,7 @@ class TestExtractFramesSubprocess:
     async def test_extract_frames_ffmpeg_error(self):
         """Non-zero ffmpeg return code raises ValueError."""
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            return_value=(b"", b"Error: invalid data")
-        )
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: invalid data"))
         mock_proc.returncode = 1
 
         with patch(
@@ -233,16 +230,17 @@ class TestExtractFramesSubprocess:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.returncode = 0
 
-        with patch(
-            "asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-            return_value=mock_proc,
-        ), patch(
-            "src.bot.features.video_note_handler.tempfile.TemporaryDirectory"
-        ) as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = MagicMock(
-                return_value=str(tmp_path)
-            )
+        with (
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch(
+                "src.bot.features.video_note_handler.tempfile.TemporaryDirectory"
+            ) as mock_tmpdir,
+        ):
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
             mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
             # No frame files created in tmp_path
 
@@ -252,9 +250,7 @@ class TestExtractFramesSubprocess:
     async def test_extract_frames_zero_duration(self):
         """When duration is 0, a fallback fps filter is used."""
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            return_value=(b"", b"Error: no input")
-        )
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: no input"))
         mock_proc.returncode = 1
 
         with patch(

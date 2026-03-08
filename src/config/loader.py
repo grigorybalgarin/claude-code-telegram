@@ -173,9 +173,7 @@ def _warn_on_risky_runtime_settings(settings: Settings) -> None:
 
     approved_directory = settings.approved_directory.resolve()
     if approved_directory in {Path("/"), Path("/root"), Path.home().resolve()}:
-        risky_settings.append(
-            f"approved_directory is very broad: {approved_directory}"
-        )
+        risky_settings.append(f"approved_directory is very broad: {approved_directory}")
 
     if settings.disable_security_patterns:
         risky_settings.append("disable_security_patterns is enabled")
@@ -184,9 +182,7 @@ def _warn_on_risky_runtime_settings(settings: Settings) -> None:
         risky_settings.append("disable_tool_validation is enabled")
 
     if settings.enable_mcp and settings.disable_tool_validation:
-        risky_settings.append(
-            "MCP is enabled while tool validation is disabled"
-        )
+        risky_settings.append("MCP is enabled while tool validation is disabled")
 
     if risky_settings:
         logger.warning(
