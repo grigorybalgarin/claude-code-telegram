@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import structlog
 
-from ..agents.registry import AgentDefinition, AgentRegistry
+from ..agents.registry import AgentDefinition
 from ..agents.router import AgentRouter
 from ..claude.facade import ClaudeIntegration
 from .bus import Event, EventBus
