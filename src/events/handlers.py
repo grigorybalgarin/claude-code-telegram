@@ -5,10 +5,12 @@ NotificationHandler: subscribes to AgentResponseEvent and delivers to Telegram.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
+from ..agents.registry import AgentDefinition, AgentRegistry
+from ..agents.router import AgentRouter
 from ..claude.facade import ClaudeIntegration
 from .bus import Event, EventBus
 from .types import AgentResponseEvent, ScheduledEvent, WebhookEvent
@@ -22,6 +24,9 @@ class AgentHandler:
     Webhook and scheduled events are converted into prompts and sent
     to ClaudeIntegration.run_command(). The response is published
     back as an AgentResponseEvent for delivery.
+
+    When an AgentRouter is configured, events are classified first
+    and the matched agent's system prompt is prepended automatically.
     """
 
     def __init__(
@@ -30,11 +35,15 @@ class AgentHandler:
         claude_integration: ClaudeIntegration,
         default_working_directory: Path,
         default_user_id: int = 0,
+        agent_router: Optional[AgentRouter] = None,
+        project_base_dir: Optional[Path] = None,
     ) -> None:
         self.event_bus = event_bus
         self.claude = claude_integration
         self.default_working_directory = default_working_directory
         self.default_user_id = default_user_id
+        self.agent_router = agent_router
+        self.project_base_dir = project_base_dir or default_working_directory
 
     def register(self) -> None:
         """Subscribe to events that need agent processing."""
@@ -46,27 +55,28 @@ class AgentHandler:
         if not isinstance(event, WebhookEvent):
             return
 
+        agent = self._classify(event)
+
         logger.info(
             "Processing webhook event through agent",
             provider=event.provider,
             event_type=event.event_type_name,
             delivery_id=event.delivery_id,
+            agent=agent.slug if agent else None,
         )
 
         prompt = self._build_webhook_prompt(event)
+        prompt = self._prepend_agent_prompt(prompt, agent)
+        working_dir = self._agent_working_dir(agent)
 
         try:
             response = await self.claude.run_command(
                 prompt=prompt,
-                working_directory=self.default_working_directory,
+                working_directory=working_dir,
                 user_id=self.default_user_id,
             )
 
             if response.content:
-                # We don't know which chat to send to from a webhook alone.
-                # The notification service needs configured target chats.
-                # Publish with chat_id=0 — the NotificationService
-                # will broadcast to configured notification_chat_ids.
                 await self.event_bus.publish(
                     AgentResponseEvent(
                         chat_id=0,
@@ -86,19 +96,29 @@ class AgentHandler:
         if not isinstance(event, ScheduledEvent):
             return
 
+        agent = self._classify(event)
+
         logger.info(
             "Processing scheduled event through agent",
             job_id=event.job_id,
             job_name=event.job_name,
+            agent=agent.slug if agent else None,
         )
 
         prompt = event.prompt
-        if event.skill_name:
+        if event.skill_name and not (
+            event.skill_name and event.skill_name.startswith("agent:")
+        ):
             prompt = (
                 f"/{event.skill_name}\n\n{prompt}" if prompt else f"/{event.skill_name}"
             )
 
-        working_dir = event.working_directory or self.default_working_directory
+        prompt = self._prepend_agent_prompt(prompt, agent)
+        working_dir = (
+            self._agent_working_dir(agent)
+            if agent
+            else (event.working_directory or self.default_working_directory)
+        )
 
         try:
             response = await self.claude.run_command(
@@ -117,7 +137,6 @@ class AgentHandler:
                         )
                     )
 
-                # Also broadcast to default chats if no targets specified
                 if not event.target_chat_ids:
                     await self.event_bus.publish(
                         AgentResponseEvent(
@@ -132,6 +151,43 @@ class AgentHandler:
                 job_id=event.job_id,
                 event_id=event.id,
             )
+
+    # ------------------------------------------------------------------
+    # Agent routing helpers
+    # ------------------------------------------------------------------
+
+    def _classify(self, event: Event) -> Optional[AgentDefinition]:
+        """Ask the router for the best agent (or None)."""
+        if self.agent_router:
+            return self.agent_router.classify(event)
+        return None
+
+    def _prepend_agent_prompt(
+        self, prompt: str, agent: Optional[AgentDefinition]
+    ) -> str:
+        """Prepend agent system prompt if an agent matched."""
+        if not agent:
+            return prompt
+        try:
+            system_prompt = agent.load_prompt(self.project_base_dir)
+            return f"{system_prompt}\n\n---\n\n{prompt}"
+        except FileNotFoundError:
+            logger.warning(
+                "Agent prompt file missing, using plain prompt",
+                agent=agent.slug,
+                prompt_file=str(agent.prompt_file),
+            )
+            return prompt
+
+    def _agent_working_dir(self, agent: Optional[AgentDefinition]) -> Path:
+        """Resolve working directory for the agent."""
+        if agent and agent.working_directory:
+            return self.project_base_dir / agent.working_directory
+        return self.default_working_directory
+
+    # ------------------------------------------------------------------
+    # Prompt building
+    # ------------------------------------------------------------------
 
     def _build_webhook_prompt(self, event: WebhookEvent) -> str:
         """Build a Claude prompt from a webhook event."""

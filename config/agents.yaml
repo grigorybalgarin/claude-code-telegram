@@ -1,0 +1,30 @@
+# Multi-agent registry.
+# Each entry defines a specialized agent that the AgentRouter can dispatch to.
+# Adding a new agent = one entry here + one prompt file in prompts/.
+
+agents:
+  - slug: deaify-text
+    name: Text Humanizer
+    department: content
+    prompt_file: prompts/deaify-text.md
+    enabled: true
+    # Optional overrides (defaults come from bot settings):
+    # working_directory: .
+    # tools_allowlist: []
+
+  - slug: competitor-analysis
+    name: Competitor Analyst
+    department: rd
+    prompt_file: prompts/competitor-analysis.md
+    enabled: true
+
+# Routing rules: map (provider, event_type) or department label to an agent.
+# The router tries rules top-down; first match wins.  Fallback = no agent (default handler).
+routing_rules:
+  # Example: GitHub PR events -> competitor-analysis (placeholder, change as needed)
+  # - provider: github
+  #   event_type: pull_request
+  #   agent: competitor-analysis
+
+  # Scheduled events can target agents by setting agent_slug in the job config.
+  # Direct Telegram commands route via /agent <slug> or department keyword matching.

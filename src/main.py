@@ -19,6 +19,8 @@ from src.claude import (
 from src.claude.sdk_integration import ClaudeSDKManager
 from src.config.features import FeatureFlags
 from src.config.settings import Settings
+from src.agents.registry import load_agent_registry
+from src.agents.router import AgentRouter
 from src.events.bus import EventBus
 from src.events.handlers import AgentHandler
 from src.events.middleware import EventSecurityMiddleware
@@ -193,12 +195,29 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     )
     event_security.register()
 
+    # Agent registry and router (multi-agent system)
+    agent_router: Optional[AgentRouter] = None
+    agents_config = config.approved_directory / "config" / "agents.yaml"
+    if agents_config.exists():
+        try:
+            agent_registry = load_agent_registry(agents_config)
+            agent_router = AgentRouter(agent_registry)
+            logger.info(
+                "Agent registry loaded",
+                agents=len(agent_registry.list_enabled()),
+                rules=len(agent_registry.routing_rules),
+            )
+        except Exception:
+            logger.exception("Failed to load agent registry, continuing without routing")
+
     # Agent handler — translates events into Claude executions
     agent_handler = AgentHandler(
         event_bus=event_bus,
         claude_integration=claude_integration,
         default_working_directory=config.approved_directory,
         default_user_id=config.allowed_users[0] if config.allowed_users else 0,
+        agent_router=agent_router,
+        project_base_dir=config.approved_directory,
     )
     agent_handler.register()
 
