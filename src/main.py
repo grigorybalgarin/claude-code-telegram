@@ -197,7 +197,9 @@ async def create_application(config: Settings) -> Dict[str, Any]:
 
     # Agent registry and router (multi-agent system)
     agent_router: Optional[AgentRouter] = None
-    agents_config = config.approved_directory / "config" / "agents.yaml"
+    # Look for agents.yaml next to the running code (app repo root), not in workspaces
+    _app_root = Path(__file__).resolve().parent.parent
+    agents_config = _app_root / "config" / "agents.yaml"
     if agents_config.exists():
         try:
             agent_registry = load_agent_registry(agents_config)
@@ -217,7 +219,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         default_working_directory=config.approved_directory,
         default_user_id=config.allowed_users[0] if config.allowed_users else 0,
         agent_router=agent_router,
-        project_base_dir=config.approved_directory,
+        project_base_dir=_app_root,
     )
     agent_handler.register()
 
