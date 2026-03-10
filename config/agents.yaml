@@ -37,6 +37,26 @@ agents:
     prompt_file: prompts/blog-ideas.md
     enabled: true
 
+  # --- VIDEO department (Phase 3) ---
+  - slug: youtube-script
+    name: YouTube Script Writer
+    department: video
+    prompt_file: prompts/youtube-script.md
+    enabled: true
+
+  # --- SALES department (Phase 3) ---
+  - slug: tg-broadcast
+    name: Telegram Broadcast
+    department: sales
+    prompt_file: prompts/tg-broadcast.md
+    enabled: true
+
+  - slug: deeplink-creator
+    name: Deeplink Creator
+    department: sales
+    prompt_file: prompts/deeplink-creator.md
+    enabled: true
+
 # Routing rules: map (provider, event_type) or department label to an agent.
 # The router tries rules top-down; first match wins.  Fallback = no agent (default handler).
 routing_rules:

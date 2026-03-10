@@ -1,6 +1,6 @@
 # Multi-Agent System Roadmap
 
-## Current Phase: 2 — ANALYTICS department
+## Current Phase: 3 — VIDEO + SALES departments
 ## Status: DONE (pending deploy + e2e test)
 
 ---
@@ -36,10 +36,11 @@ Goal: automated insights delivered on schedule.
 
 Goal: content production and distribution automation.
 
-- [ ] `prompts/youtube-script.md` — video script generation agent
-- [ ] `prompts/tg-broadcast.md` — Telegram broadcast agent (via NotificationService)
-- [ ] `prompts/deeplink-creator.md` — tracking link creation + stats agent
-- [ ] Telegram command shortcuts for these agents (`/script`, `/broadcast`)
+- [x] `prompts/youtube-script.md` — video script generation agent (hook, sections, CTA, SEO tags)
+- [x] `prompts/tg-broadcast.md` — Telegram broadcast agent (A/B variants, send time, inline buttons)
+- [x] `prompts/deeplink-creator.md` — UTM link creator for YouTube/Telegram/Instagram cross-tracking
+- [x] 3 agents registered in `config/agents.yaml` (youtube-script, tg-broadcast, deeplink-creator)
+- [ ] Telegram command shortcuts for these agents (requires deploy + wiring)
 
 ## Phase 4: PRODUCT + supporting services (later)
 
