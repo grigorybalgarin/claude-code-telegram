@@ -18,6 +18,25 @@ agents:
     prompt_file: prompts/competitor-analysis.md
     enabled: true
 
+  # --- ANALYTICS department (Phase 2) ---
+  - slug: cc-analytics
+    name: Cost Analytics
+    department: analytics
+    prompt_file: prompts/cc-analytics.md
+    enabled: true
+
+  - slug: chat-trends
+    name: Chat Trends
+    department: analytics
+    prompt_file: prompts/chat-trends.md
+    enabled: true
+
+  - slug: blog-ideas
+    name: Blog Ideas
+    department: analytics
+    prompt_file: prompts/blog-ideas.md
+    enabled: true
+
 # Routing rules: map (provider, event_type) or department label to an agent.
 # The router tries rules top-down; first match wins.  Fallback = no agent (default handler).
 routing_rules:

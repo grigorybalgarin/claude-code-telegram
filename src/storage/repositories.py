@@ -671,6 +671,27 @@ class CostTrackingRepository:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def get_costs_by_department(
+        self, days: int = 30
+    ) -> List[Dict[str, any]]:
+        """Get total costs grouped by department."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    COALESCE(department, 'general') as department,
+                    SUM(daily_cost) as total_cost,
+                    SUM(request_count) as total_requests
+                FROM cost_tracking
+                WHERE date >= date('now', '-' || ? || ' days')
+                GROUP BY department
+                ORDER BY total_cost DESC
+            """,
+                (days,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
 
 class AnalyticsRepository:
     """Analytics and reporting."""

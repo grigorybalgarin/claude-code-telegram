@@ -422,6 +422,16 @@ class DatabaseManager:
                 --  so we handle this gracefully in code)
                 """,
             ),
+            (
+                8,
+                """
+                -- Add department tracking to cost_tracking (multi-agent Phase 2)
+                ALTER TABLE cost_tracking ADD COLUMN department TEXT DEFAULT NULL;
+
+                CREATE INDEX IF NOT EXISTS idx_cost_tracking_department
+                    ON cost_tracking(department, date);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

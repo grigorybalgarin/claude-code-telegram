@@ -263,6 +263,7 @@ class CostTrackingModel:
     daily_cost: float = 0.0
     request_count: int = 0
     id: Optional[int] = None
+    department: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> "CostTrackingModel":

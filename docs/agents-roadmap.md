@@ -1,7 +1,7 @@
 # Multi-Agent System Roadmap
 
-## Current Phase: 1 — Framework (AgentRegistry + AgentRouter)
-## Status: IN PROGRESS
+## Current Phase: 2 — ANALYTICS department
+## Status: DONE (pending deploy + e2e test)
 
 ---
 
@@ -24,11 +24,13 @@ Goal: build the routing infrastructure so that adding a new agent = 1 YAML entry
 
 Goal: automated insights delivered on schedule.
 
-- [ ] `prompts/cc-analytics.md` — Claude cost analytics agent (weekly report from cost_tracking table)
-- [ ] `prompts/chat-trends.md` — chat trend analysis agent
-- [ ] `prompts/blog-ideas.md` — content idea generation agent
-- [ ] Add `department_id` column to `cost_tracking` table (migration)
-- [ ] Cron jobs in scheduler for weekly analytics
+- [x] `prompts/cc-analytics.md` — Claude cost analytics agent (weekly report from cost_tracking table)
+- [x] `prompts/chat-trends.md` — chat trend analysis agent
+- [x] `prompts/blog-ideas.md` — content idea generation agent
+- [x] Add `department` column to `cost_tracking` table (migration 8) + `CostTrackingModel.department` field
+- [x] `get_costs_by_department()` method in `CostTrackingRepository`
+- [x] 3 agents registered in `config/agents.yaml` (cc-analytics, chat-trends, blog-ideas)
+- [ ] Cron jobs in scheduler for weekly analytics (requires deploy + configuration)
 
 ## Phase 3: VIDEO + SALES departments (3-4 agents)
 
