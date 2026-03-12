@@ -40,7 +40,7 @@ Goal: content production and distribution automation.
 - [x] `prompts/tg-broadcast.md` — Telegram broadcast agent (A/B variants, send time, inline buttons)
 - [x] `prompts/deeplink-creator.md` — UTM link creator for YouTube/Telegram/Instagram cross-tracking
 - [x] 3 agents registered in `config/agents.yaml` (youtube-script, tg-broadcast, deeplink-creator)
-- [ ] Telegram command shortcuts for these agents (requires deploy + wiring)
+- [x] Telegram command `/agent <slug> <prompt>` for manual agent invocation
 
 ## Phase 4: PRODUCT + supporting services (later)
 

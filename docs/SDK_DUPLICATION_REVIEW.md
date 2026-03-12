@@ -251,32 +251,14 @@ the tool call has already been sent to Claude by the time we check it. The SDK's
 ## Finding 4: No Use of `max_budget_usd`
 
 **Impact: MEDIUM** | **Files: `session.py`, `sdk_integration.py`**
+**Status: COMPLETE** (`max_budget_usd` wired in `sdk_integration.py` line 262)
 
-### What the SDK provides
+### Resolution
 
-```python
-options = ClaudeAgentOptions(
-    max_budget_usd=5.00,  # Hard cap per query
-)
-```
-
-This is enforced by the SDK itself — the query stops if the budget is exceeded.
-
-### What we do instead
-
-Cost is tracked in **four places** with no enforcement:
-
-1. `ClaudeSession.total_cost` — accumulated in `update_usage()` (session.py:52)
-2. `ClaudeResponse.cost` — returned from both SDK and CLI backends
-3. `ResultMessage.total_cost_usd` — SDK native field
-4. SQLite `cost_tracking` table — historical storage
-
-None of these **enforce** a limit. They only report after the fact.
-
-### Recommendation
-
-- Set `max_budget_usd` in `ClaudeAgentOptions` for per-query cost caps
-- Keep SQLite tracking for historical reporting/dashboards
+`max_budget_usd=self.config.claude_max_cost_per_request` is now passed to
+`ClaudeAgentOptions` in `sdk_integration.py`. The SDK enforces the per-query
+budget cap natively. SQLite `cost_tracking` table remains for historical
+reporting/dashboards.
 - Consider adding a config setting like `max_cost_per_query` that maps to this
 
 ---
@@ -342,31 +324,14 @@ This effectively prevents Claude from doing useful shell work in many scenarios.
 ## Finding 7: CLI Path Discovery
 
 **Impact: LOW** | **Files: `sdk_integration.py`**
+**Status: COMPLETE** (`find_claude_cli()` and `update_path_for_claude()` already removed)
 
-### The current approach
+### Resolution
 
-`find_claude_cli()` (lines 46-86) searches:
-- Config/env `CLAUDE_CLI_PATH`
-- `shutil.which("claude")`
-- `~/.nvm/versions/node/*/bin/claude`
-- `~/.npm-global/bin/claude`
-- `~/node_modules/.bin/claude`
-- `/usr/local/bin/claude`, `/usr/bin/claude`
-- `~/AppData/Roaming/npm/claude.cmd` (Windows)
-
-`update_path_for_claude()` (lines 89-104) then modifies `os.environ["PATH"]`.
-
-### What the SDK provides
-
-`ClaudeAgentOptions.cli_path` — if set, the SDK uses it. Otherwise the SDK has
-its own internal discovery.
-
-### Recommendation
-
-- Only set `cli_path` if explicitly configured
-- Remove `find_claude_cli()` and `update_path_for_claude()` (~60 lines)
-- If the SDK can't find the CLI, it raises `CLINotFoundError` — handle that with
-  a helpful error message
+Both functions were removed in earlier refactoring. `sdk_integration.py` now
+passes `cli_path=self.config.claude_cli_path or None` to `ClaudeAgentOptions`,
+letting the SDK handle its own discovery. `CLINotFoundError` is caught with a
+helpful installation message.
 
 ---
 
@@ -443,7 +408,7 @@ PR #56 removed `active_sessions` dict and `_update_session()` from
 | `session.py` | 340 | 342 | **~250** | Keep thin persistence model |
 | `monitor.py` | 333 | **~110** | — | ✅ `ToolMonitor` deleted, kept `check_bash_directory_boundary()` |
 | `facade.py` | 568 | **~280** | — | ✅ Removed interception, admin messages, tool_monitor |
-| `sdk_integration.py` | 513 | **~530** | **~60** | Added `can_use_tool` callback; remove CLI discovery |
+| `sdk_integration.py` | 513 | **~530** | — | ✅ `can_use_tool` callback added, CLI discovery already removed |
 | `exceptions.py` | 50 | **~30** | — | ✅ Removed `ClaudeToolValidationError` |
 | **Total** | **2,774** | **~1,290** | **~310** | **~24% remaining reduction** |
 
@@ -511,16 +476,15 @@ step should be a separate PR that can be tested independently.
    - ❌ Not yet using persistent `ClaudeSDKClient` connections for multi-turn
    - Remaining: ~200 lines removable from session.py + facade.py
 
-8. **Add `max_budget_usd`**
-   - Add config setting and pass to options
-   - ~10 lines
-   - No risk
+8. ~~**Add `max_budget_usd`**~~
+   ✅ **DONE** — `max_budget_usd=self.config.claude_max_cost_per_request` wired
+   in `sdk_integration.py` line 262.
 
 ### Phase 5: Final Cleanup
 
-9. **Remove `find_claude_cli()` and `update_path_for_claude()`**
-   - Let SDK handle discovery, only pass `cli_path` if configured
-   - ~60 lines removed
+9. ~~**Remove `find_claude_cli()` and `update_path_for_claude()`**~~
+   ✅ **DONE** — Both functions already removed. `cli_path` passed to SDK options
+   only when explicitly configured.
 
 10. **Consolidate dataclasses**
     - Single `ClaudeResponse` definition (or use SDK types directly)
@@ -572,12 +536,13 @@ Before any refactor:
 | 2026-02-20 | [#56](https://github.com/RichardAtCT/claude-code-telegram/pull/56) | F1 (partial), F8, F9 | Migrated `query()` → `ClaudeSDKClient`, eliminated `temp_*` IDs and session swapping, uses `ResultMessage.result`, removed dead `active_sessions` state |
 | 2026-02-20 | [#59](https://github.com/RichardAtCT/claude-code-telegram/pull/59) | F3 (complete), F5 (complete) | Deleted CLI subprocess backend (`integration.py`, `parser.py`), removed `use_sdk` flag, passed `disallowed_tools` to SDK, ~1,060 lines removed |
 | 2026-02-20 | Phase 3 branch | F2 (complete), F6 (complete) | Replaced `ToolMonitor` with SDK's `can_use_tool` callback, removed bash pattern blocklist, removed facade interception + admin message helpers, removed `ClaudeToolValidationError`, ~350 lines removed |
+| 2026-03-12 | main | F4 (complete), F7 (complete) | Confirmed `max_budget_usd` already wired in `sdk_integration.py:262`, confirmed `find_claude_cli()` / `update_path_for_claude()` already removed |
 
 ### Next Steps
 
-The recommended next action is **Phase 4, step 7** — slim down `SessionManager`
-to thin persistence (~250 lines removable). After that, add `max_budget_usd`
-(step 8) and remove CLI path discovery (Phase 5, step 9).
+The only remaining refactor is **Phase 4, step 7** — slim down `SessionManager`
+to thin persistence (~250 lines removable). The `SessionStorage` ABC is still
+used for DI (prod SQLite vs test InMemory), so it stays. Steps 8-9 are now complete.
 
 ---
 

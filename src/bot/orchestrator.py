@@ -347,6 +347,7 @@ class MessageOrchestrator:
             ("template", self.agentic_template),
             ("context", self.agentic_context),
             ("repo", self.agentic_repo),
+            ("agent", self.agentic_agent),
             ("restart", command.restart_command),
         ]
         if self.settings.enable_project_threads:
@@ -484,6 +485,7 @@ class MessageOrchestrator:
                 BotCommand("template", "Управление шаблонами"),
                 BotCommand("context", "Постоянные инструкции"),
                 BotCommand("repo", "Список проектов / переключение"),
+                BotCommand("agent", "Вызвать агента (/agent slug запрос)"),
                 BotCommand("restart", "Перезапустить бота"),
             ]
             if self.settings.enable_project_threads:
@@ -575,6 +577,147 @@ class MessageOrchestrator:
             reply_markup=keyboard,
         )
         self._mark_agentic_reply_keyboard_ready(context)
+
+    async def agentic_agent(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Invoke a specialist agent: /agent [slug] [prompt].
+
+        Without arguments — list all available agents.
+        With slug only — show agent description.
+        With slug + prompt — run the agent with given prompt.
+        """
+        registry = context.bot_data.get("agent_registry")
+        if not registry:
+            await update.message.reply_text("Агенты не настроены.")
+            return
+
+        parts = (update.message.text or "").split(maxsplit=2)
+        # parts: ["/agent"] or ["/agent", slug] or ["/agent", slug, prompt]
+
+        if len(parts) < 2:
+            # List all agents grouped by department
+            agents = registry.list_enabled()
+            if not agents:
+                await update.message.reply_text("Нет доступных агентов.")
+                return
+            by_dept: Dict[str, List[str]] = {}
+            for a in agents:
+                by_dept.setdefault(a.department.upper(), []).append(
+                    f"  <code>{a.slug}</code> — {a.name}"
+                )
+            lines = ["<b>Доступные агенты:</b>\n"]
+            for dept, items in sorted(by_dept.items()):
+                lines.append(f"<b>{dept}</b>")
+                lines.extend(items)
+                lines.append("")
+            lines.append("Использование: <code>/agent slug ваш запрос</code>")
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode="HTML"
+            )
+            return
+
+        slug = parts[1].lower().strip()
+        agent = registry.get_by_slug(slug)
+        if not agent or not agent.enabled:
+            await update.message.reply_text(
+                f"Агент <code>{escape_html(slug)}</code> не найден.\n"
+                "Используйте <code>/agent</code> для списка.",
+                parse_mode="HTML",
+            )
+            return
+
+        if len(parts) < 3:
+            await update.message.reply_text(
+                f"<b>{escape_html(agent.name)}</b> ({agent.department})\n\n"
+                f"Использование: <code>/agent {agent.slug} ваш запрос</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        user_prompt = parts[2]
+        user_id = update.effective_user.id
+        chat = update.message.chat
+        await chat.send_action("typing")
+
+        progress_msg = await update.message.reply_text(
+            f"⌛ Агент <b>{escape_html(agent.name)}</b> работает...",
+            parse_mode="HTML",
+            disable_notification=True,
+        )
+
+        claude_integration = context.bot_data.get("claude_integration")
+        if not claude_integration:
+            await progress_msg.edit_text("Claude integration not available.")
+            return
+
+        # Load agent system prompt and prepend to user prompt
+        try:
+            from pathlib import Path as _Path
+
+            _app_root = _Path(__file__).resolve().parent.parent.parent
+            system_prompt = agent.load_prompt(_app_root)
+            merged_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
+        except FileNotFoundError:
+            merged_prompt = user_prompt
+            logger.warning("Agent prompt file not found", slug=slug)
+
+        working_dir = context.user_data.get(
+            "current_directory", self.settings.approved_directory
+        )
+        if agent.working_directory:
+            working_dir = agent.working_directory
+
+        verbose_level = self._get_verbose_level(context)
+        draft = None
+        if self.settings.enable_stream_drafts and verbose_level > 0:
+            draft_id = generate_draft_id()
+            draft = DraftStreamer(
+                chat=chat,
+                draft_id=draft_id,
+                min_interval=self.settings.stream_draft_interval,
+            )
+
+        on_stream = self.stream.make_stream_callback(
+            chat=chat,
+            progress_msg=progress_msg,
+            verbose_level=verbose_level,
+            draft_streamer=draft,
+        )
+
+        try:
+            response = await claude_integration.run_command(
+                prompt=merged_prompt,
+                working_directory=working_dir,
+                user_id=user_id,
+                on_stream=on_stream,
+                force_new=True,
+            )
+        except Exception as e:
+            logger.error("Agent execution failed", slug=slug, error=str(e))
+            await progress_msg.edit_text(
+                f"Ошибка агента <b>{escape_html(agent.name)}</b>: {escape_html(str(e)[:200])}",
+                parse_mode="HTML",
+            )
+            return
+
+        if draft:
+            await draft.finalize()
+
+        # Send response
+        await self.response_sender.send_response(
+            chat=chat,
+            progress_msg=progress_msg,
+            response=response,
+            verbose_level=verbose_level,
+        )
+
+        logger.info(
+            "Agent command completed",
+            slug=slug,
+            user_id=user_id,
+            cost=response.cost,
+        )
 
     async def agentic_new(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

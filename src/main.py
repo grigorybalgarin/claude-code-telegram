@@ -19,7 +19,7 @@ from src.claude import (
 from src.claude.sdk_integration import ClaudeSDKManager
 from src.config.features import FeatureFlags
 from src.config.settings import Settings
-from src.agents.registry import load_agent_registry
+from src.agents.registry import AgentRegistry, load_agent_registry
 from src.agents.router import AgentRouter
 from src.events.bus import EventBus
 from src.events.handlers import AgentHandler
@@ -197,6 +197,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
 
     # Agent registry and router (multi-agent system)
     agent_router: Optional[AgentRouter] = None
+    agent_registry: Optional[AgentRegistry] = None
     # Look for agents.yaml next to the running code (app repo root), not in workspaces
     _app_root = Path(__file__).resolve().parent.parent
     agents_config = _app_root / "config" / "agents.yaml"
@@ -248,6 +249,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         "storage": storage,
         "event_bus": event_bus,
         "mem0_client": mem0_client,
+        "agent_registry": agent_registry if agent_router else None,
         "project_registry": None,
         "project_threads_manager": None,
     }
