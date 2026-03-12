@@ -284,6 +284,22 @@ class SessionManager:
         logger.info("Session cleanup completed", expired_sessions=expired_count)
         return expired_count
 
+    async def find_resumable_session(
+        self, user_id: int, working_directory: Path
+    ) -> Optional[ClaudeSession]:
+        """Find the most recent non-expired session for a user+directory pair."""
+        sessions = await self.storage.get_user_sessions(user_id)
+        matching = [
+            s
+            for s in sessions
+            if s.project_path == working_directory
+            and bool(s.session_id)
+            and not s.is_expired(self.config.session_timeout_hours)
+        ]
+        if not matching:
+            return None
+        return max(matching, key=lambda s: s.last_used)
+
     async def _get_user_sessions(self, user_id: int) -> List[ClaudeSession]:
         """Get all sessions for a user."""
         return await self.storage.get_user_sessions(user_id)

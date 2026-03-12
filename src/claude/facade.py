@@ -3,19 +3,14 @@
 Provides simple interface for bot handlers.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import structlog
 
 from ..config.settings import Settings
 from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
-
-if TYPE_CHECKING:
-    from .session import ClaudeSession
 
 logger = structlog.get_logger()
 
@@ -58,7 +53,7 @@ class ClaudeIntegration:
         # user+directory combination (auto-resume).
         # Skip auto-resume when force_new is set (e.g. after /new command).
         if not session_id and not force_new:
-            existing_session = await self._find_resumable_session(
+            existing_session = await self.session_manager.find_resumable_session(
                 user_id, working_directory
             )
             if existing_session:
@@ -253,32 +248,6 @@ class ClaudeIntegration:
             images=images,
         )
 
-    async def _find_resumable_session(
-        self,
-        user_id: int,
-        working_directory: Path,
-    ) -> Optional["ClaudeSession"]:  # noqa: F821
-        """Find the most recent resumable session for a user in a directory.
-
-        Returns the session if one exists that is non-expired and has a real
-        (non-temporary) session ID from Claude. Returns None otherwise.
-        """
-
-        sessions = await self.session_manager._get_user_sessions(user_id)
-
-        matching_sessions = [
-            s
-            for s in sessions
-            if s.project_path == working_directory
-            and bool(s.session_id)
-            and not s.is_expired(self.config.session_timeout_hours)
-        ]
-
-        if not matching_sessions:
-            return None
-
-        return max(matching_sessions, key=lambda s: s.last_used)
-
     async def continue_session(
         self,
         user_id: int,
@@ -294,30 +263,18 @@ class ClaudeIntegration:
             has_prompt=bool(prompt),
         )
 
-        # Get user's sessions
-        sessions = await self.session_manager._get_user_sessions(user_id)
-
-        # Find most recent session in this directory (exclude sessions without IDs)
-        matching_sessions = [
-            s
-            for s in sessions
-            if s.project_path == working_directory and bool(s.session_id)
-        ]
-
-        if not matching_sessions:
+        latest = await self.session_manager.find_resumable_session(
+            user_id, working_directory
+        )
+        if not latest:
             logger.info("No matching sessions found", user_id=user_id)
             return None
 
-        # Get most recent
-        latest_session = max(matching_sessions, key=lambda s: s.last_used)
-
-        # Continue session with default prompt if none provided
-        # Claude CLI requires a prompt, so we use a placeholder
         return await self.run_command(
             prompt=prompt or "Please continue where we left off",
             working_directory=working_directory,
             user_id=user_id,
-            session_id=latest_session.session_id,
+            session_id=latest.session_id,
             on_stream=on_stream,
         )
 

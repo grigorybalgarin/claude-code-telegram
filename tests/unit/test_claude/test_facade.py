@@ -87,8 +87,8 @@ class TestForceNewSkipsAutoResume:
         await session_manager.storage.save_session(existing)
         session_manager.active_sessions[existing.session_id] = existing
 
-        # _find_resumable_session should find it
-        found = await facade._find_resumable_session(user_id, project)
+        # find_resumable_session should find it (now on session_manager)
+        found = await session_manager.find_resumable_session(user_id, project)
         assert found is not None
         assert found.session_id == "real-session-id"
 
@@ -108,9 +108,11 @@ class TestForceNewSkipsAutoResume:
         await session_manager.storage.save_session(existing)
         session_manager.active_sessions[existing.session_id] = existing
 
-        # Mock _find_resumable_session to track whether it's called
+        # Mock find_resumable_session to track whether it's called
         with patch.object(
-            facade, "_find_resumable_session", wraps=facade._find_resumable_session
+            session_manager,
+            "find_resumable_session",
+            wraps=session_manager.find_resumable_session,
         ) as spy:
             with patch.object(
                 facade,
@@ -125,7 +127,7 @@ class TestForceNewSkipsAutoResume:
                     force_new=True,
                 )
 
-            # _find_resumable_session should NOT have been called
+            # find_resumable_session should NOT have been called
             spy.assert_not_called()
 
 
@@ -224,7 +226,9 @@ class TestForceNewSurvivesFailure:
         # --- First attempt: fails ---
         force_new = bool(user_data.get("force_new_session"))
         with patch.object(
-            facade, "_find_resumable_session", wraps=facade._find_resumable_session
+            session_manager,
+            "find_resumable_session",
+            wraps=session_manager.find_resumable_session,
         ) as spy1:
             with patch.object(
                 facade,
@@ -247,7 +251,9 @@ class TestForceNewSurvivesFailure:
         # --- Second attempt: succeeds ---
         force_new = bool(user_data.get("force_new_session"))
         with patch.object(
-            facade, "_find_resumable_session", wraps=facade._find_resumable_session
+            session_manager,
+            "find_resumable_session",
+            wraps=session_manager.find_resumable_session,
         ) as spy2:
             with patch.object(
                 facade,
