@@ -669,19 +669,25 @@ class MessageOrchestrator:
             working_dir = agent.working_directory
 
         verbose_level = self._get_verbose_level(context)
+        tool_log: List[Dict[str, Any]] = []
+        start_time = time.time()
+
         draft = None
-        if self.settings.enable_stream_drafts and verbose_level > 0:
-            draft_id = generate_draft_id()
+        if self.settings.enable_stream_drafts and chat.type == "private":
             draft = DraftStreamer(
-                chat=chat,
-                draft_id=draft_id,
-                min_interval=self.settings.stream_draft_interval,
+                bot=context.bot,
+                chat_id=chat.id,
+                draft_id=generate_draft_id(),
+                message_thread_id=update.message.message_thread_id,
+                throttle_interval=self.settings.stream_draft_interval,
             )
 
         on_stream = self.stream.make_stream_callback(
-            chat=chat,
-            progress_msg=progress_msg,
-            verbose_level=verbose_level,
+            verbose_level,
+            progress_msg,
+            tool_log,
+            start_time,
+            approved_directory=self.settings.approved_directory,
             draft_streamer=draft,
         )
 
