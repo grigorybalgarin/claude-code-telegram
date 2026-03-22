@@ -268,6 +268,11 @@ class Settings(BaseSettings):
         description="Default mem0 user ID",
     )
 
+    # Finance (ZenMoney)
+    zenmoney_token: Optional[SecretStr] = Field(
+        None, description="ZenMoney API token for finance sync"
+    )
+
     # Monitoring
     log_level: str = Field("INFO", description="Logging level")
     enable_telemetry: bool = Field(False, description="Enable anonymous telemetry")
@@ -536,6 +541,11 @@ class Settings(BaseSettings):
     def groq_api_key_str(self) -> Optional[str]:
         """Get Groq API key as string."""
         return self.groq_api_key.get_secret_value() if self.groq_api_key else None
+
+    @property
+    def zenmoney_token_str(self) -> Optional[str]:
+        """Get ZenMoney token as string."""
+        return self.zenmoney_token.get_secret_value() if self.zenmoney_token else None
 
     @property
     def resolved_voice_model(self) -> str:

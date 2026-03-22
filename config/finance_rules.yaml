@@ -1,0 +1,92 @@
+# Finance categorization rules for ZenMoney -> Google Sheets sync
+# ================================================================
+
+# Skip own transfers between accounts automatically
+skip_self_transfers: true
+
+# Payee patterns to skip entirely (self-transfers not caught by account matching)
+skip_payee_contains:
+  - "григорий владимирович б"
+  # - "григорий б"  # too broad — some are real transfers
+
+# Income payees to skip (returning own money, not real income)
+income_skip_payee_contains:
+  - "григорий владимирович б"
+  - "григорий б"
+
+# Transfers requiring manual categorization via Telegram buttons
+manual_rules:
+  - match_phone: "79370980035"
+    options:
+      - "Ипотека"
+      - "Сплит"
+      - "Коммуналка"
+      - "Отложить"
+
+# Payee pattern -> category (checked when ZenMoney tag is absent)
+payee_rules:
+  - category: "Ипотека"
+    patterns:
+      - "бал·····а к. в"
+      - "бал"  # Бал...а К.В. — ипотечный платёж через Ксению
+
+  - category: "Отложить"
+    patterns:
+      - "ксения б"
+      - "ксении б"
+      - "ксюш"
+
+  - category: "Спорт"
+    patterns:
+      - "sbp-runc"
+      - "runc"
+
+  - category: "Комиссии"
+    patterns:
+      - "комиссия"
+      - "операция"
+
+  - category: "Кэшбэк"
+    patterns:
+      - "кэшбэк"
+      - "cashback"
+      - "зачисление кэшбэка"
+
+# ZenMoney tag -> our category name mapping
+# (if tag name matches key, use value as category)
+tag_map:
+  "Продукты": "Продукты"
+  "Транспорт": "Транспорт"
+  "Кафе и рестораны": "Кафе и рестораны"
+  "Покупки": "Покупки"
+  "Развлечения": "Развлечения"
+  "Здоровье": "Здоровье"
+  "Забота о себе": "Забота о себе"
+  "Подарки": "Подарки"
+  "Зарплата": "Зарплата"
+  "Платежи, комиссии": "Комиссии"
+  "Подписки": "Подписки"
+  "Коммуналка": "Коммуналка"
+  "Дом, уют": "Дом"
+  "Образование": "Образование"
+  "Машина": "Машина"
+
+# Income categorization rules (by payee pattern)
+income_rules:
+  - category: "Зарплата"
+    patterns:
+      - "заработная плата"
+      - "зп"
+
+  - category: "Обучение (доход)"
+    patterns:
+      - "константин с"
+
+  - category: "Кэшбэк"
+    patterns:
+      - "кэшбэк"
+      - "cashback"
+
+# Default categories when nothing matches
+default_expense_category: "Прочие переводы"
+default_income_category: "Прочие поступления"
