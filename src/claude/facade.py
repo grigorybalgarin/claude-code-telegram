@@ -3,14 +3,19 @@
 Provides simple interface for bot handlers.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import structlog
 
 from ..config.settings import Settings
 from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
+
+if TYPE_CHECKING:
+    from ..storage.models import ClaudeSession
 
 logger = structlog.get_logger()
 
@@ -28,6 +33,16 @@ class ClaudeIntegration:
         self.config = config
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
         self.session_manager = session_manager
+
+    async def _find_resumable_session(
+        self, user_id: int, working_directory: Path
+    ) -> Optional[ClaudeSession]:
+        """Delegate to SessionManager for backward compatibility."""
+        if self.session_manager is None:
+            return None
+        return await self.session_manager.find_resumable_session(
+            user_id, working_directory
+        )
 
     async def run_command(
         self,
