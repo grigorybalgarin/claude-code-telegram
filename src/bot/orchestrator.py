@@ -1444,12 +1444,11 @@ class MessageOrchestrator:
                 except Exception:
                     logger.debug("Draft flush failed in finally block", user_id=user_id)
 
-        panel_markup = self.panel.build_control_panel_markup()
         await self.response_sender.deliver(
             update,
             formatted_messages,
             images=mcp_images,
-            panel_markup=panel_markup,
+            panel_markup=None,
             progress_msg=progress_msg,
             guard_report=guard_report,
             change_guard=change_guard,
